@@ -31,13 +31,47 @@ def fmt_time(minute: int) -> str:
 
 @dataclass
 class Event:
+    """Structured simulation event.
+
+    Machine-readable fields (verb/actor/target/location) are the source of
+    truth -- the DB and every UI language render from these. ``text`` is a
+    prerendered English fallback kept for backward compatibility with older
+    frontends; treat it as deprecated.
+    """
+
     minute: int
-    kind: str          # action | dialogue | reflection | system
-    text: str
-    agent_id: str = ""
+    kind: str                 # action | dialogue | reflection | system
+    verb: str                 # sleep|eat|work|rest|idle|arrive|talk_start|say|insight
+    actor: str = ""           # agent_id
+    actor_name: str = ""      # denormalized for convenience
+    target: str = ""          # agent_id (e.g. talk partner)
+    target_name: str = ""
+    location: str = ""        # location_id
+    location_name: str = ""
+    text: str = ""            # generated free text ONLY (dialogue line / insight)
+    text_en: str = ""         # deprecated: prerendered English sentence
 
     def render(self) -> str:
-        return f"[{fmt_time(self.minute)}] {self.text}"
+        return f"[{fmt_time(self.minute)}] {self.text_en}"
+
+
+_EN_TEMPLATES = {
+    "sleep": "{actor} went to sleep at {loc}",
+    "eat": "{actor} is eating at {loc}",
+    "work": "{actor} is working at {loc}",
+    "rest": "{actor} is resting at {loc}",
+    "idle": "{actor} is idling at {loc}",
+    "move": "{actor} is heading out",
+    "arrive": "{actor} → {loc}",
+    "talk_start": "{actor} started talking with {target} at {loc}",
+    "say": "💬 {actor}: {text}",
+    "insight": "💭 {actor}: {text}",
+}
+
+
+def render_en(verb: str, actor: str, target: str, loc: str, text: str) -> str:
+    tpl = _EN_TEMPLATES.get(verb, "{actor} {verb} at {loc}")
+    return tpl.format(actor=actor, target=target, loc=loc, text=text, verb=verb)
 
 
 class EventBus:
@@ -109,6 +143,33 @@ class SimulationEngine:
                 break
             await self.tick()
 
+    def _publish(
+        self,
+        kind: str,
+        verb: str,
+        actor: Agent | None = None,
+        target: Agent | None = None,
+        location_id: str = "",
+        text: str = "",
+    ) -> None:
+        loc = self.world.locations.get(location_id)
+        ev = Event(
+            minute=self.now,
+            kind=kind,
+            verb=verb,
+            actor=actor.id if actor else "",
+            actor_name=actor.name if actor else "",
+            target=target.id if target else "",
+            target_name=target.name if target else "",
+            location=location_id,
+            location_name=loc.name if loc else "",
+        )
+        ev.text = text
+        ev.text_en = render_en(
+            verb, ev.actor_name, ev.target_name, ev.location_name, text
+        )
+        self.bus.publish(ev)
+
     async def tick(self) -> None:
         item = self.scheduler.pop_next()
         if item is None:
@@ -130,18 +191,23 @@ class SimulationEngine:
         if decision.action == "talk" and decision.talk_partner:
             await self._handle_conversation(agent, decision.talk_partner)
         else:
-            text = self.world.execute(
+            result = self.world.execute(
                 agent, decision.action, decision.target_location, self.now, decision.duration
             )
-            if text:
-                self.bus.publish(Event(self.now, "action", text, agent.id))
+            if result:
+                self._publish(
+                    "action", result["verb"], actor=agent, location_id=result["location"]
+                )
             if decision.action == "move":
                 self._interrupt_colocated(agent)
 
         # Reflection check (Level 3) fires only on accumulated importance.
         insights = await self.decisions.maybe_reflect(agent, self.now)
         for ins in insights:
-            self.bus.publish(Event(self.now, "reflection", f"💭 {agent.name}: {ins}", agent.id))
+            self._publish(
+                "reflection", "insight", actor=agent,
+                location_id=agent.state.location, text=ins,
+            )
 
         self.scheduler.schedule(agent.id, self.now + decision.duration)
 
@@ -157,14 +223,24 @@ class SimulationEngine:
         duration = max(6, len(turns) * 2)
         a.state.busy_until = self.now + duration
         b.state.busy_until = self.now + duration
-        loc = self.world.locations[a.state.location].name
-        self.bus.publish(
-            Event(self.now, "action", f"{a.name} started talking with {b.name} at {loc}", a.id)
+        self._publish(
+            "action", "talk_start", actor=a, target=b, location_id=a.state.location
         )
+        by_name = {a.name.lower(): a, b.name.lower(): b}
         for i, turn in enumerate(turns):
-            self.bus.publish(
-                Event(self.now + i, "dialogue", f"💬 {turn.get('speaker', '?')}: {turn.get('text', '')}")
+            speaker = by_name.get(
+                str(turn.get("speaker", "")).lower(),
+                a if i % 2 == 0 else b,  # fallback: alternate speakers
             )
+            saved_now = self.now
+            self.now = saved_now + i  # stagger dialogue lines in sim time
+            self._publish(
+                "dialogue", "say", actor=speaker,
+                target=b if speaker is a else a,
+                location_id=speaker.state.location,
+                text=str(turn.get("text", "")),
+            )
+            self.now = saved_now
         self.scheduler.schedule(b.id, self.now + duration)
 
     def _interrupt_colocated(self, mover: Agent) -> None:

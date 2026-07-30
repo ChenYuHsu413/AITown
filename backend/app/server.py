@@ -106,7 +106,20 @@ class Sim:
 
     @staticmethod
     def _event_json(e: Event) -> dict:
-        return {"minute": e.minute, "clock": fmt_time(e.minute), "kind": e.kind, "text": e.text, "agent": e.agent_id}
+        return {
+            "minute": e.minute,
+            "clock": fmt_time(e.minute),
+            "kind": e.kind,
+            "verb": e.verb,
+            "actor": e.actor,
+            "actor_name": e.actor_name,
+            "target": e.target,
+            "target_name": e.target_name,
+            "location": e.location,
+            "location_name": e.location_name,
+            "speech": e.text,        # generated free text only (dialogue line / insight)
+            "text": e.text_en,       # DEPRECATED: prerendered English sentence (old-frontend compat)
+        }
 
     async def _broadcast_tick(self) -> None:
         payload = {

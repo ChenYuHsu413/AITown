@@ -76,8 +76,16 @@ class World:
 
     # ---- execution (Level 0, pure rules) ----------------------------
 
-    def execute(self, agent: Agent, action: str, target_location: str | None, now: int, duration: int) -> str:
-        """Apply an action's world effects. Returns a human-readable event text."""
+    def execute(
+        self, agent: Agent, action: str, target_location: str | None, now: int, duration: int
+    ) -> dict | None:
+        """Apply an action's world effects.
+
+        Returns a structured result {"verb": ..., "location": location_id}
+        for the engine to publish as an event, or None when no event should
+        be emitted (e.g. still asleep). Rendering to any human language is
+        NOT this layer's job.
+        """
         st = agent.state
 
         if action == "move" and target_location and target_location != st.location:
@@ -87,22 +95,14 @@ class World:
             # Trim arrival logs so they don't grow forever.
             self._recent_arrivals[target_location] = self._recent_arrivals[target_location][-20:]
             self._apply_energy(agent, "move", TRAVEL_MINUTES)
-            return f"{agent.name} → {self.locations[target_location].name}"
+            return {"verb": "arrive", "location": target_location}
 
         already_sleeping = action == "sleep" and st.current_action == "sleep"
         st.current_action = action
         self._apply_energy(agent, action, duration)
         if already_sleeping:
-            return ""  # no duplicate "went to sleep" events
-        loc_name = self.locations[st.location].name
-        verbs = {
-            "work": "is working at",
-            "rest": "is resting at",
-            "eat": "is eating at",
-            "sleep": "went to sleep at",
-            "idle": "is idling at",
-        }
-        return f"{agent.name} {verbs.get(action, action)} {loc_name}"
+            return None  # no duplicate "went to sleep" events
+        return {"verb": action, "location": st.location}
 
     @staticmethod
     def _apply_energy(agent: Agent, action: str, minutes: int) -> None:
