@@ -57,8 +57,17 @@ def should_talk_prompt(agent: "Agent", other_name: str, memories: list[str]) -> 
 
 
 def dialogue_prompt(
-    a: "Agent", b: "Agent", a_mem: list[str], b_mem: list[str], max_turns: int = 4
+    a: "Agent", b: "Agent", a_mem: list[str], b_mem: list[str], max_turns: int = 4,
+    a_wants_to_mention: str | None = None,
 ) -> list[dict]:
+    user = (
+        f"Simulate a conversation between {a.profile.name} and {b.profile.name}. "
+        f"Maximum {max_turns} turns.\n"
+        f"A: {character_card(a)} {state_line(a)}\n{memories_block(a_mem)}\n"
+        f"B: {character_card(b)} {state_line(b)}\n{memories_block(b_mem)}"
+    )
+    if a_wants_to_mention:
+        user += f"\n{a.profile.name} wants to bring up: {a_wants_to_mention}"
     return [
         {
             "role": "system",
@@ -69,15 +78,21 @@ def dialogue_prompt(
                 '"sentiment": 0..1, "trust_signal": 0..1, "conflict_signal": 0..1}.'
             ),
         },
+        {"role": "user", "content": user},
+    ]
+
+
+def distort_prompt(text: str) -> list[dict]:
+    return [
         {
-            "role": "user",
+            "role": "system",
             "content": (
-                f"Simulate a conversation between {a.profile.name} and {b.profile.name}. "
-                f"Maximum {max_turns} turns.\n"
-                f"A: {character_card(a)} {state_line(a)}\n{memories_block(a_mem)}\n"
-                f"B: {character_card(b)} {state_line(b)}\n{memories_block(b_mem)}"
+                "You retell a piece of gossip in a life simulation, passing it along to "
+                "someone new. Rewrite it in your own words, allowing slight memory drift -- "
+                "one sentence, same gist. Respond ONLY with JSON: {\"text\": \"...\"}. Task: distort."
             ),
         },
+        {"role": "user", "content": f"Retell this: {text}"},
     ]
 
 

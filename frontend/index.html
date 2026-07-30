@@ -173,6 +173,7 @@ const EV_TMPL={
     work:(a,l)=>`${a} is working at ${l}`, rest:(a,l)=>`${a} is resting at ${l}`,
     idle:(a,l)=>`${a} is idling at ${l}`, arrive:(a,l)=>`${a} → ${l}`,
     talk_start:(a,l,tg)=>`${a} started talking with ${tg} at ${l}`,
+    share_rumor:(a,l,tg,sp)=>`${a} shared a rumor with ${tg}: ${sp}`,
     say:(a,l,tg,sp)=>`💬 ${a}: ${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}: ${sp}`,
   },
   zh:{
@@ -180,6 +181,7 @@ const EV_TMPL={
     work:(a,l)=>`${a} 在 ${l} 工作`, rest:(a,l)=>`${a} 在 ${l} 休息`,
     idle:(a,l)=>`${a} 在 ${l} 閒晃`, arrive:(a,l)=>`${a} 前往 ${l}`,
     talk_start:(a,l,tg)=>`${a} 在 ${l} 開始與 ${tg} 交談`,
+    share_rumor:(a,l,tg,sp)=>`${a} 向 ${tg} 傳了個八卦：${sp}`,
     say:(a,l,tg,sp)=>`💬 ${a}：${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}：${sp}`,
   },
 };
@@ -335,8 +337,9 @@ async function refreshInspector(id,scroll){
       <span class="obs"></span><br><b>→ ${actName(tr.action)}</b> — <span class="rsn"></span></div>`).join('')||`<div class="placeholder">${t('noDecisions')}</div>`}`;
   // Fill free-form / user-content fields via textContent to avoid HTML injection.
   box.querySelectorAll('.mem').forEach((el,i)=>{
-    el.children[1].textContent=memText(a.memories[i].text);
-    el.children[2].textContent=`${t('imp')} ${a.memories[i].importance}`;
+    const m=a.memories[i];
+    el.children[1].textContent=(m.kind==='rumor'?'🗣️ ':'')+memText(m.text);
+    el.children[2].textContent=`${t('imp')} ${m.importance}`;
   });
   box.querySelectorAll('.trace').forEach((el,i)=>{
     el.querySelector('.obs').textContent=a.last_decisions[i].observation;

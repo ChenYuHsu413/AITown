@@ -41,7 +41,8 @@ class MemoryItem:
     minute: int
     text: str
     importance: int = 1                     # 1..10
-    kind: str = "observation"               # observation | conversation | reflection
+    kind: str = "observation"               # observation | conversation | reflection | rumor
+    rumor_id: str = ""                      # set when this memory records a rumor
 
 
 class EpisodicMemory:

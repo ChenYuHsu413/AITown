@@ -21,6 +21,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
+from .agents.core import MemoryItem
 from .agents.decision import DecisionEngine
 from .llm.factory import build_router
 from .simulation.engine import DAY_MIN, Event, SimulationEngine, fmt_time
@@ -258,6 +259,56 @@ async def control(body: dict) -> JSONResponse:
         sim.speed = float(body.get("speed", 5))
         sim.paused = False
     return JSONResponse({"paused": sim.paused, "speed": sim.speed})
+
+
+@app.post("/api/rumors")
+async def seed_rumor(body: dict) -> JSONResponse:
+    """God Mode: plant a rumor in an agent's head. It then spreads through
+    conversations (and drifts in the retelling). Returns the new rumor id."""
+    assert sim is not None
+    agent_id = str(body.get("agent_id", ""))
+    text = str(body.get("text", "")).strip()
+    agent = sim.world.agents.get(agent_id)
+    if agent is None or not text:
+        return JSONResponse({"error": "agent_id (known) and non-empty text required"}, status_code=400)
+    rumor = sim.engine.decisions.rumors.seed(agent_id, text, sim.engine.now)
+    agent.memory.add(MemoryItem(
+        minute=sim.engine.now, text=text, importance=4, kind="rumor", rumor_id=rumor.id,
+    ))
+    return JSONResponse({"id": rumor.id, "origin": agent_id, "text": text})
+
+
+@app.get("/api/rumors")
+async def list_rumors() -> JSONResponse:
+    """Full version chain per rumor -- the telephone-game observability core."""
+    assert sim is not None
+    agents = sim.world.agents
+
+    def name_of(aid: str) -> str:
+        return agents[aid].name if aid in agents else aid
+
+    out = []
+    for r in sim.engine.decisions.rumors.rumors.values():
+        out.append({
+            "id": r.id,
+            "origin": r.origin,
+            "origin_name": name_of(r.origin),
+            "created_minute": r.created_minute,
+            "created_clock": fmt_time(r.created_minute),
+            "versions": [
+                {
+                    "agent_id": v.agent_id,
+                    "agent_name": name_of(v.agent_id),
+                    "text": v.text,
+                    "heard_from": v.heard_from,
+                    "heard_from_name": name_of(v.heard_from) if v.heard_from else "",
+                    "minute": v.minute,
+                    "clock": fmt_time(v.minute),
+                }
+                for v in r.versions
+            ],
+        })
+    return JSONResponse({"rumors": out})
 
 
 @app.get("/api/agents/{agent_id}")

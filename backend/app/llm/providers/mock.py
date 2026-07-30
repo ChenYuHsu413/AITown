@@ -52,7 +52,17 @@ class MockProvider(LLMProvider):
         prompt = " ".join(m.get("content", "") for m in messages).lower()
 
         parsed: object
-        if "should_talk" in prompt:
+        if "distort" in prompt:
+            raw = " ".join(m.get("content", "") for m in messages)
+            src = (raw.split("Retell this:", 1)[-1].strip() if "Retell this:" in raw else "Something happened")
+            head = (src[:1].lower() + src[1:]) if src else src
+            transforms = [
+                lambda s: s.rstrip(".") + ", apparently.",   # tacked-on hedge
+                lambda s: "I heard that " + head,             # secondhand framing
+                lambda s: "Word is, " + head,                 # rumor framing
+            ]
+            parsed = {"text": rng.choice(transforms)(src)}
+        elif "should_talk" in prompt:
             parsed = {"talk": rng.random() < 0.6, "reason": "mock heuristic"}
         elif "importance" in prompt:
             parsed = {"importance": rng.randint(1, 6)}

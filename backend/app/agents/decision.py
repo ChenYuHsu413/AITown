@@ -18,14 +18,19 @@ Every decision also returns a DecisionTrace so nothing is a black box.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import random
 from dataclasses import dataclass, field
 
 from ..llm.prompts import builders
 from ..llm.router import LLMRouter
+from ..social.rumors import RumorRegistry
 from ..world.world import Observation, World
 from .agent import Agent
 from .core import MemoryItem
+
+RUMOR_DISTORT_CHANCE = 0.35   # probability a shared rumor mutates in the retelling
 
 TALK_COOLDOWN_MIN = 90        # don't re-approach the same person within 90 sim-minutes
 TALK_DURATION_MIN = 10
@@ -68,6 +73,7 @@ class DecisionTrace:
 class DecisionEngine:
     router: LLMRouter
     traces: list[DecisionTrace] = field(default_factory=list)
+    rumors: RumorRegistry = field(default_factory=RumorRegistry)
 
     async def decide(
         self, agent: Agent, world: World, obs: Observation, now: int
@@ -145,16 +151,67 @@ class DecisionEngine:
 
     # ---- Level 2: one-call conversation ------------------------------
 
+    async def _maybe_share_rumor(self, a: Agent, b: Agent, now: int) -> dict | None:
+        """Decide (in the decision layer) whether ``a`` passes a rumor to ``b``.
+        On success: records b's memory + the registry spread, and returns a
+        descriptor for the engine to publish as an event. Returns None when
+        nothing is shared (the common case -- keeps rumor-free runs untouched)."""
+        candidates = [
+            (r, v) for r, v in self.rumors.known_by(a.id)
+            if not self.rumors.knows(r.id, b.id)
+        ]
+        if not candidates:
+            return None
+        rumor, version = max(candidates, key=lambda rv: rv[1].minute)  # most recently heard
+
+        p = (
+            0.25
+            + 0.5 * a.profile.extraversion
+            + (0.2 if "gossipy" in a.profile.traits else 0.0)
+            + (0.15 if "talkative" in a.profile.traits else 0.0)
+        )
+        p = min(p, 0.95)
+        seed = int(hashlib.sha256(f"{a.id}|{b.id}|{rumor.id}|{now}".encode()).hexdigest()[:8], 16)
+        rng = random.Random(seed)
+        if rng.random() >= p:
+            return None
+
+        text = version.text
+        if rng.random() < RUMOR_DISTORT_CHANCE:
+            res = await self.router.generate(
+                task="distort",
+                messages=builders.distort_prompt(text),
+                agent_id=a.id,
+                sim_minute=now,
+                schema={"type": "object"},
+                max_tokens=80,
+            )
+            if isinstance(res.parsed, dict) and res.parsed.get("text"):
+                text = str(res.parsed["text"])
+
+        b.memory.add(MemoryItem(
+            minute=now, text=f"Heard from {a.name}: {text}",
+            importance=4, kind="rumor", rumor_id=rumor.id,
+        ))
+        self.rumors.record_spread(rumor.id, a.id, b.id, text, now)
+        return {"rumor_id": rumor.id, "text": text, "from": a.id, "to": b.id}
+
     async def run_conversation(
         self, a: Agent, b: Agent, world: World, now: int
-    ) -> tuple[list[dict], dict]:
+    ) -> tuple[list[dict], dict, dict | None]:
         """One LLM call produces the whole exchange (played back turn by
-        turn in the UI later) + numeric relationship signals."""
+        turn in the UI later) + numeric relationship signals. A rumor may
+        be seeded into the exchange first; when so, ``shared_rumor`` carries
+        the passed-on wording for the engine to publish."""
+        shared_rumor = await self._maybe_share_rumor(a, b, now)
         a_mem = await a.memory.retrieve_async(b.name, k=3)
         b_mem = await b.memory.retrieve_async(a.name, k=3)
         res = await self.router.generate(
             task="dialogue",
-            messages=builders.dialogue_prompt(a, b, a_mem, b_mem),
+            messages=builders.dialogue_prompt(
+                a, b, a_mem, b_mem,
+                a_wants_to_mention=shared_rumor["text"] if shared_rumor else None,
+            ),
             agent_id=a.id,
             sim_minute=now,
             schema={"type": "object"},
@@ -185,7 +242,7 @@ class DecisionEngine:
         b.apply_conversation_signals(a.id, **signals)
         a.state.last_talk_minute[b.id] = now
         b.state.last_talk_minute[a.id] = now
-        return turns, signals
+        return turns, signals, shared_rumor
 
     # ---- Level 3: reflection -----------------------------------------
 

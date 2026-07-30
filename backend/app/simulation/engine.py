@@ -64,6 +64,7 @@ _EN_TEMPLATES = {
     "move": "{actor} is heading out",
     "arrive": "{actor} → {loc}",
     "talk_start": "{actor} started talking with {target} at {loc}",
+    "share_rumor": "{actor} shared a rumor with {target}: {text}",
     "say": "💬 {actor}: {text}",
     "insight": "💭 {actor}: {text}",
 }
@@ -217,7 +218,7 @@ class SimulationEngine:
             # Partner got occupied since the decision; retry shortly.
             self.scheduler.schedule(a.id, self.now + 5)
             return
-        turns, signals = await self.decisions.run_conversation(a, b, self.world, self.now)
+        turns, signals, shared_rumor = await self.decisions.run_conversation(a, b, self.world, self.now)
         a.state.current_action = "talk"
         b.state.current_action = "talk"
         duration = max(6, len(turns) * 2)
@@ -226,6 +227,11 @@ class SimulationEngine:
         self._publish(
             "action", "talk_start", actor=a, target=b, location_id=a.state.location
         )
+        if shared_rumor:
+            self._publish(
+                "action", "share_rumor", actor=a, target=b,
+                location_id=a.state.location, text=shared_rumor["text"],
+            )
         by_name = {a.name.lower(): a, b.name.lower(): b}
         for i, turn in enumerate(turns):
             speaker = by_name.get(
