@@ -50,7 +50,30 @@ class Sim:
         self._new_events: list[Event] = []
         self.engine.bus.subscribers.append(self._new_events.append)
         self.clients: set[WebSocket] = set()
+        self.persistence = None          # set by lifespan when DB configured
         self.engine.bootstrap(START_MINUTE)
+
+    async def attach_persistence(self) -> None:
+        """Optional: activates when AI_TOWN_DB_URL is set. Without it the
+        simulation runs fully in-memory, exactly as before."""
+        db_url = os.environ.get("AI_TOWN_DB_URL", "")
+        if not db_url:
+            return
+        from .db.persistence import Persistence
+
+        p = Persistence(db_url)
+        await p.start(note="server")
+        self.persistence = p
+        self.engine.bus.subscribers.append(p.on_event)
+        self.router.usage.on_record = p.on_llm_call
+        for agent in self.world.agents.values():
+            # Mirror future memories to DB; backfill the seed memories now.
+            agent.memory.on_add = (lambda aid: lambda item: p.on_memory(aid, item))(agent.id)
+            for item in agent.memory.items:
+                p.on_memory(agent.id, item)
+            # Retrieval switches to pgvector cosine search.
+            agent.memory.vector_search = p.vector_retriever(agent.id)
+        print(f"[persistence] enabled, run_id={p.run_id}")
 
     # ---- pacing loop ----------------------------------------------
 
@@ -150,12 +173,28 @@ _loop_task: asyncio.Task | None = None
 async def lifespan(app: FastAPI):
     global sim, _loop_task
     sim = Sim()
+    await sim.attach_persistence()
     _loop_task = asyncio.create_task(sim.loop())
     yield
     _loop_task.cancel()
+    if sim.persistence is not None:
+        await sim.persistence.stop()
 
 
 app = FastAPI(title="AI Town", lifespan=lifespan)
+
+
+@app.get("/api/history")
+async def history(minute_from: int = 0, minute_to: int = 10**9, limit: int = 500) -> JSONResponse:
+    """Replay foundation: structured events straight from PostgreSQL.
+    Requires persistence (AI_TOWN_DB_URL); 501 otherwise."""
+    assert sim is not None
+    if sim.persistence is None:
+        return JSONResponse({"error": "persistence not enabled"}, status_code=501)
+    events = await sim.persistence.events_between(minute_from, minute_to, limit)
+    for e in events:
+        e["clock"] = fmt_time(e["minute"])
+    return JSONResponse({"run_id": sim.persistence.run_id, "events": events})
 
 
 @app.get("/")

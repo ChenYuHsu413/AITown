@@ -80,9 +80,31 @@ smart : gpt-5-mini  → gemini-2.5-flash-lite → mock
 Set `OPENAI_API_KEY` / `GEMINI_API_KEY` and pass `--live`. A provider 429/timeout
 automatically falls through the chain. (`pip install httpx` for live mode.)
 
-## Phase 2 (next)
+## Persistence (phase 2, optional)
 
-FastAPI + WebSocket event stream → Next.js Town UI (map, event feed, Agent
-Inspector, AI-usage dashboard) → PostgreSQL + pgvector memory → reflection
-tuning → replay. Memory retrieval already has the `(query, k) -> memories`
-contract, so pgvector slots in without touching callers.
+Off by default — without config everything runs in-memory as before. To enable:
+
+```bash
+docker compose up -d          # pgvector/pgvector:pg16
+export AI_TOWN_DB_URL=postgresql+asyncpg://aitown:aitown@localhost:5432/aitown
+pip install sqlalchemy asyncpg pgvector
+uvicorn backend.app.server:app
+```
+
+What turns on:
+
+- `events`, `memories`, `llm_calls`, `simulation_runs` tables (schema mirrors
+  Event Contract v1); writes are queued + batched so the sim loop never blocks
+- Memory retrieval switches from keyword matching to **pgvector cosine search**
+  (same `(query, k)` contract; keyword fallback on DB hiccups)
+- `GET /api/history?minute_from=&minute_to=` — replay foundation, structured
+  events straight from the DB
+
+Embeddings default to a deterministic zero-cost mock (bag-of-words random
+projection, 64-dim) that exercises the full pgvector pipeline; swap in a real
+embedder later by implementing `EmbeddingProvider` and bumping `EMBED_DIM`.
+
+## Phase 3 (next)
+
+Replay UI · relationship graph · rumors / conflicts / world events ·
+generated-content localization when real models come online.

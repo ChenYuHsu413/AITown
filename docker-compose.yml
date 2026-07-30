@@ -1,0 +1,17 @@
+# Phase 2: PostgreSQL + pgvector for persistence.
+#   docker compose up -d
+#   export AI_TOWN_DB_URL=postgresql+asyncpg://aitown:aitown@localhost:5432/aitown
+#   uvicorn backend.app.server:app
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: aitown
+      POSTGRES_PASSWORD: aitown
+      POSTGRES_DB: aitown
+    ports:
+      - "5432:5432"
+    volumes:
+      - aitown_pgdata:/var/lib/postgresql/data
+volumes:
+  aitown_pgdata:

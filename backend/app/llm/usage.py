@@ -28,9 +28,12 @@ class LLMCall:
 @dataclass
 class UsageTracker:
     calls: list[LLMCall] = field(default_factory=list)
+    on_record = None  # Callable[[LLMCall], None] | None -- persistence hook
 
     def record(self, call: LLMCall) -> None:
         self.calls.append(call)
+        if self.on_record is not None:
+            self.on_record(call)
 
     # ---- reporting -------------------------------------------------
 

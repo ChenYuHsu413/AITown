@@ -97,7 +97,7 @@ class DecisionEngine:
                 and partner.state.current_action != "sleep"
             )
             if partner_free and now - last >= TALK_COOLDOWN_MIN and agent.state.current_action != "sleep":
-                memories = agent.memory.retrieve(f"{partner.name} {obs.location}", k=5)
+                memories = await agent.memory.retrieve_async(f"{partner.name} {obs.location}", k=5)
                 res = await self.router.generate(
                     task="should_talk",
                     messages=builders.should_talk_prompt(agent, partner.name, memories),
@@ -150,8 +150,8 @@ class DecisionEngine:
     ) -> tuple[list[dict], dict]:
         """One LLM call produces the whole exchange (played back turn by
         turn in the UI later) + numeric relationship signals."""
-        a_mem = a.memory.retrieve(b.name, k=3)
-        b_mem = b.memory.retrieve(a.name, k=3)
+        a_mem = await a.memory.retrieve_async(b.name, k=3)
+        b_mem = await b.memory.retrieve_async(a.name, k=3)
         res = await self.router.generate(
             task="dialogue",
             messages=builders.dialogue_prompt(a, b, a_mem, b_mem),

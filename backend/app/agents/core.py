@@ -45,15 +45,33 @@ class MemoryItem:
 
 
 class EpisodicMemory:
-    """Append-only list + naive keyword top-k retrieval."""
+    """Append-only list + naive keyword top-k retrieval.
+
+    Two optional hooks wired by the persistence layer:
+      - on_add: called for every new memory (mirror to DB)
+      - vector_search: async (query, k) -> list[str]; when set,
+        retrieve_async delegates to pgvector instead of keywords.
+    """
 
     def __init__(self) -> None:
         self.items: list[MemoryItem] = []
         self.importance_since_reflection: int = 0
+        self.on_add = None            # Callable[[MemoryItem], None] | None
+        self.vector_search = None     # async (query, k) -> list[str] | None
 
     def add(self, item: MemoryItem) -> None:
         self.items.append(item)
         self.importance_since_reflection += item.importance
+        if self.on_add is not None:
+            self.on_add(item)
+
+    async def retrieve_async(self, query: str, k: int = 5) -> list[str]:
+        if self.vector_search is not None:
+            try:
+                return await self.vector_search(query, k)
+            except Exception:
+                pass  # DB hiccup -> keyword fallback below
+        return self.retrieve(query, k)
 
     def retrieve(self, query: str, k: int = 5) -> list[str]:
         """Score = keyword overlap + importance + recency. Same contract as
