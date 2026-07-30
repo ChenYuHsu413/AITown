@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Town — Field Station</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#E8EDE4; --panel:#F3F6EF; --ink:#22303A; --faint:#75857D;
+  --line:#C6CFC2; --amber:#B87413; --amber-soft:#B8741322;
+  --moss:#5F7D5B; --water:#A9C4C9; --night:#131F35;
+  --mono:'Spline Sans Mono',monospace; --body:'Instrument Sans',sans-serif;
+  --disp:'Bricolage Grotesque',sans-serif;
+}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{font-family:var(--body);background:var(--paper);color:var(--ink);display:flex;flex-direction:column;overflow:hidden}
+
+/* header */
+header{display:flex;align-items:center;gap:20px;padding:10px 18px;border-bottom:1px solid var(--line)}
+.wordmark{font-family:var(--disp);font-weight:700;font-size:20px;letter-spacing:.02em}
+.wordmark small{font-family:var(--mono);font-weight:400;font-size:10px;color:var(--faint);display:block;letter-spacing:.14em}
+#clock{font-family:var(--mono);font-size:22px;font-weight:500;min-width:150px}
+#daystrip{flex:1;height:6px;border:1px solid var(--line);border-radius:3px;position:relative;background:
+  linear-gradient(90deg,#131F35 0%,#131F35 20%,#c98a3a 27%,#f2ecd8 40%,#f2ecd8 62%,#c98a3a 75%,#131F35 85%,#131F35 100%)}
+#sun{position:absolute;top:-4px;width:12px;height:12px;border-radius:50%;background:var(--ink);border:2px solid var(--paper);transform:translateX(-50%)}
+.controls{display:flex;gap:6px}
+.controls button{font-family:var(--mono);font-size:12px;padding:6px 12px;background:var(--panel);
+  border:1px solid var(--line);border-radius:4px;color:var(--ink);cursor:pointer}
+.controls button.active{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.controls button:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
+
+/* layout */
+main{flex:1;display:grid;grid-template-columns:1fr 340px;min-height:0}
+#mapwrap{position:relative;min-width:0}
+#map{width:100%;height:100%;display:block}
+aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+.eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint);padding:10px 14px 6px}
+#feed{flex:1;overflow-y:auto;padding:0 14px 10px;font-size:13px;line-height:1.45}
+.ev{padding:5px 0;border-bottom:1px dashed var(--line);display:flex;gap:8px}
+.ev time{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;padding-top:1px}
+.ev.dialogue{border-left:3px solid var(--amber);padding-left:8px;background:var(--amber-soft)}
+.ev.reflection{border-left:3px solid var(--moss);padding-left:8px}
+
+/* inspector */
+#inspector{border-top:1px solid var(--line);max-height:52%;overflow-y:auto;padding-bottom:12px}
+#inspector .placeholder{padding:14px;font-size:13px;color:var(--faint)}
+#inspector h2{font-family:var(--disp);font-size:18px;padding:2px 14px 0}
+#inspector .sub{font-size:12px;color:var(--faint);padding:0 14px 8px}
+.bar{height:7px;background:var(--paper);border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--moss)}
+.bar.amber i{background:var(--amber)}
+.kv{display:grid;grid-template-columns:86px 1fr 34px;gap:8px;align-items:center;padding:3px 14px;font-size:12px}
+.kv b{font-weight:500}
+.mem{padding:4px 14px;font-size:12px;border-bottom:1px dashed var(--line)}
+.mem time{font-family:var(--mono);font-size:10px;color:var(--faint);margin-right:6px}
+.mem .imp{font-family:var(--mono);font-size:10px;color:var(--amber);margin-left:6px}
+.trace{margin:6px 14px;padding:8px;border:1px solid var(--line);border-radius:6px;font-size:12px;background:var(--paper)}
+.trace .m{font-family:var(--mono);font-size:10px;color:var(--faint)}
+.trace b{color:var(--amber)}
+
+/* cost strip */
+footer{display:flex;gap:26px;align-items:baseline;padding:8px 18px;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:12px;background:var(--panel)}
+footer .lab{font-size:10px;letter-spacing:.12em;color:var(--faint)}
+footer b{font-weight:500;font-size:14px}
+#rulespct b{color:var(--moss)}
+
+/* map svg */
+.loc-block{fill:var(--panel);stroke:var(--line)}
+.loc-label{font-family:var(--mono);font-size:11px;fill:var(--ink)}
+.loc-kind{font-family:var(--mono);font-size:9px;fill:var(--faint);letter-spacing:.1em}
+.road{stroke:var(--ink);stroke-opacity:.18;stroke-dasharray:3 5;fill:none}
+.agent{cursor:pointer}
+.agent circle{fill:var(--ink);stroke:var(--paper);stroke-width:2;transition:r .3s}
+.agent text{font-family:var(--mono);font-size:9px;fill:var(--paper);text-anchor:middle;pointer-events:none}
+.agent.talking .ring{fill:none;stroke:var(--amber);stroke-width:2;animation:pulse 1.6s infinite}
+.agent.sleeping circle{fill:var(--faint)}
+@keyframes pulse{0%{r:11;stroke-opacity:.9}100%{r:20;stroke-opacity:0}}
+.agent-name{font-family:var(--mono);font-size:9px;fill:var(--ink);text-anchor:middle}
+.bubble rect{fill:var(--ink);rx:6}
+.bubble text{font-family:var(--body);font-size:11px;fill:var(--paper)}
+@media (prefers-reduced-motion: reduce){.agent.talking .ring{animation:none;stroke-opacity:.7}
+  .agent-g{transition:none!important}}
+@media (max-width:860px){main{grid-template-columns:1fr}aside{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="wordmark">AI TOWN<small>FIELD STATION · 5 AGENTS</small></div>
+  <div id="clock">— —:—</div>
+  <div id="daystrip"><div id="sun" style="left:25%"></div></div>
+  <div class="controls">
+    <button id="btn-pause" title="Pause simulation">▮▮</button>
+    <button id="btn-1" title="1 sim-minute per second">1×</button>
+    <button id="btn-5" class="active" title="5 sim-minutes per second">5×</button>
+    <button id="btn-20" title="20 sim-minutes per second">20×</button>
+  </div>
+</header>
+
+<main>
+  <div id="mapwrap">
+    <svg id="map" viewBox="0 0 800 520" role="img" aria-label="Town map">
+      <rect width="800" height="520" fill="var(--paper)"/>
+      <path d="M -10 60 C 120 90, 90 240, 40 330 S 90 500, 30 530" stroke="var(--water)" stroke-width="26" fill="none" opacity=".8"/>
+      <g id="roads"></g>
+      <g id="locs"></g>
+      <g id="agents"></g>
+      <g id="bubbles"></g>
+      <rect id="nightfall" width="800" height="520" fill="var(--night)" opacity="0" pointer-events="none"/>
+    </svg>
+  </div>
+  <aside>
+    <div class="eyebrow">EVENT FEED</div>
+    <div id="feed"></div>
+    <div id="inspector">
+      <div class="eyebrow">AGENT INSPECTOR</div>
+      <div class="placeholder">Select an agent on the map to inspect memories, relationships, and decision traces.</div>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  <span><span class="lab">LLM CALLS</span> <b id="u-calls">0</b></span>
+  <span><span class="lab">CACHE HITS</span> <b id="u-cache">0</b></span>
+  <span><span class="lab">TOKENS IN/OUT</span> <b id="u-tok">0 / 0</b></span>
+  <span><span class="lab">EST. COST</span> <b id="u-cost">$0.000000</b></span>
+  <span id="rulespct"><span class="lab">DECISIONS BY RULES</span> <b id="u-rules">—</b></span>
+</footer>
+
+<script>
+const $=s=>document.querySelector(s);
+let LOCS={}, AGENTS={}, selected=null;
+
+/* ---------- websocket ---------- */
+const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
+ws.onmessage=e=>{
+  const msg=JSON.parse(e.data);
+  if(msg.type==='snapshot'){ buildMap(msg.locations); msg.events.forEach(addEvent); }
+  updateClock(msg.minute,msg.clock,msg.paused,msg.speed);
+  if(msg.agents) updateAgents(msg.agents);
+  if(msg.type==='tick') msg.events.forEach(ev=>{addEvent(ev); maybeBubble(ev);});
+};
+setInterval(()=>{ if(ws.readyState===1) ws.send('ping'); },15000);
+
+/* ---------- map ---------- */
+function buildMap(locations){
+  LOCS={}; const g=$('#locs'), roads=$('#roads');
+  g.innerHTML=''; roads.innerHTML='';
+  locations.forEach(l=>{LOCS[l.id]=l;});
+  // dashed footpaths between every pair through the cafe hub
+  const hub=LOCS['cafe']||locations[0];
+  locations.forEach(l=>{ if(l.id===hub.id) return;
+    const p=document.createElementNS('http://www.w3.org/2000/svg','path');
+    p.setAttribute('d',`M ${l.x} ${l.y} Q ${(l.x+hub.x)/2+18} ${(l.y+hub.y)/2-14} ${hub.x} ${hub.y}`);
+    p.setAttribute('class','road'); roads.appendChild(p);
+  });
+  locations.forEach(l=>{
+    const el=document.createElementNS('http://www.w3.org/2000/svg','g');
+    el.innerHTML=`<rect class="loc-block" x="${l.x-52}" y="${l.y-30}" width="104" height="46" rx="7"/>
+      <text class="loc-label" x="${l.x-44}" y="${l.y-12}">${l.name}</text>
+      <text class="loc-kind" x="${l.x-44}" y="${l.y+2}">${l.kind.toUpperCase()}</text>`;
+    g.appendChild(el);
+  });
+}
+function slotOffset(i,n){ const spread=Math.min(n,5); return (i-(spread-1)/2)*24; }
+function updateAgents(list){
+  const g=$('#agents');
+  const byLoc={};
+  list.forEach(a=>{(byLoc[a.location]=byLoc[a.location]||[]).push(a);});
+  list.forEach(a=>{
+    const peers=byLoc[a.location], idx=peers.findIndex(p=>p.id===a.id);
+    const x=a.x+slotOffset(idx,peers.length), y=a.y+30;
+    let el=AGENTS[a.id];
+    if(!el){
+      el=document.createElementNS('http://www.w3.org/2000/svg','g');
+      el.setAttribute('class','agent agent-g');
+      el.style.transition='transform 1s ease';
+      el.innerHTML=`<circle class="ring" r="11"/><circle r="9"/>
+        <text dy="3">${a.name[0]}</text><text class="agent-name" y="22">${a.name}</text>`;
+      el.addEventListener('click',()=>inspect(a.id));
+      g.appendChild(el); AGENTS[a.id]=el;
+    }
+    el.setAttribute('transform',`translate(${x},${y})`);
+    el.classList.toggle('talking',a.action==='talk');
+    el.classList.toggle('sleeping',a.action==='sleep');
+  });
+  if(selected) refreshInspector(selected,false);
+}
+
+/* ---------- daylight ---------- */
+function updateClock(minute,clock,paused,speed){
+  $('#clock').textContent=clock;
+  const mod=minute%1440, frac=mod/1440;
+  $('#sun').style.left=(frac*100)+'%';
+  // opacity 0 at 13:00, up to .45 deep night
+  const dist=Math.min(Math.abs(mod-780),1440-Math.abs(mod-780));
+  $('#nightfall').setAttribute('opacity',Math.min(.45,Math.max(0,(dist-260)/700)));
+  $('#btn-pause').classList.toggle('active',paused);
+  ['1','5','20'].forEach(s=>$('#btn-'+s).classList.toggle('active',!paused&&speed==+s));
+}
+
+/* ---------- feed ---------- */
+function addEvent(ev){
+  const feed=$('#feed');
+  const d=document.createElement('div');
+  d.className='ev '+ev.kind;
+  d.innerHTML=`<time>${ev.clock.replace('Day ','D')}</time><span></span>`;
+  d.lastChild.textContent=ev.text;
+  feed.appendChild(d);
+  while(feed.children.length>120) feed.removeChild(feed.firstChild);
+  feed.scrollTop=feed.scrollHeight;
+}
+
+/* ---------- speech bubbles ---------- */
+function maybeBubble(ev){
+  if(ev.kind!=='dialogue') return;
+  const m=ev.text.match(/💬 (\w+): (.*)/); if(!m) return;
+  const agentEl=Object.entries(AGENTS).find(([id])=>id===m[1].toLowerCase());
+  if(!agentEl) return;
+  const tf=agentEl[1].getAttribute('transform').match(/([\d.]+),([\d.]+)/);
+  const x=+tf[1], y=+tf[2]-34, text=m[2].slice(0,34)+(m[2].length>34?'…':'');
+  const g=document.createElementNS('http://www.w3.org/2000/svg','g');
+  g.setAttribute('class','bubble');
+  const w=text.length*6.1+16;
+  g.innerHTML=`<rect x="${x-w/2}" y="${y-16}" width="${w}" height="20" rx="6"/>
+    <text x="${x-w/2+8}" y="${y-2}">${text.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</text>`;
+  $('#bubbles').appendChild(g);
+  setTimeout(()=>g.remove(),3800);
+}
+
+/* ---------- inspector ---------- */
+async function inspect(id){ selected=id; refreshInspector(id,true); }
+async function refreshInspector(id,scroll){
+  const r=await fetch('/api/agents/'+id); if(!r.ok) return;
+  const a=await r.json();
+  const box=$('#inspector');
+  box.innerHTML=`<div class="eyebrow">AGENT INSPECTOR</div>
+    <h2>${a.name}</h2>
+    <div class="sub">${a.age} · ${a.occupation} · ${a.traits.join(', ')}</div>
+    <div class="kv"><b>Energy</b><div class="bar"><i style="width:${a.state.energy}%"></i></div><span>${a.state.energy}</span></div>
+    <div class="kv"><b>Doing</b><span>${a.state.action} @ ${a.state.location}</span><span></span></div>
+    <div class="eyebrow">RELATIONSHIPS</div>
+    ${a.relationships.map(r=>`
+      <div class="kv"><b>${r.name}</b><div class="bar amber"><i style="width:${r.friendship}%"></i></div><span>${r.friendship}</span></div>`).join('')||'<div class="placeholder">No relationships yet.</div>'}
+    <div class="eyebrow">RECENT MEMORIES</div>
+    ${a.memories.map(m=>`<div class="mem"><time>${m.clock.replace('Day ','D')}</time>${m.text}<span class="imp">imp ${m.importance}</span></div>`).join('')}
+    <div class="eyebrow">DECISION TRACES</div>
+    ${a.last_decisions.map(t=>`<div class="trace">
+      <div class="m">${t.clock} · L${t.level} · ${t.model}</div>
+      ${t.observation}<br><b>→ ${t.action}</b> — ${t.reason}</div>`).join('')||'<div class="placeholder">No decisions yet.</div>'}`;
+  if(scroll) box.scrollTop=0;
+}
+
+/* ---------- controls & usage ---------- */
+function ctl(body){ fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
+$('#btn-pause').onclick=()=>ctl({cmd:'pause'});
+$('#btn-1').onclick=()=>ctl({cmd:'speed',speed:1});
+$('#btn-5').onclick=()=>ctl({cmd:'speed',speed:5});
+$('#btn-20').onclick=()=>ctl({cmd:'speed',speed:20});
+
+async function pollUsage(){
+  try{
+    const u=await (await fetch('/api/usage')).json();
+    $('#u-calls').textContent=u.calls;
+    $('#u-cache').textContent=u.cache_hits;
+    $('#u-tok').textContent=`${u.input_tokens.toLocaleString()} / ${u.output_tokens.toLocaleString()}`;
+    $('#u-cost').textContent='$'+u.estimated_cost.toFixed(6);
+    $('#u-rules').textContent=u.decisions?Math.round(u.rules_only/u.decisions*100)+'%':'—';
+  }catch(e){}
+}
+setInterval(pollUsage,4000); pollUsage();
+</script>
+</body>
+</html>
