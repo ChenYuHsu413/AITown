@@ -47,6 +47,7 @@ class Decision:
     reason: str = ""
     narrative_verb: str = ""           # non-routine story beat for the engine to publish (e.g. "seek_out")
     narrative_target: str = ""         # agent_id the narrative beat is aimed at
+    confront_text: str = ""            # opener injected into the dialogue when confronting over a rumor
 
 
 @dataclass
@@ -87,6 +88,17 @@ class DecisionEngine:
         model_used = "rules"
 
         decision: Decision | None = None
+
+        # ---- Level 2 (resume): chasing a rumor's source to confront ---
+        if agent.state.seek_target and agent.state.current_action != "sleep":
+            seek_dec = self._resume_seek(agent, world)
+            if seek_dec is not None:
+                self.traces.append(DecisionTrace(
+                    minute=now, agent_id=agent.id, observation=obs_text,
+                    retrieved_memories=[], decision=seek_dec, model="rules",
+                ))
+                return seek_dec
+            # gave up (source unreachable) -> fall through to the routine
 
         # ---- Level 0: hard rules --------------------------------------
         if agent.state.current_action == "sleep" and entry.action == "sleep":
@@ -150,13 +162,28 @@ class DecisionEngine:
             )
             model_used = f"{res.provider}/{res.model}"
             action = str(res.parsed.get("action", "")) if isinstance(res.parsed, dict) else ""
-            if action == "seek_out" and told_by is not None:
-                decision = Decision(
-                    action="move", target_location=told_by.state.location,
-                    duration=10, level=2,
-                    reason=f"heard a rumor about self; seeking out {told_by.name}",
-                    narrative_verb="seek_out", narrative_target=told_by.id,
-                )
+            # Confront the SOURCE of the rumor, not just the messenger. Fall back
+            # to the messenger only if the origin is unknown (or is the messenger).
+            origin = world.agents.get(rumor.origin) if rumor else None
+            target = origin or told_by
+            if action == "seek_out" and target is not None:
+                confront_text = f"I heard people are saying: {heard}. Did this come from you?"
+                if target.state.location == agent.state.location and target.state.current_action != "sleep":
+                    decision = Decision(  # already together -> confront right now
+                        action="talk", talk_partner=target.id, duration=TALK_DURATION_MIN,
+                        level=2, reason=f"confronting {target.name} about a rumor",
+                        confront_text=confront_text,
+                    )
+                else:                     # elsewhere -> go find them, then confront on arrival
+                    agent.state.seek_target = target.id
+                    agent.state.seek_text = confront_text
+                    agent.state.seek_tries = 0
+                    decision = Decision(
+                        action="move", target_location=target.state.location,
+                        duration=10, level=2,
+                        reason=f"heard a rumor about self; seeking out {target.name}",
+                        narrative_verb="seek_out", narrative_target=target.id,
+                    )
             # continue_routine: leave decision as-is so the routine default fills it.
 
         # ---- Level 0 default: follow the routine ----------------------
@@ -184,6 +211,33 @@ class DecisionEngine:
         )
         self.traces.append(trace)
         return decision
+
+    def _resume_seek(self, agent: Agent, world: World) -> Decision | None:
+        """Continue a confrontation-in-progress. Returns a talk (reached them),
+        a move (chase again, max 2 tries), or None (gave up -> clears state)."""
+        target = world.agents.get(agent.state.seek_target)
+        text = agent.state.seek_text
+        if target is not None and target.state.location == agent.state.location \
+                and target.state.current_action != "sleep":
+            agent.state.seek_target = ""
+            agent.state.seek_text = ""
+            agent.state.seek_tries = 0
+            return Decision(
+                action="talk", talk_partner=target.id, duration=TALK_DURATION_MIN,
+                level=2, reason=f"confronting {target.name} about a rumor",
+                confront_text=text,
+            )
+        if target is not None and agent.state.seek_tries < 2:
+            agent.state.seek_tries += 1
+            return Decision(
+                action="move", target_location=target.state.location, duration=10,
+                level=2, reason=f"still looking for {target.name}",
+                narrative_verb="seek_out", narrative_target=target.id,
+            )
+        agent.state.seek_target = ""   # unreachable -> give up
+        agent.state.seek_text = ""
+        agent.state.seek_tries = 0
+        return None
 
     # ---- Level 2: one-call conversation ------------------------------
 
@@ -257,13 +311,14 @@ class DecisionEngine:
         return {"rumor_id": rumor.id, "text": text, "from": a.id, "to": b.id}
 
     async def run_conversation(
-        self, a: Agent, b: Agent, world: World, now: int
+        self, a: Agent, b: Agent, world: World, now: int, confront_text: str | None = None,
     ) -> tuple[list[dict], dict, list[dict]]:
         """One LLM call produces the whole exchange (played back turn by
         turn in the UI later) + numeric relationship signals. Gossip flows
         both ways: each side may pass the other a rumor. ``shared_rumors``
         (0-2 entries, one per direction) carries the passed-on wordings for
-        the engine to publish."""
+        the engine to publish. ``confront_text``, when set, is what ``a`` opens
+        with (a rumor confrontation) and takes priority over any forward share."""
         fwd = await self._maybe_share_rumor(a, b, now)   # a -> b
         rev = await self._maybe_share_rumor(b, a, now)   # b -> a (lets a stationary initiator hear too)
         shared_rumors = [sr for sr in (fwd, rev) if sr]
@@ -273,7 +328,7 @@ class DecisionEngine:
             task="dialogue",
             messages=builders.dialogue_prompt(
                 a, b, a_mem, b_mem,
-                a_wants_to_mention=fwd["text"] if fwd else None,
+                a_wants_to_mention=confront_text or (fwd["text"] if fwd else None),
                 b_wants_to_mention=rev["text"] if rev else None,
             ),
             agent_id=a.id,

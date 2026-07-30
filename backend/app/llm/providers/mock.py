@@ -79,6 +79,11 @@ class MockProvider(LLMProvider):
             if rng.random() < 0.5:
                 turns.append({"speaker": b, "text": rng.choice(_CONCERNS)})
                 turns.append({"speaker": a, "text": "I'm here if you want to talk about it."})
+            # If A brought something up (a rumor / confrontation), have A actually say it.
+            raw = " ".join(m.get("content", "") for m in messages)
+            if "wants to bring up: " in raw:
+                mention = raw.split("wants to bring up: ", 1)[1].split("\n", 1)[0].strip()
+                turns = [{"speaker": a, "text": mention}] + turns
             parsed = {
                 "turns": turns,
                 "sentiment": round(rng.uniform(0.2, 0.9), 2),

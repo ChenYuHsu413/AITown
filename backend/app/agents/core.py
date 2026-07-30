@@ -35,6 +35,9 @@ class AgentState:
     busy_until: int = 0                     # sim minute; can't be interrupted before
     last_talk_minute: dict[str, int] = field(default_factory=dict)  # per-partner cooldown
     pending_concern: dict | None = None     # {"rumor_id", "told_by"} when a rumor about self must be reacted to
+    seek_target: str = ""                   # agent_id being chased down to confront over a rumor
+    seek_text: str = ""                     # the confrontation opener to use on arrival
+    seek_tries: int = 0                     # chase attempts so far (give up after 2)
 
 
 @dataclass

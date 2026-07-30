@@ -191,7 +191,7 @@ class SimulationEngine:
         decision = await self.decisions.decide(agent, self.world, obs, self.now)
 
         if decision.action == "talk" and decision.talk_partner:
-            await self._handle_conversation(agent, decision.talk_partner)
+            await self._handle_conversation(agent, decision.talk_partner, decision.confront_text)
         else:
             if decision.narrative_verb == "seek_out":
                 self._publish(
@@ -219,13 +219,15 @@ class SimulationEngine:
 
         self.scheduler.schedule(agent.id, self.now + decision.duration)
 
-    async def _handle_conversation(self, a: Agent, partner_id: str) -> None:
+    async def _handle_conversation(self, a: Agent, partner_id: str, confront_text: str = "") -> None:
         b = self.world.agents[partner_id]
         if b.state.busy_until > self.now or b.state.current_action == "sleep":
             # Partner got occupied since the decision; retry shortly.
             self.scheduler.schedule(a.id, self.now + 5)
             return
-        turns, signals, shared_rumors = await self.decisions.run_conversation(a, b, self.world, self.now)
+        turns, signals, shared_rumors = await self.decisions.run_conversation(
+            a, b, self.world, self.now, confront_text=confront_text or None,
+        )
         a.state.current_action = "talk"
         b.state.current_action = "talk"
         duration = max(6, len(turns) * 2)
