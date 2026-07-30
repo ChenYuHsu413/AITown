@@ -158,38 +158,50 @@ const I18N={
     'title.s20':'每秒 20 模擬分鐘','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
   },
 };
-const LOC_NAMES={'Riverside House':'河畔之家','Hillside Apartment':'山丘公寓','Moonlight Cafe':'月光咖啡館',
-  'Townsend Office':'湯森辦公室','Old Oak Park':'老橡樹公園'};
+const LOC_ZH={home_a:'河畔之家',home_b:'山丘公寓',cafe:'月光咖啡館',office:'湯森辦公室',park:'老橡樹公園'};  // keyed by location id
 const KINDS={home:'住家',cafe:'咖啡館',office:'辦公室',park:'公園'};
 const ACTIONS={work:'工作',eat:'用餐',move:'移動',sleep:'睡眠',rest:'休息',idle:'閒置',talk:'交談'};
 const OCCS={'Cafe Owner':'咖啡館老闆','Office Worker':'上班族','Doctor':'醫生','Retired Teacher':'退休教師','Art Student':'藝術系學生'};
 const TRAITS={curious:'好奇',friendly:'友善',gossipy:'八卦',quiet:'安靜',loyal:'忠誠',stressed:'焦慮',
   calm:'冷靜',observant:'敏銳',helpful:'樂於助人',wise:'睿智',talkative:'健談',nostalgic:'念舊',
   creative:'有創意',dreamy:'愛幻想','night-owl':'夜貓子'};
+// Event Contract v1 templates, keyed by ev.verb. (a)ctor, (l)ocation, (tg)target, (sp)eech.
+// speech is model-generated free text — inserted verbatim, never translated.
+const EV_TMPL={
+  en:{
+    sleep:(a,l)=>`${a} went to sleep at ${l}`, eat:(a,l)=>`${a} is eating at ${l}`,
+    work:(a,l)=>`${a} is working at ${l}`, rest:(a,l)=>`${a} is resting at ${l}`,
+    idle:(a,l)=>`${a} is idling at ${l}`, arrive:(a,l)=>`${a} → ${l}`,
+    talk_start:(a,l,tg)=>`${a} started talking with ${tg} at ${l}`,
+    say:(a,l,tg,sp)=>`💬 ${a}: ${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}: ${sp}`,
+  },
+  zh:{
+    sleep:(a,l)=>`${a} 在 ${l} 就寢`, eat:(a,l)=>`${a} 在 ${l} 用餐`,
+    work:(a,l)=>`${a} 在 ${l} 工作`, rest:(a,l)=>`${a} 在 ${l} 休息`,
+    idle:(a,l)=>`${a} 在 ${l} 閒晃`, arrive:(a,l)=>`${a} 前往 ${l}`,
+    talk_start:(a,l,tg)=>`${a} 在 ${l} 開始與 ${tg} 交談`,
+    say:(a,l,tg,sp)=>`💬 ${a}：${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}：${sp}`,
+  },
+};
 let LANG=localStorage.getItem('lang')||(navigator.language&&navigator.language.startsWith('zh')?'zh':'en');
 const t=k=>(I18N[LANG]&&I18N[LANG][k])??I18N.en[k]??k;
-const locName=n=>LANG==='zh'?(LOC_NAMES[n]||n):n;
+const locById=(id,fb)=>LANG==='zh'?(LOC_ZH[id]||fb||id):(fb||id);           // events + map (have the id)
+const locByEn=n=>{ if(LANG!=='zh') return n;                                  // inspector (only has English name)
+  const h=Object.values(LOCS).find(l=>l.name===n); return (h&&LOC_ZH[h.id])||n; };
 const occName=o=>LANG==='zh'?(OCCS[o]||o):o;
 const actName=a=>LANG==='zh'?(ACTIONS[a]||a):a;
 const traitName=x=>LANG==='zh'?(TRAITS[x]||x):x;
-// Translate a backend-rendered feed line; unknown patterns pass through unchanged.
-function evText(raw){
-  if(LANG!=='zh') return raw;
-  let m;
-  if((m=raw.match(/^(.+?) → (.+)$/))) return `${m[1]} 前往 ${locName(m[2])}`;
-  if((m=raw.match(/^(.+?) went to sleep at (.+)$/))) return `${m[1]} 在 ${locName(m[2])} 就寢`;
-  if((m=raw.match(/^(.+?) is eating at (.+)$/))) return `${m[1]} 在 ${locName(m[2])} 用餐`;
-  if((m=raw.match(/^(.+?) is working at (.+)$/))) return `${m[1]} 在 ${locName(m[2])} 工作`;
-  if((m=raw.match(/^(.+?) is resting at (.+)$/))) return `${m[1]} 在 ${locName(m[2])} 休息`;
-  if((m=raw.match(/^(.+?) is idling at (.+)$/))) return `${m[1]} 在 ${locName(m[2])} 閒晃`;
-  if((m=raw.match(/^(.+?) started talking with (.+?) at (.+)$/))) return `${m[1]} 在 ${locName(m[3])} 開始與 ${m[2]} 交談`;
-  return raw; // dialogue (💬) / reflection (💭) stay in the language the model produced
+// Render one structured event via its verb template. Unknown verb → deprecated ev.text fallback.
+function evText(ev){
+  const tmpl=(EV_TMPL[LANG]||EV_TMPL.en)[ev.verb];
+  if(!tmpl) return ev.text||'';   // reserved for future verbs (Contract §fallback)
+  return tmpl(ev.actor_name||ev.actor, locById(ev.location,ev.location_name), ev.target_name||ev.target, ev.speech||'');
 }
 // Translate memory text where it follows a known template.
 function memText(raw){
   if(LANG!=='zh') return raw;
   const m=raw.match(/^Talked with (.+?) at (.+?)\.$/);
-  return m?`與 ${m[1]} 在 ${locName(m[2])} 交談。`:raw;
+  return m?`與 ${m[1]} 在 ${locByEn(m[2])} 交談。`:raw;
 }
 function applyLang(){
   document.querySelectorAll('[data-i18n]').forEach(el=>{el.textContent=t(el.dataset.i18n);});
@@ -199,7 +211,7 @@ function applyLang(){
   $('#btn-lang').title=t('title.lang');
   document.documentElement.lang=LANG==='zh'?'zh-Hant':'en';
   if(LOC_LIST.length) buildMap(LOC_LIST);                          // relabel map
-  $('#feed').querySelectorAll('.ev').forEach(d=>{d.lastChild.textContent=evText(d.dataset.raw);});
+  $('#feed').querySelectorAll('.ev').forEach(d=>{d.lastChild.textContent=evText(JSON.parse(d.dataset.ev));});
   if(selected) refreshInspector(selected,false);                  // else static placeholder already updated
 }
 function toggleLang(){ LANG=LANG==='en'?'zh':'en'; localStorage.setItem('lang',LANG); applyLang(); }
@@ -230,7 +242,7 @@ function buildMap(locations){
   locations.forEach(l=>{
     const el=document.createElementNS('http://www.w3.org/2000/svg','g');
     el.innerHTML=`<rect class="loc-block" x="${l.x-52}" y="${l.y-30}" width="104" height="46" rx="7"/>
-      <text class="loc-label" x="${l.x-44}" y="${l.y-12}">${locName(l.name)}</text>
+      <text class="loc-label" x="${l.x-44}" y="${l.y-12}">${locById(l.id,l.name)}</text>
       <text class="loc-kind" x="${l.x-44}" y="${l.y+2}">${LANG==='zh'?(KINDS[l.kind]||l.kind):l.kind.toUpperCase()}</text>`;
     g.appendChild(el);
   });
@@ -277,9 +289,9 @@ function addEvent(ev){
   const feed=$('#feed');
   const d=document.createElement('div');
   d.className='ev '+ev.kind;
-  d.dataset.raw=ev.text;
+  d.dataset.ev=JSON.stringify(ev);                 // stash for re-render on language switch
   d.innerHTML=`<time>${ev.clock.replace('Day ','D')}</time><span></span>`;
-  d.lastChild.textContent=evText(ev.text);
+  d.lastChild.textContent=evText(ev);
   feed.appendChild(d);
   while(feed.children.length>120) feed.removeChild(feed.firstChild);
   feed.scrollTop=feed.scrollHeight;
@@ -288,11 +300,10 @@ function addEvent(ev){
 /* ---------- speech bubbles ---------- */
 function maybeBubble(ev){
   if(ev.kind!=='dialogue') return;
-  const m=ev.text.match(/💬 (\w+): (.*)/); if(!m) return;
-  const agentEl=Object.entries(AGENTS).find(([id])=>id===m[1].toLowerCase());
-  if(!agentEl) return;
-  const tf=agentEl[1].getAttribute('transform').match(/([\d.]+),([\d.]+)/);
-  const x=+tf[1], y=+tf[2]-34, text=m[2].slice(0,34)+(m[2].length>34?'…':'');
+  const el=AGENTS[ev.actor]; if(!el) return;            // position by agent id, no name-string matching
+  const tf=el.getAttribute('transform').match(/([\d.]+),([\d.]+)/); if(!tf) return;
+  const speech=ev.speech||'';
+  const x=+tf[1], y=+tf[2]-34, text=speech.slice(0,34)+(speech.length>34?'…':'');
   const g=document.createElementNS('http://www.w3.org/2000/svg','g');
   g.setAttribute('class','bubble');
   const w=text.length*6.1+16;
@@ -312,7 +323,7 @@ async function refreshInspector(id,scroll){
     <h2>${a.name}</h2>
     <div class="sub">${a.age} · ${occName(a.occupation)} · ${a.traits.map(traitName).join(t('listSep'))}</div>
     <div class="kv"><b>${t('energy')}</b><div class="bar"><i style="width:${a.state.energy}%"></i></div><span>${a.state.energy}</span></div>
-    <div class="kv"><b>${t('doing')}</b><span>${actName(a.state.action)} @ ${locName(a.state.location)}</span><span></span></div>
+    <div class="kv"><b>${t('doing')}</b><span>${actName(a.state.action)} @ ${locByEn(a.state.location)}</span><span></span></div>
     <div class="eyebrow">${t('relationships')}</div>
     ${a.relationships.map(r=>`
       <div class="kv"><b>${r.name}</b><div class="bar amber"><i style="width:${r.friendship}%"></i></div><span>${r.friendship}</span></div>`).join('')||`<div class="placeholder">${t('noRelationships')}</div>`}
