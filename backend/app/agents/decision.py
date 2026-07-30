@@ -258,19 +258,23 @@ class DecisionEngine:
 
     async def run_conversation(
         self, a: Agent, b: Agent, world: World, now: int
-    ) -> tuple[list[dict], dict, dict | None]:
+    ) -> tuple[list[dict], dict, list[dict]]:
         """One LLM call produces the whole exchange (played back turn by
-        turn in the UI later) + numeric relationship signals. A rumor may
-        be seeded into the exchange first; when so, ``shared_rumor`` carries
-        the passed-on wording for the engine to publish."""
-        shared_rumor = await self._maybe_share_rumor(a, b, now)
+        turn in the UI later) + numeric relationship signals. Gossip flows
+        both ways: each side may pass the other a rumor. ``shared_rumors``
+        (0-2 entries, one per direction) carries the passed-on wordings for
+        the engine to publish."""
+        fwd = await self._maybe_share_rumor(a, b, now)   # a -> b
+        rev = await self._maybe_share_rumor(b, a, now)   # b -> a (lets a stationary initiator hear too)
+        shared_rumors = [sr for sr in (fwd, rev) if sr]
         a_mem = await a.memory.retrieve_async(b.name, k=3)
         b_mem = await b.memory.retrieve_async(a.name, k=3)
         res = await self.router.generate(
             task="dialogue",
             messages=builders.dialogue_prompt(
                 a, b, a_mem, b_mem,
-                a_wants_to_mention=shared_rumor["text"] if shared_rumor else None,
+                a_wants_to_mention=fwd["text"] if fwd else None,
+                b_wants_to_mention=rev["text"] if rev else None,
             ),
             agent_id=a.id,
             sim_minute=now,
@@ -302,7 +306,7 @@ class DecisionEngine:
         b.apply_conversation_signals(a.id, **signals)
         a.state.last_talk_minute[b.id] = now
         b.state.last_talk_minute[a.id] = now
-        return turns, signals, shared_rumor
+        return turns, signals, shared_rumors
 
     # ---- Level 3: reflection -----------------------------------------
 

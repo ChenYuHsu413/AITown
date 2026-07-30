@@ -225,7 +225,7 @@ class SimulationEngine:
             # Partner got occupied since the decision; retry shortly.
             self.scheduler.schedule(a.id, self.now + 5)
             return
-        turns, signals, shared_rumor = await self.decisions.run_conversation(a, b, self.world, self.now)
+        turns, signals, shared_rumors = await self.decisions.run_conversation(a, b, self.world, self.now)
         a.state.current_action = "talk"
         b.state.current_action = "talk"
         duration = max(6, len(turns) * 2)
@@ -234,10 +234,12 @@ class SimulationEngine:
         self._publish(
             "action", "talk_start", actor=a, target=b, location_id=a.state.location
         )
-        if shared_rumor:
+        for sr in shared_rumors:  # one event per direction actually shared
             self._publish(
-                "action", "share_rumor", actor=a, target=b,
-                location_id=a.state.location, text=shared_rumor["text"],
+                "action", "share_rumor",
+                actor=self.world.agents.get(sr["from"]),
+                target=self.world.agents.get(sr["to"]),
+                location_id=a.state.location, text=sr["text"],
             )
         by_name = {a.name.lower(): a, b.name.lower(): b}
         for i, turn in enumerate(turns):

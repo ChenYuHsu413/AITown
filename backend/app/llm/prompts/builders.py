@@ -58,7 +58,7 @@ def should_talk_prompt(agent: "Agent", other_name: str, memories: list[str]) -> 
 
 def dialogue_prompt(
     a: "Agent", b: "Agent", a_mem: list[str], b_mem: list[str], max_turns: int = 4,
-    a_wants_to_mention: str | None = None,
+    a_wants_to_mention: str | None = None, b_wants_to_mention: str | None = None,
 ) -> list[dict]:
     user = (
         f"Simulate a conversation between {a.profile.name} and {b.profile.name}. "
@@ -68,6 +68,8 @@ def dialogue_prompt(
     )
     if a_wants_to_mention:
         user += f"\n{a.profile.name} wants to bring up: {a_wants_to_mention}"
+    if b_wants_to_mention:
+        user += f"\n{b.profile.name} wants to bring up: {b_wants_to_mention}"
     return [
         {
             "role": "system",
