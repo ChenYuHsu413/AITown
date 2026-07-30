@@ -89,14 +89,15 @@ footer b{font-weight:500;font-size:14px}
 </head>
 <body>
 <header>
-  <div class="wordmark">AI TOWN<small>FIELD STATION · 5 AGENTS</small></div>
+  <div class="wordmark">AI TOWN<small data-i18n="subtitle">FIELD STATION · 5 AGENTS</small></div>
   <div id="clock">— —:—</div>
   <div id="daystrip"><div id="sun" style="left:25%"></div></div>
   <div class="controls">
-    <button id="btn-pause" title="Pause simulation">▮▮</button>
-    <button id="btn-1" title="1 sim-minute per second">1×</button>
-    <button id="btn-5" class="active" title="5 sim-minutes per second">5×</button>
-    <button id="btn-20" title="20 sim-minutes per second">20×</button>
+    <button id="btn-pause" data-i18n-title="title.pause" title="Pause simulation">▮▮</button>
+    <button id="btn-1" data-i18n-title="title.s1" title="1 sim-minute per second">1×</button>
+    <button id="btn-5" class="active" data-i18n-title="title.s5" title="5 sim-minutes per second">5×</button>
+    <button id="btn-20" data-i18n-title="title.s20" title="20 sim-minutes per second">20×</button>
+    <button id="btn-lang" title="Switch language">中</button>
   </div>
 </header>
 
@@ -113,26 +114,95 @@ footer b{font-weight:500;font-size:14px}
     </svg>
   </div>
   <aside>
-    <div class="eyebrow">EVENT FEED</div>
+    <div class="eyebrow" data-i18n="feedTitle">EVENT FEED</div>
     <div id="feed"></div>
     <div id="inspector">
-      <div class="eyebrow">AGENT INSPECTOR</div>
-      <div class="placeholder">Select an agent on the map to inspect memories, relationships, and decision traces.</div>
+      <div class="eyebrow" data-i18n="inspectorTitle">AGENT INSPECTOR</div>
+      <div class="placeholder" data-i18n="inspectorPlaceholder">Select an agent on the map to inspect memories, relationships, and decision traces.</div>
     </div>
   </aside>
 </main>
 
 <footer>
-  <span><span class="lab">LLM CALLS</span> <b id="u-calls">0</b></span>
-  <span><span class="lab">CACHE HITS</span> <b id="u-cache">0</b></span>
-  <span><span class="lab">TOKENS IN/OUT</span> <b id="u-tok">0 / 0</b></span>
-  <span><span class="lab">EST. COST</span> <b id="u-cost">$0.000000</b></span>
-  <span id="rulespct"><span class="lab">DECISIONS BY RULES</span> <b id="u-rules">—</b></span>
+  <span><span class="lab" data-i18n="footer.calls">LLM CALLS</span> <b id="u-calls">0</b></span>
+  <span><span class="lab" data-i18n="footer.cache">CACHE HITS</span> <b id="u-cache">0</b></span>
+  <span><span class="lab" data-i18n="footer.tokens">TOKENS IN/OUT</span> <b id="u-tok">0 / 0</b></span>
+  <span><span class="lab" data-i18n="footer.cost">EST. COST</span> <b id="u-cost">$0.000000</b></span>
+  <span id="rulespct"><span class="lab" data-i18n="footer.rules">DECISIONS BY RULES</span> <b id="u-rules">—</b></span>
 </footer>
 
 <script>
 const $=s=>document.querySelector(s);
-let LOCS={}, AGENTS={}, selected=null;
+let LOCS={}, AGENTS={}, selected=null, LOC_LIST=[];
+
+/* ---------- i18n ---------- */
+const I18N={
+  en:{
+    subtitle:'FIELD STATION · 5 AGENTS', feedTitle:'EVENT FEED', inspectorTitle:'AGENT INSPECTOR',
+    inspectorPlaceholder:'Select an agent on the map to inspect memories, relationships, and decision traces.',
+    energy:'Energy', doing:'Doing', relationships:'RELATIONSHIPS', noRelationships:'No relationships yet.',
+    recentMemories:'RECENT MEMORIES', decisionTraces:'DECISION TRACES', noDecisions:'No decisions yet.', imp:'imp',
+    'footer.calls':'LLM CALLS','footer.cache':'CACHE HITS','footer.tokens':'TOKENS IN/OUT',
+    'footer.cost':'EST. COST','footer.rules':'DECISIONS BY RULES',
+    'title.pause':'Pause simulation','title.s1':'1 sim-minute per second','title.s5':'5 sim-minutes per second',
+    'title.s20':'20 sim-minutes per second','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
+  },
+  zh:{
+    subtitle:'田野觀測站 · 5 位智能體', feedTitle:'事件動態', inspectorTitle:'智能體檢視器',
+    inspectorPlaceholder:'點選地圖上的智能體，檢視其記憶、關係與決策軌跡。',
+    energy:'精力', doing:'狀態', relationships:'人際關係', noRelationships:'尚無人際關係。',
+    recentMemories:'近期記憶', decisionTraces:'決策軌跡', noDecisions:'尚無決策。', imp:'重要度',
+    'footer.calls':'LLM 呼叫','footer.cache':'快取命中','footer.tokens':'輸入/輸出 Token',
+    'footer.cost':'預估成本','footer.rules':'規則決策佔比',
+    'title.pause':'暫停模擬','title.s1':'每秒 1 模擬分鐘','title.s5':'每秒 5 模擬分鐘',
+    'title.s20':'每秒 20 模擬分鐘','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
+  },
+};
+const LOC_NAMES={'Riverside House':'河畔之家','Hillside Apartment':'山丘公寓','Moonlight Cafe':'月光咖啡館',
+  'Townsend Office':'湯森辦公室','Old Oak Park':'老橡樹公園'};
+const KINDS={home:'住家',cafe:'咖啡館',office:'辦公室',park:'公園'};
+const ACTIONS={work:'工作',eat:'用餐',move:'移動',sleep:'睡眠',rest:'休息',idle:'閒置',talk:'交談'};
+const OCCS={'Cafe Owner':'咖啡館老闆','Office Worker':'上班族','Doctor':'醫生','Retired Teacher':'退休教師','Art Student':'藝術系學生'};
+const TRAITS={curious:'好奇',friendly:'友善',gossipy:'八卦',quiet:'安靜',loyal:'忠誠',stressed:'焦慮',
+  calm:'冷靜',observant:'敏銳',helpful:'樂於助人',wise:'睿智',talkative:'健談',nostalgic:'念舊',
+  creative:'有創意',dreamy:'愛幻想','night-owl':'夜貓子'};
+let LANG=localStorage.getItem('lang')||(navigator.language&&navigator.language.startsWith('zh')?'zh':'en');
+const t=k=>(I18N[LANG]&&I18N[LANG][k])??I18N.en[k]??k;
+const locName=n=>LANG==='zh'?(LOC_NAMES[n]||n):n;
+const occName=o=>LANG==='zh'?(OCCS[o]||o):o;
+const actName=a=>LANG==='zh'?(ACTIONS[a]||a):a;
+const traitName=x=>LANG==='zh'?(TRAITS[x]||x):x;
+// Translate a backend-rendered feed line; unknown patterns pass through unchanged.
+function evText(raw){
+  if(LANG!=='zh') return raw;
+  let m;
+  if((m=raw.match(/^(.+?) → (.+)$/))) return `${m[1]} 前往 ${locName(m[2])}`;
+  if((m=raw.match(/^(.+?) went to sleep at (.+)$/))) return `${m[1]} 在 ${locName(m[2])} 就寢`;
+  if((m=raw.match(/^(.+?) is eating at (.+)$/))) return `${m[1]} 在 ${locName(m[2])} 用餐`;
+  if((m=raw.match(/^(.+?) is working at (.+)$/))) return `${m[1]} 在 ${locName(m[2])} 工作`;
+  if((m=raw.match(/^(.+?) is resting at (.+)$/))) return `${m[1]} 在 ${locName(m[2])} 休息`;
+  if((m=raw.match(/^(.+?) is idling at (.+)$/))) return `${m[1]} 在 ${locName(m[2])} 閒晃`;
+  if((m=raw.match(/^(.+?) started talking with (.+?) at (.+)$/))) return `${m[1]} 在 ${locName(m[3])} 開始與 ${m[2]} 交談`;
+  return raw; // dialogue (💬) / reflection (💭) stay in the language the model produced
+}
+// Translate memory text where it follows a known template.
+function memText(raw){
+  if(LANG!=='zh') return raw;
+  const m=raw.match(/^Talked with (.+?) at (.+?)\.$/);
+  return m?`與 ${m[1]} 在 ${locName(m[2])} 交談。`:raw;
+}
+function applyLang(){
+  document.querySelectorAll('[data-i18n]').forEach(el=>{el.textContent=t(el.dataset.i18n);});
+  document.querySelectorAll('[data-i18n-title]').forEach(el=>{el.title=t(el.dataset.i18nTitle);});
+  $('#map').setAttribute('aria-label',t('mapAria'));
+  $('#btn-lang').textContent=LANG==='en'?'中':'EN';
+  $('#btn-lang').title=t('title.lang');
+  document.documentElement.lang=LANG==='zh'?'zh-Hant':'en';
+  if(LOC_LIST.length) buildMap(LOC_LIST);                          // relabel map
+  $('#feed').querySelectorAll('.ev').forEach(d=>{d.lastChild.textContent=evText(d.dataset.raw);});
+  if(selected) refreshInspector(selected,false);                  // else static placeholder already updated
+}
+function toggleLang(){ LANG=LANG==='en'?'zh':'en'; localStorage.setItem('lang',LANG); applyLang(); }
 
 /* ---------- websocket ---------- */
 const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
@@ -147,7 +217,7 @@ setInterval(()=>{ if(ws.readyState===1) ws.send('ping'); },15000);
 
 /* ---------- map ---------- */
 function buildMap(locations){
-  LOCS={}; const g=$('#locs'), roads=$('#roads');
+  LOCS={}; LOC_LIST=locations; const g=$('#locs'), roads=$('#roads');
   g.innerHTML=''; roads.innerHTML='';
   locations.forEach(l=>{LOCS[l.id]=l;});
   // dashed footpaths between every pair through the cafe hub
@@ -160,8 +230,8 @@ function buildMap(locations){
   locations.forEach(l=>{
     const el=document.createElementNS('http://www.w3.org/2000/svg','g');
     el.innerHTML=`<rect class="loc-block" x="${l.x-52}" y="${l.y-30}" width="104" height="46" rx="7"/>
-      <text class="loc-label" x="${l.x-44}" y="${l.y-12}">${l.name}</text>
-      <text class="loc-kind" x="${l.x-44}" y="${l.y+2}">${l.kind.toUpperCase()}</text>`;
+      <text class="loc-label" x="${l.x-44}" y="${l.y-12}">${locName(l.name)}</text>
+      <text class="loc-kind" x="${l.x-44}" y="${l.y+2}">${LANG==='zh'?(KINDS[l.kind]||l.kind):l.kind.toUpperCase()}</text>`;
     g.appendChild(el);
   });
 }
@@ -207,8 +277,9 @@ function addEvent(ev){
   const feed=$('#feed');
   const d=document.createElement('div');
   d.className='ev '+ev.kind;
+  d.dataset.raw=ev.text;
   d.innerHTML=`<time>${ev.clock.replace('Day ','D')}</time><span></span>`;
-  d.lastChild.textContent=ev.text;
+  d.lastChild.textContent=evText(ev.text);
   feed.appendChild(d);
   while(feed.children.length>120) feed.removeChild(feed.firstChild);
   feed.scrollTop=feed.scrollHeight;
@@ -237,20 +308,29 @@ async function refreshInspector(id,scroll){
   const r=await fetch('/api/agents/'+id); if(!r.ok) return;
   const a=await r.json();
   const box=$('#inspector');
-  box.innerHTML=`<div class="eyebrow">AGENT INSPECTOR</div>
+  box.innerHTML=`<div class="eyebrow">${t('inspectorTitle')}</div>
     <h2>${a.name}</h2>
-    <div class="sub">${a.age} · ${a.occupation} · ${a.traits.join(', ')}</div>
-    <div class="kv"><b>Energy</b><div class="bar"><i style="width:${a.state.energy}%"></i></div><span>${a.state.energy}</span></div>
-    <div class="kv"><b>Doing</b><span>${a.state.action} @ ${a.state.location}</span><span></span></div>
-    <div class="eyebrow">RELATIONSHIPS</div>
+    <div class="sub">${a.age} · ${occName(a.occupation)} · ${a.traits.map(traitName).join(t('listSep'))}</div>
+    <div class="kv"><b>${t('energy')}</b><div class="bar"><i style="width:${a.state.energy}%"></i></div><span>${a.state.energy}</span></div>
+    <div class="kv"><b>${t('doing')}</b><span>${actName(a.state.action)} @ ${locName(a.state.location)}</span><span></span></div>
+    <div class="eyebrow">${t('relationships')}</div>
     ${a.relationships.map(r=>`
-      <div class="kv"><b>${r.name}</b><div class="bar amber"><i style="width:${r.friendship}%"></i></div><span>${r.friendship}</span></div>`).join('')||'<div class="placeholder">No relationships yet.</div>'}
-    <div class="eyebrow">RECENT MEMORIES</div>
-    ${a.memories.map(m=>`<div class="mem"><time>${m.clock.replace('Day ','D')}</time>${m.text}<span class="imp">imp ${m.importance}</span></div>`).join('')}
-    <div class="eyebrow">DECISION TRACES</div>
-    ${a.last_decisions.map(t=>`<div class="trace">
-      <div class="m">${t.clock} · L${t.level} · ${t.model}</div>
-      ${t.observation}<br><b>→ ${t.action}</b> — ${t.reason}</div>`).join('')||'<div class="placeholder">No decisions yet.</div>'}`;
+      <div class="kv"><b>${r.name}</b><div class="bar amber"><i style="width:${r.friendship}%"></i></div><span>${r.friendship}</span></div>`).join('')||`<div class="placeholder">${t('noRelationships')}</div>`}
+    <div class="eyebrow">${t('recentMemories')}</div>
+    ${a.memories.map(m=>`<div class="mem"><time>${m.clock.replace('Day ','D')}</time><span></span><span class="imp"></span></div>`).join('')}
+    <div class="eyebrow">${t('decisionTraces')}</div>
+    ${a.last_decisions.map(tr=>`<div class="trace">
+      <div class="m">${tr.clock} · L${tr.level} · ${tr.model}</div>
+      <span class="obs"></span><br><b>→ ${actName(tr.action)}</b> — <span class="rsn"></span></div>`).join('')||`<div class="placeholder">${t('noDecisions')}</div>`}`;
+  // Fill free-form / user-content fields via textContent to avoid HTML injection.
+  box.querySelectorAll('.mem').forEach((el,i)=>{
+    el.children[1].textContent=memText(a.memories[i].text);
+    el.children[2].textContent=`${t('imp')} ${a.memories[i].importance}`;
+  });
+  box.querySelectorAll('.trace').forEach((el,i)=>{
+    el.querySelector('.obs').textContent=a.last_decisions[i].observation;
+    el.querySelector('.rsn').textContent=a.last_decisions[i].reason;
+  });
   if(scroll) box.scrollTop=0;
 }
 
@@ -260,6 +340,8 @@ $('#btn-pause').onclick=()=>ctl({cmd:'pause'});
 $('#btn-1').onclick=()=>ctl({cmd:'speed',speed:1});
 $('#btn-5').onclick=()=>ctl({cmd:'speed',speed:5});
 $('#btn-20').onclick=()=>ctl({cmd:'speed',speed:20});
+$('#btn-lang').onclick=toggleLang;
+applyLang();
 
 async function pollUsage(){
   try{
