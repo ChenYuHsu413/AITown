@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -29,6 +30,7 @@ INDEX = ROOT / "frontend" / "index.html"
 
 TICK_REAL_SECONDS = 0.5
 START_MINUTE = 6 * 60  # Day 1, 06:00
+IDLE_GRACE_SECONDS = 10.0  # keep running this long after the last client leaves (survives a page refresh)
 
 
 class Sim:
@@ -50,6 +52,8 @@ class Sim:
         self._new_events: list[Event] = []
         self.engine.bus.subscribers.append(self._new_events.append)
         self.clients: set[WebSocket] = set()
+        self._empty_since: float | None = None  # monotonic time the client set became empty
+        self._idle: bool = False                # auto-suspended because no clients are connected
         self.persistence = None          # set by lifespan when DB configured
         self.engine.bootstrap(START_MINUTE)
 
@@ -77,11 +81,30 @@ class Sim:
 
     # ---- pacing loop ----------------------------------------------
 
+    def _is_idle(self) -> bool:
+        """No clients (past the grace period) -> freeze the clock. Logs each
+        suspend/resume transition exactly once. Independent of ``paused``."""
+        if self.clients:
+            self._empty_since = None
+            if self._idle:
+                self._idle = False
+                print("[idle] simulation resumed")
+            return False
+        if self._empty_since is None:
+            self._empty_since = time.monotonic()
+        idle = (time.monotonic() - self._empty_since) >= IDLE_GRACE_SECONDS
+        if idle and not self._idle:
+            self._idle = True
+            print("[idle] simulation suspended (no clients)")
+        return idle
+
     async def loop(self) -> None:
         while True:
             await asyncio.sleep(TICK_REAL_SECONDS)
             if self.paused:
                 continue
+            if self._is_idle():
+                continue  # no clients: don't advance the clock or accumulate _frac
             self._frac += self.speed * TICK_REAL_SECONDS
             step = int(self._frac)
             if step <= 0:
@@ -118,6 +141,7 @@ class Sim:
             "minute": self.engine.now,
             "clock": fmt_time(self.engine.now),
             "paused": self.paused,
+            "idle": self._idle,
             "speed": self.speed,
             "locations": [
                 {"id": l.id, "name": l.name, "kind": l.kind, "x": l.x, "y": l.y}
@@ -150,6 +174,7 @@ class Sim:
             "minute": self.engine.now,
             "clock": fmt_time(self.engine.now),
             "paused": self.paused,
+            "idle": self._idle,
             "speed": self.speed,
             "agents": self.agent_states(),
             "events": [self._event_json(e) for e in self._new_events],
