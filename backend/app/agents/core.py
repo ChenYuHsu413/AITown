@@ -34,6 +34,7 @@ class AgentState:
     current_action: str = "idle"
     busy_until: int = 0                     # sim minute; can't be interrupted before
     last_talk_minute: dict[str, int] = field(default_factory=dict)  # per-partner cooldown
+    pending_concern: dict | None = None     # {"rumor_id", "told_by"} when a rumor about self must be reacted to
 
 
 @dataclass

@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from .agents.core import MemoryItem
 from .agents.decision import DecisionEngine
 from .llm.factory import build_router
+from .llm.prompts import builders
 from .simulation.engine import DAY_MIN, Event, SimulationEngine, fmt_time
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -271,11 +272,26 @@ async def seed_rumor(body: dict) -> JSONResponse:
     agent = sim.world.agents.get(agent_id)
     if agent is None or not text:
         return JSONResponse({"error": "agent_id (known) and non-empty text required"}, status_code=400)
-    rumor = sim.engine.decisions.rumors.seed(agent_id, text, sim.engine.now)
+
+    subject = str(body.get("subject", ""))
+    if body.get("sentiment") is not None:
+        sentiment = float(body["sentiment"])
+    else:
+        # No polarity given -> classify it once (cheap tier).
+        res = await sim.router.generate(
+            task="appraise",
+            messages=builders.appraise_prompt(text),
+            agent_id=agent_id, sim_minute=sim.engine.now,
+            schema={"type": "object"}, max_tokens=30,
+        )
+        sentiment = float(res.parsed.get("sentiment", 0.0)) if isinstance(res.parsed, dict) else 0.0
+
+    rumor = sim.engine.decisions.rumors.seed(agent_id, text, sim.engine.now, subject=subject, sentiment=sentiment)
     agent.memory.add(MemoryItem(
         minute=sim.engine.now, text=text, importance=4, kind="rumor", rumor_id=rumor.id,
     ))
-    return JSONResponse({"id": rumor.id, "origin": agent_id, "text": text})
+    return JSONResponse({"id": rumor.id, "origin": agent_id, "text": text,
+                         "subject": subject, "sentiment": sentiment})
 
 
 @app.get("/api/rumors")
@@ -293,6 +309,9 @@ async def list_rumors() -> JSONResponse:
             "id": r.id,
             "origin": r.origin,
             "origin_name": name_of(r.origin),
+            "subject": r.subject,
+            "subject_name": name_of(r.subject) if r.subject else "",
+            "sentiment": r.sentiment,
             "created_minute": r.created_minute,
             "created_clock": fmt_time(r.created_minute),
             "versions": [

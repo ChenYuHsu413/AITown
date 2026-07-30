@@ -25,6 +25,7 @@ TASK_TIERS: dict[str, str] = {
     "mood": "cheap",
     "summary": "cheap",
     "distort": "cheap",
+    "appraise": "cheap",
     "decision": "normal",
     "dialogue": "normal",
     "reflection": "smart",

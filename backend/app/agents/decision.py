@@ -45,6 +45,8 @@ class Decision:
     duration: int = 15                 # minutes until next natural decision
     level: int = 0                     # 0 rules / 1 cheap / 2 normal / 3 smart
     reason: str = ""
+    narrative_verb: str = ""           # non-routine story beat for the engine to publish (e.g. "seek_out")
+    narrative_target: str = ""         # agent_id the narrative beat is aimed at
 
 
 @dataclass
@@ -123,6 +125,40 @@ class DecisionEngine:
                         reason=str(res.parsed.get("reason", "wants to chat")),
                     )
 
+        # ---- Level 2: react to a rumor about oneself ------------------
+        if agent.state.pending_concern and agent.state.current_action != "sleep":
+            concern = agent.state.pending_concern
+            agent.state.pending_concern = None  # react only once, whatever we choose
+            told_by = world.agents.get(concern.get("told_by", ""))
+            rumor = self.rumors.rumors.get(concern.get("rumor_id", ""))
+            mine = [v for v in rumor.versions if v.agent_id == agent.id] if rumor else []
+            heard = mine[-1].text if mine else "something about me"
+            memories = await agent.memory.retrieve_async(heard, k=5)
+            observation = (
+                f"You heard people are saying something about you: {heard}. "
+                f"{told_by.name if told_by else 'Someone'} told you this."
+            )
+            res = await self.router.generate(
+                task="decision",
+                messages=builders.decision_prompt(
+                    agent, observation, memories, ["continue_routine", "seek_out"]
+                ),
+                agent_id=agent.id,
+                sim_minute=now,
+                schema={"type": "object"},
+                max_tokens=80,
+            )
+            model_used = f"{res.provider}/{res.model}"
+            action = str(res.parsed.get("action", "")) if isinstance(res.parsed, dict) else ""
+            if action == "seek_out" and told_by is not None:
+                decision = Decision(
+                    action="move", target_location=told_by.state.location,
+                    duration=10, level=2,
+                    reason=f"heard a rumor about self; seeking out {told_by.name}",
+                    narrative_verb="seek_out", narrative_target=told_by.id,
+                )
+            # continue_routine: leave decision as-is so the routine default fills it.
+
         # ---- Level 0 default: follow the routine ----------------------
         if decision is None:
             until_next = agent.routine.next_boundary(minute_of_day) - minute_of_day
@@ -189,10 +225,34 @@ class DecisionEngine:
             if isinstance(res.parsed, dict) and res.parsed.get("text"):
                 text = str(res.parsed["text"])
 
-        b.memory.add(MemoryItem(
-            minute=now, text=f"Heard from {a.name}: {text}",
-            importance=4, kind="rumor", rumor_id=rumor.id,
-        ))
+        if rumor.subject and rumor.subject == b.id:
+            # The rumor made it back to the person it is about -- no relationship
+            # math against oneself; instead it lands hard and demands a reaction.
+            b.memory.add(MemoryItem(
+                minute=now, text=f"{a.name} told me people are saying: {text}",
+                importance=8, kind="rumor", rumor_id=rumor.id,
+            ))
+            if rumor.sentiment < 0:
+                b.state.mood = "upset"
+            b.state.pending_concern = {"rumor_id": rumor.id, "told_by": a.id}
+        else:
+            b.memory.add(MemoryItem(
+                minute=now, text=f"Heard from {a.name}: {text}",
+                importance=4, kind="rumor", rumor_id=rumor.id,
+            ))
+            # Relationship math stays in Python; the rumor's polarity moves it.
+            if rumor.subject:
+                rel = b.rel(rumor.subject)
+                rel.trust += rumor.sentiment * 5
+                rel.friendship += rumor.sentiment * 2
+                rel.clamp()
+                if rumor.sentiment <= -0.4 and rel.friendship > 55:
+                    b.state.mood = "worried"  # a friend is being badmouthed
+            # Sharing gossip brings the two a little closer.
+            gossip_bond = b.rel(a.id)
+            gossip_bond.friendship += 1
+            gossip_bond.clamp()
+
         self.rumors.record_spread(rumor.id, a.id, b.id, text, now)
         return {"rumor_id": rumor.id, "text": text, "from": a.id, "to": b.id}
 

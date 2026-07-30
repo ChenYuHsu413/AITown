@@ -82,6 +82,20 @@ def dialogue_prompt(
     ]
 
 
+def appraise_prompt(text: str) -> list[dict]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You judge whether a statement is positive or negative for the person it is "
+                "about, in a life simulation. Respond ONLY with JSON: {\"sentiment\": -1..1} "
+                "(-1 very negative, +1 very positive). Task: appraise."
+            ),
+        },
+        {"role": "user", "content": text},
+    ]
+
+
 def distort_prompt(text: str) -> list[dict]:
     return [
         {

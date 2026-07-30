@@ -174,6 +174,7 @@ const EV_TMPL={
     idle:(a,l)=>`${a} is idling at ${l}`, arrive:(a,l)=>`${a} → ${l}`,
     talk_start:(a,l,tg)=>`${a} started talking with ${tg} at ${l}`,
     share_rumor:(a,l,tg,sp)=>`${a} shared a rumor with ${tg}: ${sp}`,
+    seek_out:(a,l,tg)=>`${a} went looking for ${tg}`,
     say:(a,l,tg,sp)=>`💬 ${a}: ${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}: ${sp}`,
   },
   zh:{
@@ -182,6 +183,7 @@ const EV_TMPL={
     idle:(a,l)=>`${a} 在 ${l} 閒晃`, arrive:(a,l)=>`${a} 前往 ${l}`,
     talk_start:(a,l,tg)=>`${a} 在 ${l} 開始與 ${tg} 交談`,
     share_rumor:(a,l,tg,sp)=>`${a} 向 ${tg} 傳了個八卦：${sp}`,
+    seek_out:(a,l,tg)=>`${a} 去找 ${tg} 了`,
     say:(a,l,tg,sp)=>`💬 ${a}：${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}：${sp}`,
   },
 };
@@ -191,6 +193,8 @@ const locById=(id,fb)=>LANG==='zh'?(LOC_ZH[id]||fb||id):(fb||id);           // e
 const locByEn=n=>{ if(LANG!=='zh') return n;                                  // inspector (only has English name)
   const h=Object.values(LOCS).find(l=>l.name===n); return (h&&LOC_ZH[h.id])||n; };
 const occName=o=>LANG==='zh'?(OCCS[o]||o):o;
+const MOOD_EMOJI={upset:'😠',worried:'😟',happy:'🙂'};
+const moodEmoji=m=>MOOD_EMOJI[m]?MOOD_EMOJI[m]+' ':'';
 const actName=a=>LANG==='zh'?(ACTIONS[a]||a):a;
 const traitName=x=>LANG==='zh'?(TRAITS[x]||x):x;
 // Render one structured event via its verb template. Unknown verb → deprecated ev.text fallback.
@@ -322,7 +326,7 @@ async function refreshInspector(id,scroll){
   const a=await r.json();
   const box=$('#inspector');
   box.innerHTML=`<div class="eyebrow">${t('inspectorTitle')}</div>
-    <h2>${a.name}</h2>
+    <h2>${moodEmoji(a.state.mood)}${a.name}</h2>
     <div class="sub">${a.age} · ${occName(a.occupation)} · ${a.traits.map(traitName).join(t('listSep'))}</div>
     <div class="kv"><b>${t('energy')}</b><div class="bar"><i style="width:${a.state.energy}%"></i></div><span>${a.state.energy}</span></div>
     <div class="kv"><b>${t('doing')}</b><span>${actName(a.state.action)} @ ${locByEn(a.state.location)}</span><span></span></div>

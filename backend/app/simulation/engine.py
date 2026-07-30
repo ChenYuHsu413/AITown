@@ -65,6 +65,7 @@ _EN_TEMPLATES = {
     "arrive": "{actor} → {loc}",
     "talk_start": "{actor} started talking with {target} at {loc}",
     "share_rumor": "{actor} shared a rumor with {target}: {text}",
+    "seek_out": "{actor} went looking for {target}",
     "say": "💬 {actor}: {text}",
     "insight": "💭 {actor}: {text}",
 }
@@ -192,6 +193,12 @@ class SimulationEngine:
         if decision.action == "talk" and decision.talk_partner:
             await self._handle_conversation(agent, decision.talk_partner)
         else:
+            if decision.narrative_verb == "seek_out":
+                self._publish(
+                    "action", "seek_out", actor=agent,
+                    target=self.world.agents.get(decision.narrative_target),
+                    location_id=agent.state.location,
+                )
             result = self.world.execute(
                 agent, decision.action, decision.target_location, self.now, decision.duration
             )

@@ -29,6 +29,8 @@ class Rumor:
     id: str              # short uuid
     origin: str          # originating agent_id
     created_minute: int
+    subject: str = ""    # agent_id the rumor is about ("" if none)
+    sentiment: float = 0.0  # -1 negative .. +1 positive; fixed at seed, distortion never changes it
     versions: list[RumorVersion] = field(default_factory=list)
 
 
@@ -38,13 +40,16 @@ class RumorRegistry:
     def __init__(self) -> None:
         self.rumors: dict[str, Rumor] = {}
 
-    def seed(self, agent_id: str, text: str, minute: int) -> Rumor:
+    def seed(self, agent_id: str, text: str, minute: int,
+             subject: str = "", sentiment: float = 0.0) -> Rumor:
         """Create a rumor and its first (origin) version."""
         rid = uuid.uuid4().hex[:8]
         rumor = Rumor(
             id=rid,
             origin=agent_id,
             created_minute=minute,
+            subject=subject,
+            sentiment=sentiment,
             versions=[RumorVersion(agent_id=agent_id, text=text, heard_from="", minute=minute)],
         )
         self.rumors[rid] = rumor

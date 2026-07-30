@@ -52,7 +52,10 @@ class MockProvider(LLMProvider):
         prompt = " ".join(m.get("content", "") for m in messages).lower()
 
         parsed: object
-        if "distort" in prompt:
+        if "appraise" in prompt:
+            negative = any(w in prompt for w in ("closing", "quit", "trouble", "bad"))
+            parsed = {"sentiment": -0.6 if negative else 0.2}
+        elif "distort" in prompt:
             raw = " ".join(m.get("content", "") for m in messages)
             src = (raw.split("Retell this:", 1)[-1].strip() if "Retell this:" in raw else "Something happened")
             head = (src[:1].lower() + src[1:]) if src else src
@@ -90,7 +93,10 @@ class MockProvider(LLMProvider):
                 ]
             }
         elif "decision" in prompt:
-            parsed = {"action": "continue", "reason": "nothing unusual observed"}
+            if "people are saying" in prompt:
+                parsed = {"action": "seek_out", "reason": "wants to find out who is spreading this"}
+            else:
+                parsed = {"action": "continue", "reason": "nothing unusual observed"}
         else:
             parsed = {"text": "ok"}
 
