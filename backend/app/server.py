@@ -224,6 +224,14 @@ async def history(minute_from: int = 0, minute_to: int = 10**9, limit: int = 500
     return JSONResponse({"run_id": sim.persistence.run_id, "events": events})
 
 
+@app.get("/healthz")
+async def healthz() -> JSONResponse:
+    """Liveness probe for the hosting platform. Deliberately touches no
+    simulation state and registers no client, so the platform's frequent
+    health polling never wakes an idle-suspended town."""
+    return JSONResponse({"ok": True})
+
+
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(INDEX)

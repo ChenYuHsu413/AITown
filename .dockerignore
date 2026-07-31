@@ -1,0 +1,38 @@
+# Keep secrets, VCS metadata, and dev cruft OUT of the image / build context.
+.git
+.gitignore
+.gitattributes
+
+# Secrets never belong in an image -- set env vars on the platform instead.
+.env
+.env.*
+
+# Python caches / virtualenvs
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node (frontend is a single static file, no build step -- no deps needed)
+node_modules/
+
+# Local persistence data / sqlite dumps
+*.db
+data/*.db
+
+# Docs and build files aren't needed at runtime
+docs/
+*.md
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/

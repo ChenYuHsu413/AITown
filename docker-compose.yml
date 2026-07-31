@@ -1,8 +1,39 @@
-# Phase 2: PostgreSQL + pgvector for persistence.
-#   docker compose up -d
-#   export AI_TOWN_DB_URL=postgresql+asyncpg://aitown:aitown@localhost:5432/aitown
-#   uvicorn backend.app.server:app
+# docker-compose: container verification + the full "app + Postgres" combo.
+#
+# IMPORTANT: this is for CONTAINER testing, not day-to-day development.
+#   * Local dev stays exactly as before:  uvicorn backend.app.server:app
+#   * Container / full-stack check:        docker compose up --build
+#   Do NOT run both at once -- they both bind :8000 (and :5432) and will clash.
+#
+# `docker compose up --build` brings the app and the database up together.
+# By default the app runs STATELESS (in-memory, mock LLM, zero cost) -- the same
+# path as a plain `docker run`. The Postgres service is started and ready; flip
+# the app to use it by uncommenting AI_TOWN_DB_URL below (the future persistence
+# combo, pre-wired).
+
 services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: "8000"
+      # --- Persistence (optional, future): uncomment to wire the app to the
+      # bundled Postgres. Then also switch depends_on to wait for db health
+      # (see the commented block below) so the app doesn't boot before the DB.
+      # AI_TOWN_DB_URL: postgresql+asyncpg://aitown:aitown@db:5432/aitown
+      #
+      # --- Real LLM providers (optional): set these ONLY here / in your shell,
+      # never in the repo. Unset = mock provider, no API cost.
+      # AI_TOWN_LIVE: "1"
+      # OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # GEMINI_API_KEY: ${GEMINI_API_KEY}
+    depends_on:
+      - db
+      # When persistence is enabled above, prefer waiting for a healthy DB:
+      #   db:
+      #     condition: service_healthy
+
   db:
     image: pgvector/pgvector:pg16
     environment:
@@ -13,5 +44,11 @@ services:
       - "5432:5432"
     volumes:
       - aitown_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aitown -d aitown"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   aitown_pgdata:
