@@ -314,6 +314,10 @@ async def list_rumors() -> JSONResponse:
             "sentiment": r.sentiment,
             "created_minute": r.created_minute,
             "created_clock": fmt_time(r.created_minute),
+            "resolved": r.resolved,
+            "resolved_minute": r.resolved_minute,
+            "resolved_clock": fmt_time(r.resolved_minute) if r.resolved_minute >= 0 else "",
+            "outcome": r.outcome,
             "versions": [
                 {
                     "agent_id": v.agent_id,

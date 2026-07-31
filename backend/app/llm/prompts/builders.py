@@ -59,6 +59,7 @@ def should_talk_prompt(agent: "Agent", other_name: str, memories: list[str]) -> 
 def dialogue_prompt(
     a: "Agent", b: "Agent", a_mem: list[str], b_mem: list[str], max_turns: int = 4,
     a_wants_to_mention: str | None = None, b_wants_to_mention: str | None = None,
+    is_confrontation: bool = False,
 ) -> list[dict]:
     user = (
         f"Simulate a conversation between {a.profile.name} and {b.profile.name}. "
@@ -70,16 +71,28 @@ def dialogue_prompt(
         user += f"\n{a.profile.name} wants to bring up: {a_wants_to_mention}"
     if b_wants_to_mention:
         user += f"\n{b.profile.name} wants to bring up: {b_wants_to_mention}"
+    system = (
+        "You write short, natural conversations for a life simulation. "
+        "Respond ONLY with JSON: "
+        '{"turns": [{"speaker": "...", "text": "..."}], '
+        '"sentiment": 0..1, "trust_signal": 0..1, "conflict_signal": 0..1}.'
+    )
+    if is_confrontation:
+        # This is a confrontation: B is being asked to their face whether they
+        # started the rumor. B must clearly own up or deny, and the verdict is
+        # reported as an extra boolean so the sim can settle the rumor.
+        system = (
+            f"You write a short, tense confrontation for a life simulation. "
+            f"{b.profile.name} is being confronted to their face about whether they "
+            f"spread a rumor. In the conversation {b.profile.name} must clearly either "
+            f"admit or deny it. Respond ONLY with JSON: "
+            '{"turns": [{"speaker": "...", "text": "..."}], '
+            '"sentiment": 0..1, "trust_signal": 0..1, "conflict_signal": 0..1, '
+            '"admitted": true|false} where "admitted" is whether '
+            f"{b.profile.name} admitted to it."
+        )
     return [
-        {
-            "role": "system",
-            "content": (
-                "You write short, natural conversations for a life simulation. "
-                "Respond ONLY with JSON: "
-                '{"turns": [{"speaker": "...", "text": "..."}], '
-                '"sentiment": 0..1, "trust_signal": 0..1, "conflict_signal": 0..1}.'
-            ),
-        },
+        {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 

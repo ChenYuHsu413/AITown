@@ -32,6 +32,11 @@ class Rumor:
     subject: str = ""    # agent_id the rumor is about ("" if none)
     sentiment: float = 0.0  # -1 negative .. +1 positive; fixed at seed, distortion never changes it
     versions: list[RumorVersion] = field(default_factory=list)
+    # End-of-life: once the subject confronts the source, the rumor is settled
+    # and stops propagating (candidates skip resolved rumors -- see decision.py).
+    resolved: bool = False
+    resolved_minute: int = -1
+    outcome: str = ""    # "admitted" | "denied" ("" while unresolved)
 
 
 class RumorRegistry:
@@ -58,6 +63,16 @@ class RumorRegistry:
     def knows(self, rumor_id: str, agent_id: str) -> bool:
         rumor = self.rumors.get(rumor_id)
         return rumor is not None and any(v.agent_id == agent_id for v in rumor.versions)
+
+    def resolve(self, rumor_id: str, minute: int, outcome: str) -> None:
+        """Settle a rumor after a confrontation. From now on it is skipped when
+        picking rumors to share -- this is the propagation terminus."""
+        rumor = self.rumors.get(rumor_id)
+        if rumor is None:
+            return
+        rumor.resolved = True
+        rumor.resolved_minute = minute
+        rumor.outcome = outcome
 
     def record_spread(self, rumor_id: str, from_agent: str, to_agent: str, text: str, minute: int) -> None:
         rumor = self.rumors.get(rumor_id)

@@ -66,6 +66,7 @@ _EN_TEMPLATES = {
     "talk_start": "{actor} started talking with {target} at {loc}",
     "share_rumor": "{actor} shared a rumor with {target}: {text}",
     "seek_out": "{actor} went looking for {target}",
+    "confronted": "{actor} confronted {target} about the rumor — they {text}",
     "say": "💬 {actor}: {text}",
     "insight": "💭 {actor}: {text}",
 }
@@ -191,7 +192,9 @@ class SimulationEngine:
         decision = await self.decisions.decide(agent, self.world, obs, self.now)
 
         if decision.action == "talk" and decision.talk_partner:
-            await self._handle_conversation(agent, decision.talk_partner, decision.confront_text)
+            await self._handle_conversation(
+                agent, decision.talk_partner, decision.confront_text, decision.confront_rumor_id,
+            )
         else:
             if decision.narrative_verb == "seek_out":
                 self._publish(
@@ -219,14 +222,17 @@ class SimulationEngine:
 
         self.scheduler.schedule(agent.id, self.now + decision.duration)
 
-    async def _handle_conversation(self, a: Agent, partner_id: str, confront_text: str = "") -> None:
+    async def _handle_conversation(
+        self, a: Agent, partner_id: str, confront_text: str = "", confront_rumor_id: str = "",
+    ) -> None:
         b = self.world.agents[partner_id]
         if b.state.busy_until > self.now or b.state.current_action == "sleep":
             # Partner got occupied since the decision; retry shortly.
             self.scheduler.schedule(a.id, self.now + 5)
             return
-        turns, signals, shared_rumors = await self.decisions.run_conversation(
-            a, b, self.world, self.now, confront_text=confront_text or None,
+        turns, signals, shared_rumors, confrontation = await self.decisions.run_conversation(
+            a, b, self.world, self.now,
+            confront_text=confront_text or None, confront_rumor_id=confront_rumor_id,
         )
         a.state.current_action = "talk"
         b.state.current_action = "talk"
@@ -258,6 +264,12 @@ class SimulationEngine:
                 text=str(turn.get("text", "")),
             )
             self.now = saved_now
+        if confrontation is not None:  # the rumor's endpoint: publish the verdict
+            self._publish(
+                "action", "confronted", actor=a, target=b,
+                location_id=a.state.location,
+                text="admitted it" if confrontation["outcome"] == "admitted" else "denied it",
+            )
         self.scheduler.schedule(b.id, self.now + duration)
 
     def _interrupt_colocated(self, mover: Agent) -> None:

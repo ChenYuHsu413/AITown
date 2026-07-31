@@ -48,6 +48,7 @@ class Decision:
     narrative_verb: str = ""           # non-routine story beat for the engine to publish (e.g. "seek_out")
     narrative_target: str = ""         # agent_id the narrative beat is aimed at
     confront_text: str = ""            # opener injected into the dialogue when confronting over a rumor
+    confront_rumor_id: str = ""        # the rumor being confronted (set alongside confront_text)
 
 
 @dataclass
@@ -172,11 +173,12 @@ class DecisionEngine:
                     decision = Decision(  # already together -> confront right now
                         action="talk", talk_partner=target.id, duration=TALK_DURATION_MIN,
                         level=2, reason=f"confronting {target.name} about a rumor",
-                        confront_text=confront_text,
+                        confront_text=confront_text, confront_rumor_id=rumor.id if rumor else "",
                     )
                 else:                     # elsewhere -> go find them, then confront on arrival
                     agent.state.seek_target = target.id
                     agent.state.seek_text = confront_text
+                    agent.state.seek_rumor_id = rumor.id if rumor else ""
                     agent.state.seek_tries = 0
                     decision = Decision(
                         action="move", target_location=target.state.location,
@@ -217,15 +219,17 @@ class DecisionEngine:
         a move (chase again, max 2 tries), or None (gave up -> clears state)."""
         target = world.agents.get(agent.state.seek_target)
         text = agent.state.seek_text
+        rumor_id = agent.state.seek_rumor_id
         if target is not None and target.state.location == agent.state.location \
                 and target.state.current_action != "sleep":
             agent.state.seek_target = ""
             agent.state.seek_text = ""
+            agent.state.seek_rumor_id = ""
             agent.state.seek_tries = 0
             return Decision(
                 action="talk", talk_partner=target.id, duration=TALK_DURATION_MIN,
                 level=2, reason=f"confronting {target.name} about a rumor",
-                confront_text=text,
+                confront_text=text, confront_rumor_id=rumor_id,
             )
         if target is not None and agent.state.seek_tries < 2:
             agent.state.seek_tries += 1
@@ -236,6 +240,7 @@ class DecisionEngine:
             )
         agent.state.seek_target = ""   # unreachable -> give up
         agent.state.seek_text = ""
+        agent.state.seek_rumor_id = ""
         agent.state.seek_tries = 0
         return None
 
@@ -248,7 +253,7 @@ class DecisionEngine:
         nothing is shared (the common case -- keeps rumor-free runs untouched)."""
         candidates = [
             (r, v) for r, v in self.rumors.known_by(a.id)
-            if not self.rumors.knows(r.id, b.id)
+            if not self.rumors.knows(r.id, b.id) and not r.resolved  # resolved rumors stop spreading
         ]
         if not candidates:
             return None
@@ -312,13 +317,18 @@ class DecisionEngine:
 
     async def run_conversation(
         self, a: Agent, b: Agent, world: World, now: int, confront_text: str | None = None,
-    ) -> tuple[list[dict], dict, list[dict]]:
+        confront_rumor_id: str = "",
+    ) -> tuple[list[dict], dict, list[dict], dict | None]:
         """One LLM call produces the whole exchange (played back turn by
         turn in the UI later) + numeric relationship signals. Gossip flows
         both ways: each side may pass the other a rumor. ``shared_rumors``
         (0-2 entries, one per direction) carries the passed-on wordings for
         the engine to publish. ``confront_text``, when set, is what ``a`` opens
-        with (a rumor confrontation) and takes priority over any forward share."""
+        with (a rumor confrontation) and takes priority over any forward share;
+        with ``confront_rumor_id`` also set the exchange is a confrontation that
+        settles that rumor. The 4th return value is a confrontation descriptor
+        (``{"rumor_id", "outcome", "admitted"}``) or ``None`` for normal chats."""
+        is_confront = bool(confront_text and confront_rumor_id)
         fwd = await self._maybe_share_rumor(a, b, now)   # a -> b
         rev = await self._maybe_share_rumor(b, a, now)   # b -> a (lets a stationary initiator hear too)
         shared_rumors = [sr for sr in (fwd, rev) if sr]
@@ -330,6 +340,7 @@ class DecisionEngine:
                 a, b, a_mem, b_mem,
                 a_wants_to_mention=confront_text or (fwd["text"] if fwd else None),
                 b_wants_to_mention=rev["text"] if rev else None,
+                is_confrontation=is_confront,
             ),
             agent_id=a.id,
             sim_minute=now,
@@ -361,7 +372,46 @@ class DecisionEngine:
         b.apply_conversation_signals(a.id, **signals)
         a.state.last_talk_minute[b.id] = now
         b.state.last_talk_minute[a.id] = now
-        return turns, signals, shared_rumors
+
+        confrontation = None
+        if is_confront:
+            confrontation = self._settle_confrontation(a, b, confront_rumor_id, parsed, now)
+        return turns, signals, shared_rumors, confrontation
+
+    def _settle_confrontation(
+        self, a: Agent, b: Agent, rumor_id: str, parsed: dict, now: int
+    ) -> dict:
+        """Confrontation consequences (pure Python math -- the LLM only emits the
+        admit/deny verdict). ``a`` confronted ``b`` about ``rumor_id``. Whatever
+        the answer, the rumor is now settled and stops spreading."""
+        admitted = bool(parsed.get("admitted", False))
+        outcome = "admitted" if admitted else "denied"
+        self.rumors.resolve(rumor_id, now, outcome)   # the propagation terminus
+
+        rel_ab = a.rel(b.id)
+        if admitted:
+            rel_ab.trust -= 12
+            rel_ab.conflict += 10
+            rel_ab.friendship -= 6
+            rel_ba = b.rel(a.id)
+            rel_ba.conflict += 5          # the sting of being caught out
+            rel_ba.clamp()
+        else:
+            rel_ab.trust -= 5
+            rel_ab.conflict += 4          # lingering half-belief
+        rel_ab.clamp()
+        a.state.mood = "neutral"          # matter settled, whatever the outcome -- mood lands
+
+        a.memory.add(MemoryItem(
+            minute=now, importance=6, kind="conversation",
+            text=f"Confronted {b.name} about the rumor. They {'admitted it' if admitted else 'denied it'}.",
+        ))
+        b.memory.add(MemoryItem(
+            minute=now, importance=6, kind="conversation",
+            text=f"{a.name} confronted me about the rumor I "
+                 f"{'started' if admitted else 'was accused of starting'}.",
+        ))
+        return {"rumor_id": rumor_id, "outcome": outcome, "admitted": admitted}
 
     # ---- Level 3: reflection -----------------------------------------
 

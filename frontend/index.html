@@ -165,6 +165,8 @@ const OCCS={'Cafe Owner':'咖啡館老闆','Office Worker':'上班族','Doctor':
 const TRAITS={curious:'好奇',friendly:'友善',gossipy:'八卦',quiet:'安靜',loyal:'忠誠',stressed:'焦慮',
   calm:'冷靜',observant:'敏銳',helpful:'樂於助人',wise:'睿智',talkative:'健談',nostalgic:'念舊',
   creative:'有創意',dreamy:'愛幻想','night-owl':'夜貓子'};
+// Confrontation verdicts are a small closed vocabulary (unlike free speech) → map to zh; unknown falls through verbatim.
+const SPEECH_ZH={'admitted it':'承認了','denied it':'否認了'};
 // Event Contract v1 templates, keyed by ev.verb. (a)ctor, (l)ocation, (tg)target, (sp)eech.
 // speech is model-generated free text — inserted verbatim, never translated.
 const EV_TMPL={
@@ -175,6 +177,7 @@ const EV_TMPL={
     talk_start:(a,l,tg)=>`${a} started talking with ${tg} at ${l}`,
     share_rumor:(a,l,tg,sp)=>`${a} shared a rumor with ${tg}: ${sp}`,
     seek_out:(a,l,tg)=>`${a} went looking for ${tg}`,
+    confronted:(a,l,tg,sp)=>`${a} confronted ${tg} about the rumor — they ${sp}`,
     say:(a,l,tg,sp)=>`💬 ${a}: ${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}: ${sp}`,
   },
   zh:{
@@ -184,6 +187,7 @@ const EV_TMPL={
     talk_start:(a,l,tg)=>`${a} 在 ${l} 開始與 ${tg} 交談`,
     share_rumor:(a,l,tg,sp)=>`${a} 向 ${tg} 傳了個八卦：${sp}`,
     seek_out:(a,l,tg)=>`${a} 去找 ${tg} 了`,
+    confronted:(a,l,tg,sp)=>`${a} 當面質問了 ${tg}——對方${SPEECH_ZH[sp]||sp}`,
     say:(a,l,tg,sp)=>`💬 ${a}：${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}：${sp}`,
   },
 };

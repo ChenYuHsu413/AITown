@@ -71,25 +71,51 @@ class MockProvider(LLMProvider):
             parsed = {"importance": rng.randint(1, 6)}
         elif "conversation" in prompt or "dialogue" in prompt:
             a, b = self._extract_names(prompt)
-            opener, reply = rng.choice(_SMALL_TALK)
-            turns = [
-                {"speaker": a, "text": opener},
-                {"speaker": b, "text": reply},
-            ]
-            if rng.random() < 0.5:
-                turns.append({"speaker": b, "text": rng.choice(_CONCERNS)})
-                turns.append({"speaker": a, "text": "I'm here if you want to talk about it."})
-            # If A brought something up (a rumor / confrontation), have A actually say it.
             raw = " ".join(m.get("content", "") for m in messages)
-            if "wants to bring up: " in raw:
-                mention = raw.split("wants to bring up: ", 1)[1].split("\n", 1)[0].strip()
-                turns = [{"speaker": a, "text": mention}] + turns
-            parsed = {
-                "turns": turns,
-                "sentiment": round(rng.uniform(0.2, 0.9), 2),
-                "trust_signal": round(rng.uniform(0.0, 0.3), 2),
-                "conflict_signal": 0.0,
-            }
+            mention = (
+                raw.split("wants to bring up: ", 1)[1].split("\n", 1)[0].strip()
+                if "wants to bring up: " in raw else ""
+            )
+            # Confrontation: A asks B to their face; B must admit or deny, and the
+            # verdict rides back in an extra "admitted" field. Detected via the
+            # confrontation opener or the system-prompt instruction.
+            is_confront = ("did this come from you" in prompt) or ("confrontation" in prompt)
+            if is_confront:
+                admit = rng.random() < 0.6                    # ~60% own up, deterministic per seed
+                verdict = (
+                    "...Yes, I did say that. I'm sorry."
+                    if admit else "That wasn't me, I swear."
+                )
+                opener = mention or "I heard people are saying something. Did this come from you?"
+                turns = [
+                    {"speaker": a, "text": opener},
+                    {"speaker": b, "text": verdict},          # B's admit/deny is the last word
+                ]
+                parsed = {
+                    "turns": turns,
+                    "sentiment": round(rng.uniform(0.1, 0.4), 2),
+                    "trust_signal": 0.0,
+                    "conflict_signal": round(rng.uniform(0.3, 0.7), 2),
+                    "admitted": admit,
+                }
+            else:
+                opener, reply = rng.choice(_SMALL_TALK)
+                turns = [
+                    {"speaker": a, "text": opener},
+                    {"speaker": b, "text": reply},
+                ]
+                if rng.random() < 0.5:
+                    turns.append({"speaker": b, "text": rng.choice(_CONCERNS)})
+                    turns.append({"speaker": a, "text": "I'm here if you want to talk about it."})
+                # If A brought something up (a rumor), have A actually say it.
+                if mention:
+                    turns = [{"speaker": a, "text": mention}] + turns
+                parsed = {
+                    "turns": turns,
+                    "sentiment": round(rng.uniform(0.2, 0.9), 2),
+                    "trust_signal": round(rng.uniform(0.0, 0.3), 2),
+                    "conflict_signal": 0.0,
+                }
         elif "reflection" in prompt:
             parsed = {
                 "insights": [
