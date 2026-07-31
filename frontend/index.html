@@ -33,9 +33,11 @@ header{display:flex;align-items:center;gap:20px;padding:10px 18px;border-bottom:
 .controls button:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
 
 /* layout */
-main{flex:1;display:grid;grid-template-columns:1fr 340px;min-height:0}
-#mapwrap{position:relative;min-width:0}
-#map{width:100%;height:100%;display:block}
+main{flex:1;display:grid;grid-template-columns:1fr 340px;grid-template-rows:minmax(0,1fr);min-height:0}
+#mapwrap{position:relative;min-width:0;min-height:0;overflow:hidden}
+/* absolute-fill so the SVG's viewBox aspect ratio never forces intrinsic height
+   (which would overflow a short window); it fills the wrap and `meet` letterboxes inside. */
+#map{position:absolute;inset:0;width:100%;height:100%;display:block}
 aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--panel)}
 .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint);padding:10px 14px 6px}
 #feed{flex:1;overflow-y:auto;padding:0 14px 10px;font-size:13px;line-height:1.45}
@@ -68,21 +70,45 @@ footer .lab{font-size:10px;letter-spacing:.12em;color:var(--faint)}
 footer b{font-weight:500;font-size:14px}
 #rulespct b{color:var(--moss)}
 
-/* map svg */
-.loc-block{fill:var(--panel);stroke:var(--line)}
-.loc-label{font-family:var(--mono);font-size:11px;fill:var(--ink)}
-.loc-kind{font-family:var(--mono);font-size:9px;fill:var(--faint);letter-spacing:.1em}
-.road{stroke:var(--ink);stroke-opacity:.18;stroke-dasharray:3 5;fill:none}
+/* map svg -- storybook village */
+.loc-label{font-family:var(--mono);font-size:10px;font-weight:500;fill:var(--ink);text-anchor:middle}
+.loc-kind{font-family:var(--mono);font-size:8px;fill:var(--faint);letter-spacing:.12em;text-anchor:middle}
+#terrain,#roads{shape-rendering:crispEdges}
+.river-hi{animation:ripple 1.3s steps(2) infinite}
+@keyframes ripple{from{transform:translateX(0)}to{transform:translateX(4px)}}
+
+/* pixel-art villagers: frame-based <use> sprites, hard edges, no opacity fades */
 .agent{cursor:pointer}
-.agent circle{fill:var(--ink);stroke:var(--paper);stroke-width:2;transition:r .3s}
-.agent text{font-family:var(--mono);font-size:9px;fill:var(--paper);text-anchor:middle;pointer-events:none}
-.agent.talking .ring{fill:none;stroke:var(--amber);stroke-width:2;animation:pulse 1.6s infinite}
-.agent.sleeping circle{fill:var(--faint)}
-@keyframes pulse{0%{r:11;stroke-opacity:.9}100%{r:20;stroke-opacity:0}}
-.agent-name{font-family:var(--mono);font-size:9px;fill:var(--ink);text-anchor:middle}
-.bubble rect{fill:var(--ink);rx:6}
+.agent .hit{fill:transparent}
+.agent .shadow{fill:#000;opacity:.09}
+.agent .fr{visibility:hidden;shape-rendering:crispEdges}
+.agent .fr1{visibility:visible;animation:frmflip .8s infinite;animation-delay:var(--d,0s)}
+.agent .fr2{animation:frmflip .8s infinite;animation-delay:calc(var(--d,0s) - .4s)}
+.agent.walking .fr1{animation-duration:.5s;animation-delay:0s}
+.agent.walking .fr2{animation-duration:.5s;animation-delay:-.25s}
+.agent.sleeping .fr1,.agent.sleeping .fr2{visibility:hidden;animation:none}
+.agent.sleeping .fs{visibility:visible}
+.agent .ring{fill:none;stroke:none}
+.agent.talking .ring{stroke:var(--amber);stroke-width:2;animation:pulse 1.6s infinite}
+.agent .zzz{font-family:var(--disp);font-weight:700;font-size:11px;fill:var(--ink);text-anchor:middle;opacity:0;pointer-events:none}
+.agent.sleeping .zzz{animation:zsleep 2.6s ease-in-out infinite}
+.nametag rect{fill:var(--panel);stroke:var(--line);stroke-width:.5}
+.nametag text{font-family:var(--mono);font-size:8.5px;fill:var(--ink);text-anchor:middle;pointer-events:none}
+.bubble rect{fill:var(--ink)}
 .bubble text{font-family:var(--body);font-size:11px;fill:var(--paper)}
-@media (prefers-reduced-motion: reduce){.agent.talking .ring{animation:none;stroke-opacity:.7}
+/* NB: #lights opacity is driven by the `opacity` ATTRIBUTE (set each tick in
+   updateClock), NOT a CSS rule -- a CSS `opacity` here would override the
+   attribute (presentation attrs rank lowest) and the windows would never glow. */
+@keyframes frmflip{0%,49.9%{visibility:visible}50%,100%{visibility:hidden}}
+@keyframes zsleep{0%{opacity:0;transform:translateY(0)}30%{opacity:.85}65%{opacity:0;transform:translateY(-6px)}100%{opacity:0}}
+@keyframes pulse{0%{r:11;stroke-opacity:.9}100%{r:24;stroke-opacity:0}}
+@media (prefers-reduced-motion: reduce){
+  .agent .fr1,.agent .fr2{animation:none!important}
+  .agent .fr1{visibility:visible}.agent .fr2{visibility:hidden}
+  .agent.sleeping .fr1{visibility:hidden}.agent.sleeping .fs{visibility:visible}
+  .agent.sleeping .zzz{animation:none}
+  .agent.talking .ring{animation:none;stroke-opacity:.7}
+  .river-hi{animation:none}
   .agent-g{transition:none!important}}
 @media (max-width:860px){main{grid-template-columns:1fr}aside{display:none}}
 </style>
@@ -103,14 +129,16 @@ footer b{font-weight:500;font-size:14px}
 
 <main>
   <div id="mapwrap">
-    <svg id="map" viewBox="0 0 800 520" role="img" aria-label="Town map">
+    <svg id="map" viewBox="0 0 800 520" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Town map">
+      <defs id="sprite-defs"><!-- pixel-art villager sprites injected by initSprites() --></defs>
       <rect width="800" height="520" fill="var(--paper)"/>
-      <path d="M -10 60 C 120 90, 90 240, 40 330 S 90 500, 30 530" stroke="var(--water)" stroke-width="26" fill="none" opacity=".8"/>
+      <g id="terrain"></g>
       <g id="roads"></g>
       <g id="locs"></g>
       <g id="agents"></g>
       <g id="bubbles"></g>
       <rect id="nightfall" width="800" height="520" fill="var(--night)" opacity="0" pointer-events="none"/>
+      <g id="lights" opacity="0" pointer-events="none"></g>
     </svg>
   </div>
   <aside>
@@ -238,46 +266,206 @@ ws.onmessage=e=>{
 setInterval(()=>{ if(ws.readyState===1) ws.send('ping'); },15000);
 
 /* ---------- map ---------- */
+const SVGNS='http://www.w3.org/2000/svg';
+const ROOF={home_a:'#C77A57',home_b:'#7E97C6'};   // two homes, two roof colours
+
+/* ---- pixel-art villager sprites (original GBC-style design) ----
+   12x16 logical px @2px each (~24x32 render). Frame-based, built ONCE into
+   <defs>; agents only <use> them and toggle a class -- rects are never redrawn.
+   Palette per character: o outline, h hair, k skin, e eye, c cloth, d cloth-shadow.
+   Cloth hue keeps each agent's existing colour identity. */
+const SPR_PAL={
+  alice:{o:'#3a2e33',h:'#7a4a24',k:'#f1c7a2',e:'#3a2e33',c:'#E4674F',d:'#b23f2c'},
+  bob:  {o:'#2b2630',h:'#2e2a33',k:'#e9be97',e:'#2b2630',c:'#4E86B0',d:'#305f82'},
+  carol:{o:'#33262f',h:'#8a4b3b',k:'#f1c7a2',e:'#33262f',c:'#8E6FB3',d:'#64478c'},
+  david:{o:'#332b33',h:'#b9b4ae',k:'#e9be97',e:'#332b33',c:'#E0A63C',d:'#b07e22'},
+  emma: {o:'#3a2b36',h:'#e3c36b',k:'#f1c7a2',e:'#3a2b36',c:'#D46BA0',d:'#a8407a'},
+};
+const FALLBACK_ID='alice';
+const F1=[
+  "....oooo....","..oohhhhoo..",".ohhhhhhhho.",".ohhkkkkhho.",
+  ".ohkkkkkkho.",".ohkekkekho.",".ohkkkkkkho.","..okkkkko...",
+  ".occcccccco.",".occcddccco.",".okccccccko.",".occcccccco.",
+  ".occcddccco.",".occcccccco.","..oddooddo..","...oo..oo..."];
+const F2=F1.slice(); F2[15]="..oo....oo..";      // step: wider stance (+1px bob via transform)
+const FS=F1.slice(); FS[5]=".oheekkeeho.";        // sleep: closed eyelids (1px lines)
+function rectsFromGrid(rows,pal){                 // run-length merge per row -> fewer rects
+  let s='';
+  rows.forEach((row,y)=>{ let x=0;
+    while(x<row.length){ const ch=row[x];
+      if(ch==='.'){x++;continue;}
+      let run=1; while(x+run<row.length&&row[x+run]===ch) run++;
+      s+=`<rect x="${x}" y="${y}" width="${run}" height="1" fill="${pal[ch]||pal.o}"/>`;
+      x+=run;
+    }});
+  return s;
+}
+function initSprites(){
+  let html='';
+  for(const id in SPR_PAL){ const pal=SPR_PAL[id];
+    const frame=(suf,grid,ty)=>`<g id="spr-${id}-${suf}" shape-rendering="crispEdges"><g transform="translate(-12,${ty}) scale(2)">${rectsFromGrid(grid,pal)}</g></g>`;
+    html+=frame('f1',F1,-5)+frame('f2',F2,-3)+frame('fs',FS,-5);   // f2 shifted +1px (down) for the idle/step bob
+  }
+  $('#sprite-defs').innerHTML=html;
+}
+initSprites();
+const spriteId=id=>SPR_PAL[id]?id:FALLBACK_ID;
+
+/* ---- pixel-art buildings & terrain (same 2px grid as the villagers) ----
+   Each building returns {rects, light, w, h}; buildMap places it centred on l.x
+   with its base at l.y+14 via one scaled <g>. `light` = warm window pixels drawn
+   above #nightfall, fading in with the night. crispEdges keeps hard pixel edges;
+   the run-length rects keep the total count low. */
+const P=(x,y,w,h,f,op)=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${f}"${op!=null?` fill-opacity="${op}"`:''}/>`;
+const ROOF_D={home_a:'#9c5838',home_b:'#556aa0'};
+function homeSprite(l){
+  const R=ROOF[l.id]||'#C0714C', Rd=ROOF_D[l.id]||'#9c5838', w=22, h=20; let s='';
+  s+=P(15,0,2,6,'#8a6a52');                                    // chimney
+  for(let r=0;r<8;r++){ const hw=r+1; s+=P(11-hw,r,2*hw+1,1,R); } // stepped triangle roof
+  s+=P(2,8,18,1,Rd);                                           // eave shadow row
+  s+=P(3,9,16,11,'#ECDCC2')+P(17,9,2,11,'#d8c39f');            // wall + right shadow
+  s+=P(9,14,4,6,'#9C6B3F')+P(9,14,1,6,'#744e2c')+P(12,14,1,6,'#744e2c')+P(11,17,1,1,'#5e3d22'); // door
+  s+=P(5,10,5,5,'#CFE3EA')+P(7,10,1,5,'#8aa0a8')+P(5,12,5,1,'#8aa0a8'); // cross window
+  s+=P(3,20,16,1,'#000',.14);                                  // ground shadow
+  return {rects:s, light:P(5,10,5,5,'#FFCF6E'), w, h};
+}
+function cafeSprite(l){
+  const w=26,h=18; let s='';
+  s+=P(2,6,22,12,'#EFE4D2')+P(22,6,2,12,'#dccbad');            // wall + shadow
+  for(let c=1;c<25;c+=2){ s+=P(c,3,2,3,(c>>1)%2?'#F0E2CE':'#D98C5F'); } // striped awning
+  s+=P(1,6,24,1,'#c9b18a');                                    // awning underside
+  s+=P(4,9,9,7,'#BFD8DF')+P(4,9,9,1,'#8fb0b8')+P(8,9,1,7,'#8fb0b8'); // big glass window
+  s+=P(15,10,5,8,'#9C6B3F')+P(15,10,1,8,'#744e2c');            // door
+  s+=P(17,6,5,3,'#f4efe6')+P(21,6,1,2,'#cbb79a')+P(18,5,3,1,'#b58a63')+P(17,9,5,1,'#cbb79a'); // cup sign (~5x5)
+  s+=P(2,18,22,1,'#000',.14);
+  return {rects:s, light:P(4,9,9,7,'#FFCF6E'), w, h};
+}
+function officeSprite(l){
+  const w=22,h=26; let s='', lite='';
+  s+=P(2,4,18,22,'#DEE3EA')+P(18,4,2,22,'#c4ccd6');            // wall + shadow
+  s+=P(1,3,20,2,'#c8ced8');                                    // roof cap
+  s+=P(10,0,1,4,'#7a828a')+P(9,0,3,1,'#7a828a');               // antenna
+  for(let r=0;r<3;r++)for(let c=0;c<2;c++){ const x=5+c*8,y=7+r*6;   // 2x3 window grid
+    s+=P(x,y,5,4,'#9DB6C4')+P(x+2,y,1,4,'#6d8898')+P(x,y+2,5,1,'#6d8898');
+    lite+=P(x,y,5,4,'#FFCF6E'); }
+  s+=P(8,20,6,6,'#8b98a6');                                    // door
+  s+=P(2,26,18,1,'#000',.14);
+  return {rects:s, light:lite, w, h};
+}
+function pxTree(x,base,big){
+  const R=big?6:5, trunkH=big?7:5, cy=base-trunkH-2;
+  return P(x-1,base-trunkH,2,trunkH,'#8a6239')                  // trunk
+    +P(x-R+1,cy,2*R-1,3,'#5f8f52')                              // canopy mid
+    +P(x-R+2,cy-2,2*R-3,2,'#7BB06A')                            // canopy top (light)
+    +P(x-R+2,cy+3,2*R-3,2,'#4b7742')                            // canopy base (dark)
+    +P(x-1,cy-3,3,1,'#7BB06A');                                 // top tuft
+}
+function parkSprite(l){
+  const w=34,h=20; let s='';
+  s+=pxTree(6,14,true)+pxTree(12,11,false)+pxTree(2,18,false); // three trees (left)
+  s+=P(20,13,14,2,'#5f93aa')+P(18,15,18,3,'#7FB0C4')+P(20,18,14,1,'#5f93aa') // pond
+    +P(23,16,3,1,'#B7DCE8')+P(29,15,2,1,'#B7DCE8');            // pond highlights
+  s+=P(14,16,7,1,'#8a6239')+P(14,14,7,1,'#8a6239')+P(14,15,1,3,'#6a4a2a')+P(20,15,1,3,'#6a4a2a'); // bench
+  s+=P(2,20,30,1,'#000',.12);
+  return {rects:s, light:'', w, h};
+}
+function buildingSVG(l){
+  return l.kind==='home'?homeSprite(l):l.kind==='cafe'?cafeSprite(l):l.kind==='office'?officeSprite(l):parkSprite(l);
+}
+// Static terrain (pixel river + grass tufts): built ONCE, never per-tick.
+function buildTerrain(){
+  const t=$('#terrain'); if(!t) return;
+  let s='', hi='';
+  const water=['#4E86B0','#6AA0C4','#8FBBD6'];                 // deep / mid / light-edge
+  for(let y=40,i=0;y<504;y+=8,i++){ const jag=(i%2)?0:3, x=14+jag, ww=40-jag;
+    s+=P(x,y,ww,8,water[1])+P(x,y,4,8,water[2])+P(x+ww-6,y,6,8,water[0]); }
+  [[22,90],[30,180],[24,270],[34,360],[26,450]].forEach(([x,y])=>{ hi+=P(x,y,2,2,'#DCEEF6')+P(x+6,y+18,2,2,'#DCEEF6'); });
+  const G='#5f8a4f', G2='#6E9A5C';                             // sparse grass tufts (6-10)
+  [[250,120],[330,470],[470,300],[540,180],[300,320],[210,300],[700,255],[600,470]].forEach(([x,y])=>{
+    s+=P(x,y,1,3,G)+P(x+2,y-1,1,4,G2)+P(x+4,y,1,3,G)+P(x+1,y+1,1,2,G2); });
+  t.innerHTML=`<g shape-rendering="crispEdges">${s}</g><g class="river-hi" shape-rendering="crispEdges">${hi}</g>`;
+}
+buildTerrain();
+
 function buildMap(locations){
-  LOCS={}; LOC_LIST=locations; const g=$('#locs'), roads=$('#roads');
-  g.innerHTML=''; roads.innerHTML='';
+  LOCS={}; LOC_LIST=locations;
+  const g=$('#locs'), roads=$('#roads'), lights=$('#lights');
+  g.innerHTML=''; roads.innerHTML=''; lights.innerHTML='';
   locations.forEach(l=>{LOCS[l.id]=l;});
-  // dashed footpaths between every pair through the cafe hub
-  const hub=LOCS['cafe']||locations[0];
+  // pixel stone path: tiles sampled along a quad-bezier from each place to the cafe hub
+  const hub=LOCS['cafe']||locations[0]; let rs='';
   locations.forEach(l=>{ if(l.id===hub.id) return;
-    const p=document.createElementNS('http://www.w3.org/2000/svg','path');
-    p.setAttribute('d',`M ${l.x} ${l.y} Q ${(l.x+hub.x)/2+18} ${(l.y+hub.y)/2-14} ${hub.x} ${hub.y}`);
-    p.setAttribute('class','road'); roads.appendChild(p);
+    const x0=l.x,y0=l.y+14,x1=hub.x,y1=hub.y+14,cx=(x0+x1)/2+18,cy=(y0+y1)/2+6;
+    for(let tt=0.06;tt<0.95;tt+=0.07){ const it=1-tt;
+      const px=it*it*x0+2*it*tt*cx+tt*tt*x1, py=it*it*y0+2*it*tt*cy+tt*tt*y1;
+      rs+=P(Math.round(px)-2,Math.round(py)-2,4,4,(Math.round(tt*20))%2?'#a98d5f':'#c3a878'); }
   });
+  roads.innerHTML=`<g shape-rendering="crispEdges">${rs}</g>`;
   locations.forEach(l=>{
-    const el=document.createElementNS('http://www.w3.org/2000/svg','g');
-    el.innerHTML=`<rect class="loc-block" x="${l.x-52}" y="${l.y-30}" width="104" height="46" rx="7"/>
-      <text class="loc-label" x="${l.x-44}" y="${l.y-12}">${locById(l.id,l.name)}</text>
-      <text class="loc-kind" x="${l.x-44}" y="${l.y+2}">${LANG==='zh'?(KINDS[l.kind]||l.kind):l.kind.toUpperCase()}</text>`;
+    const b=buildingSVG(l);
+    const tf=`translate(${l.x-b.w},${l.y+14-b.h*2}) scale(2)`;   // centre on l.x, base at l.y+14
+    const el=document.createElementNS(SVGNS,'g');
+    el.innerHTML=`<g shape-rendering="crispEdges" transform="${tf}">${b.rects}</g>`+
+      `<text class="loc-label" x="${l.x}" y="${l.y+27}">${locById(l.id,l.name)}</text>`+
+      `<text class="loc-kind" x="${l.x}" y="${l.y+36}">${LANG==='zh'?(KINDS[l.kind]||l.kind):l.kind.toUpperCase()}</text>`;
     g.appendChild(el);
+    if(b.light){ const lg=document.createElementNS(SVGNS,'g'); lg.innerHTML=`<g shape-rendering="crispEdges" transform="${tf}">${b.light}</g>`; lights.appendChild(lg); }
   });
 }
 function slotOffset(i,n){ const spread=Math.min(n,5); return (i-(spread-1)/2)*24; }
+// Standing zone: villagers stand BESIDE the building (on the roomier side of the
+// canvas), at roof-mid height so their heads/nametags sit up by the eaves — clear
+// of the location label, which lives centred below the building. clampX/clampY then
+// guarantee the final point (after slot spread) keeps the whole villager on-canvas.
+const FOOT={home:22,cafe:26,office:22,park:34};   // horizontal half-width of each pixel footprint
+const clampX=x=>Math.max(26,Math.min(774,x));     // nametag/body stay within [0,800]
+const clampY=y=>Math.max(44,Math.min(486,y));     // head origin: feet(+27)<=513, nametag(-24)>=20
+function standXY(l,idx,n){
+  const half=FOOT[l.kind]||26;
+  const halfspread=(Math.min(n,5)-1)/2*24;         // widest slot offset for this crowd
+  const off=Math.max(half+18, 40+halfspread);      // push the row out so even the innermost clears the label
+  const side=l.x>400?-1:1;                          // right-half locations stand to their left
+  return [clampX(l.x+side*off+slotOffset(idx,n)), clampY(l.y+8)];
+}
+const LASTPOS={};
 function updateAgents(list){
   const g=$('#agents');
   const byLoc={};
   list.forEach(a=>{(byLoc[a.location]=byLoc[a.location]||[]).push(a);});
   list.forEach(a=>{
     const peers=byLoc[a.location], idx=peers.findIndex(p=>p.id===a.id);
-    const x=a.x+slotOffset(idx,peers.length), y=a.y+30;
+    const loc=LOCS[a.location]||{kind:'home',x:a.x,y:a.y};
+    const [x,y]=standXY(loc,idx,peers.length);            // beside the building, clamped on-canvas
     let el=AGENTS[a.id];
     if(!el){
-      el=document.createElementNS('http://www.w3.org/2000/svg','g');
+      el=document.createElementNS(SVGNS,'g');
       el.setAttribute('class','agent agent-g');
       el.style.transition='transform 1s ease';
-      el.innerHTML=`<circle class="ring" r="11"/><circle r="9"/>
-        <text dy="3">${a.name[0]}</text><text class="agent-name" y="22">${a.name}</text>`;
+      el.style.setProperty('--d',(Object.keys(AGENTS).length*0.2)+'s');   // stagger idle frames per agent
+      const sid=spriteId(a.id), nw=a.name.length*4.6+8;
+      el.innerHTML=`<ellipse class="shadow" cx="0" cy="27" rx="8" ry="2.5"/>
+        <rect class="hit" x="-13" y="-8" width="26" height="40"/>
+        <circle class="ring" r="11"/>
+        <g class="body">
+          <use class="fr fr1" href="#spr-${sid}-f1"/>
+          <use class="fr fr2" href="#spr-${sid}-f2"/>
+          <use class="fr fs"  href="#spr-${sid}-fs"/>
+        </g>
+        <text class="zzz" x="9" y="-9">z</text>
+        <g class="nametag"><rect x="${-nw/2}" y="-24" width="${nw}" height="11" rx="3"/><text y="-15.5">${a.name}</text></g>`;
       el.addEventListener('click',()=>inspect(a.id));
       g.appendChild(el); AGENTS[a.id]=el;
     }
+    const prev=LASTPOS[a.id];
+    if(prev && a.action!=='sleep' && (Math.abs(prev.x-x)>0.5||Math.abs(prev.y-y)>0.5)){
+      el.classList.add('walking');                              // waddle for the ~1s slide
+      clearTimeout(el._wt); el._wt=setTimeout(()=>el.classList.remove('walking'),1000);
+    }
+    LASTPOS[a.id]={x,y};
     el.setAttribute('transform',`translate(${x},${y})`);
     el.classList.toggle('talking',a.action==='talk');
     el.classList.toggle('sleeping',a.action==='sleep');
+    if(a.action==='sleep') el.classList.remove('walking');
   });
   if(selected) refreshInspector(selected,false);
 }
@@ -289,7 +477,10 @@ function updateClock(minute,clock,paused,speed){
   $('#sun').style.left=(frac*100)+'%';
   // opacity 0 at 13:00, up to .45 deep night
   const dist=Math.min(Math.abs(mod-780),1440-Math.abs(mod-780));
-  $('#nightfall').setAttribute('opacity',Math.min(.45,Math.max(0,(dist-260)/700)));
+  const nf=Math.min(.45,Math.max(0,(dist-260)/700));
+  $('#nightfall').setAttribute('opacity',nf);
+  $('#lights').setAttribute('opacity',(nf/0.45).toFixed(3));   // windows glow as night deepens
+
   $('#btn-pause').classList.toggle('active',paused);
   ['1','5','20'].forEach(s=>$('#btn-'+s).classList.toggle('active',!paused&&speed==+s));
 }
