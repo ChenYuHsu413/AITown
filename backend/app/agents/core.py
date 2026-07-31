@@ -20,6 +20,7 @@ class Profile:
     personality: dict[str, float]           # big-five-ish, 0..1
     traits: list[str] = field(default_factory=list)
     goals: list[dict] = field(default_factory=list)  # {"goal": str, "priority": float}
+    daily_wage: float = 0.0                 # flat daily income paid at each day boundary
 
     @property
     def extraversion(self) -> float:
@@ -30,6 +31,7 @@ class Profile:
 class AgentState:
     location: str
     energy: int = 80                        # 0..100
+    money: float = 100.0                    # wallet; spent on meals, topped up by wages/revenue
     mood: str = "neutral"
     current_action: str = "idle"
     busy_until: int = 0                     # sim minute; can't be interrupted before
@@ -39,6 +41,9 @@ class AgentState:
     seek_text: str = ""                     # the confrontation opener to use on arrival
     seek_rumor_id: str = ""                 # the rumor being confronted (moves with seek_target/seek_text)
     seek_tries: int = 0                     # chase attempts so far (give up after 2)
+    avoid_location: str = ""                # a shop to shun after hearing a bad rumor about its owner
+    meals_bought: int = 0                   # lifetime paid meals (throttles the "had a meal" memory)
+    last_meal_slot: int = -1                # (day, eat-slot) already paid for -- stops double-charging
 
 
 @dataclass

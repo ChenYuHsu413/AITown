@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from ..agents.agent import Agent
+from ..agents.core import MemoryItem
 from ..agents.decision import DecisionEngine
 from ..world.world import World
 
@@ -67,6 +68,8 @@ _EN_TEMPLATES = {
     "share_rumor": "{actor} shared a rumor with {target}: {text}",
     "seek_out": "{actor} went looking for {target}",
     "confronted": "{actor} confronted {target} about the rumor — they {text}",
+    "day_summary": "{actor}'s day closed — {text}",
+    "broke": "{actor} couldn't afford a meal at {loc}",
     "say": "💬 {actor}: {text}",
     "insight": "💭 {actor}: {text}",
 }
@@ -132,9 +135,11 @@ class SimulationEngine:
         self.bus = EventBus()
         self.now = 0
         self._last_decision_at: dict[str, int] = {}
+        self._last_day = 0
 
     def bootstrap(self, start_minute: int) -> None:
         self.now = start_minute
+        self._last_day = start_minute // DAY_MIN
         for agent in self.world.agents.values():
             self.scheduler.schedule(agent.id, start_minute)
             self._last_decision_at[agent.id] = start_minute - 1
@@ -173,11 +178,48 @@ class SimulationEngine:
         )
         self.bus.publish(ev)
 
+    # ---- daily economy settlement (Level 0, no LLM) ------------------
+
+    def _settle_days_through(self) -> None:
+        """Run one settlement per midnight crossed since the last check.
+        Handles multi-day jumps (e.g. an agent sleeping across a boundary)."""
+        while self._last_day < self.now // DAY_MIN:
+            self._last_day += 1
+            self._daily_settlement()
+
+    def _daily_settlement(self) -> None:
+        """Close each shop's books (record + reset today's revenue, nudge the
+        owner's mood/memory) and pay everyone their daily wage."""
+        for loc in self.world.locations.values():
+            if not (loc.owner and loc.price > 0):
+                continue
+            owner = self.world.agents.get(loc.owner)
+            x = loc.revenue_today
+            if owner is not None:
+                if x < 15:
+                    imp, mood = 6, "worried"
+                elif x >= 40:
+                    imp, mood = 4, "happy"
+                else:
+                    imp, mood = 2, ""
+                owner.memory.add(MemoryItem(
+                    minute=self.now, text=f"Cafe made ${x:.0f} today.", importance=imp))
+                if mood:
+                    owner.state.mood = mood
+                self._publish(
+                    "action", "day_summary", actor=owner,
+                    location_id=loc.id, text=f"cafe revenue ${x:.0f}",
+                )
+            loc.revenue_today = 0.0
+        for ag in self.world.agents.values():
+            ag.state.money += ag.profile.daily_wage
+
     async def tick(self) -> None:
         item = self.scheduler.pop_next()
         if item is None:
             return
         self.now = max(self.now, item.minute)
+        self._settle_days_through()   # pay wages + close the cafe's books at each midnight
         agent = self.world.agents[item.agent_id]
 
         # Busy agents (mid-conversation) get pushed to when they free up.

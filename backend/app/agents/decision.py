@@ -190,11 +190,16 @@ class DecisionEngine:
 
         # ---- Level 0 default: follow the routine ----------------------
         if decision is None:
+            dest = entry.location
+            # Economy: if the routine sends us to eat at a shop we're shunning
+            # (heard a bad rumor about its owner), eat at home instead.
+            if entry.action == "eat" and agent.state.avoid_location and dest == agent.state.avoid_location:
+                dest = agent.home
             until_next = agent.routine.next_boundary(minute_of_day) - minute_of_day
-            if agent.state.location != entry.location:
+            if agent.state.location != dest:
                 decision = Decision(
-                    "move", target_location=entry.location,
-                    duration=10, reason=f"routine: head to {entry.location}",
+                    "move", target_location=dest,
+                    duration=10, reason=f"routine: head to {dest}",
                 )
             else:
                 decision = Decision(
@@ -246,7 +251,7 @@ class DecisionEngine:
 
     # ---- Level 2: one-call conversation ------------------------------
 
-    async def _maybe_share_rumor(self, a: Agent, b: Agent, now: int) -> dict | None:
+    async def _maybe_share_rumor(self, a: Agent, b: Agent, world: World, now: int) -> dict | None:
         """Decide (in the decision layer) whether ``a`` passes a rumor to ``b``.
         On success: records b's memory + the registry spread, and returns a
         descriptor for the engine to publish as an event. Returns None when
@@ -305,8 +310,15 @@ class DecisionEngine:
                 rel.trust += rumor.sentiment * 5
                 rel.friendship += rumor.sentiment * 2
                 rel.clamp()
-                if rumor.sentiment <= -0.4 and rel.friendship > 55:
-                    b.state.mood = "worried"  # a friend is being badmouthed
+                if rumor.sentiment <= -0.4:
+                    # A strongly negative rumor about a shopkeeper drives custom away:
+                    # b now shuns any shop that subject runs (economy bite).
+                    shop = next((lid for lid, loc in world.locations.items()
+                                 if loc.owner == rumor.subject and loc.price > 0), "")
+                    if shop:
+                        b.state.avoid_location = shop
+                    if rel.friendship > 55:
+                        b.state.mood = "worried"  # a friend is being badmouthed
             # Sharing gossip brings the two a little closer.
             gossip_bond = b.rel(a.id)
             gossip_bond.friendship += 1
@@ -329,8 +341,8 @@ class DecisionEngine:
         settles that rumor. The 4th return value is a confrontation descriptor
         (``{"rumor_id", "outcome", "admitted"}``) or ``None`` for normal chats."""
         is_confront = bool(confront_text and confront_rumor_id)
-        fwd = await self._maybe_share_rumor(a, b, now)   # a -> b
-        rev = await self._maybe_share_rumor(b, a, now)   # b -> a (lets a stationary initiator hear too)
+        fwd = await self._maybe_share_rumor(a, b, world, now)   # a -> b
+        rev = await self._maybe_share_rumor(b, a, world, now)   # b -> a (lets a stationary initiator hear too)
         shared_rumors = [sr for sr in (fwd, rev) if sr]
         a_mem = await a.memory.retrieve_async(b.name, k=3)
         b_mem = await b.memory.retrieve_async(a.name, k=3)
@@ -375,18 +387,27 @@ class DecisionEngine:
 
         confrontation = None
         if is_confront:
-            confrontation = self._settle_confrontation(a, b, confront_rumor_id, parsed, now)
+            confrontation = self._settle_confrontation(a, b, world, confront_rumor_id, parsed, now)
         return turns, signals, shared_rumors, confrontation
 
     def _settle_confrontation(
-        self, a: Agent, b: Agent, rumor_id: str, parsed: dict, now: int
+        self, a: Agent, b: Agent, world: World, rumor_id: str, parsed: dict, now: int
     ) -> dict:
         """Confrontation consequences (pure Python math -- the LLM only emits the
         admit/deny verdict). ``a`` confronted ``b`` about ``rumor_id``. Whatever
         the answer, the rumor is now settled and stops spreading."""
         admitted = bool(parsed.get("admitted", False))
         outcome = "admitted" if admitted else "denied"
+        rumor = self.rumors.rumors.get(rumor_id)
         self.rumors.resolve(rumor_id, now, outcome)   # the propagation terminus
+
+        # Truth is out: customers who were shunning the subject's shop drift back.
+        subj = rumor.subject if rumor else ""
+        if subj:
+            shops = {lid for lid, loc in world.locations.items() if loc.owner == subj}
+            for ag in world.agents.values():
+                if ag.state.avoid_location in shops:
+                    ag.state.avoid_location = ""
 
         rel_ab = a.rel(b.id)
         if admitted:

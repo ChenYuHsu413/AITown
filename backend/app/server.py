@@ -133,6 +133,7 @@ class Sim:
                     "action": a.state.current_action,
                     "mood": a.state.mood,
                     "energy": a.state.energy,
+                    "money": round(a.state.money, 2),
                 }
             )
         return out
@@ -146,7 +147,7 @@ class Sim:
             "idle": self._idle,
             "speed": self.speed,
             "locations": [
-                {"id": l.id, "name": l.name, "kind": l.kind, "x": l.x, "y": l.y}
+                {"id": l.id, "name": l.name, "kind": l.kind, "x": l.x, "y": l.y, "owner": l.owner}
                 for l in self.world.locations.values()
             ],
             "agents": self.agent_states(),
@@ -342,6 +343,37 @@ async def list_rumors() -> JSONResponse:
     return JSONResponse({"rumors": out})
 
 
+@app.get("/api/economy")
+async def economy() -> JSONResponse:
+    """Money in wallets + each shop's takings -- the economy at a glance."""
+    assert sim is not None
+    agents = sim.world.agents
+
+    def name_of(aid: str) -> str:
+        return agents[aid].name if aid in agents else aid
+
+    locations = [
+        {
+            "id": l.id,
+            "name": l.name,
+            "kind": l.kind,
+            "owner": l.owner,
+            "owner_name": name_of(l.owner) if l.owner else "",
+            "price": l.price,
+            "revenue": round(l.revenue, 2),
+            "revenue_today": round(l.revenue_today, 2),
+        }
+        for l in sim.world.locations.values()
+        if l.owner or l.price > 0
+    ]
+    wallets = [
+        {"id": a.id, "name": a.name, "money": round(a.state.money, 2),
+         "daily_wage": a.profile.daily_wage}
+        for a in agents.values()
+    ]
+    return JSONResponse({"locations": locations, "agents": wallets})
+
+
 @app.get("/api/agents/{agent_id}")
 async def agent_detail(agent_id: str) -> JSONResponse:
     assert sim is not None
@@ -362,6 +394,7 @@ async def agent_detail(agent_id: str) -> JSONResponse:
                 "action": a.state.current_action,
                 "mood": a.state.mood,
                 "energy": a.state.energy,
+                "money": round(a.state.money, 2),
             },
             "memories": [
                 {"clock": fmt_time(m.minute), "text": m.text, "importance": m.importance, "kind": m.kind}

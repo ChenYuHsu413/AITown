@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..agents.agent import Agent
+from ..agents.core import MemoryItem
 
 # Energy delta per hour of doing an action (scaled by duration).
 ENERGY_PER_HOUR = {
@@ -33,6 +34,10 @@ class Location:
     kind: str  # home | cafe | office | park | market
     x: float = 0.0   # map coordinates for the UI
     y: float = 0.0
+    owner: str = ""          # agent_id who runs this place ("" = public/unowned)
+    price: float = 0.0       # cost of one meal here (0 = free, e.g. eating at home)
+    revenue: float = 0.0     # lifetime takings
+    revenue_today: float = 0.0  # takings since the last day boundary (reset in settlement)
 
 
 @dataclass
@@ -96,6 +101,36 @@ class World:
             self._recent_arrivals[target_location] = self._recent_arrivals[target_location][-20:]
             self._apply_energy(agent, "move", TRAVEL_MINUTES)
             return {"verb": "arrive", "location": target_location}
+
+        # Eating somewhere with an owner + price = a paid transaction (Level 0, no LLM).
+        # Charge at most once per meal slot: a re-eat after an interruption within
+        # the same routine slot just eats (free), it doesn't ring up a second sale.
+        if action == "eat":
+            loc = self.locations.get(st.location)
+            if loc and loc.owner and loc.price > 0 and loc.owner != agent.id:
+                slot = (now // (24 * 60)) * (24 * 60) + agent.routine.current(now % (24 * 60)).start
+                if st.last_meal_slot == slot:
+                    pass  # already settled this meal slot -> fall through to a free eat
+                elif st.money >= loc.price:
+                    st.last_meal_slot = slot
+                    st.money -= loc.price
+                    owner = self.agents.get(loc.owner)
+                    if owner is not None:
+                        owner.state.money += loc.price
+                    loc.revenue += loc.price
+                    loc.revenue_today += loc.price
+                    st.meals_bought += 1
+                    if st.meals_bought == 1 or st.meals_bought % 5 == 0:  # throttle the memory
+                        agent.memory.add(MemoryItem(
+                            minute=now, text=f"Had a meal at {loc.name}.", importance=1))
+                else:
+                    # Too poor to buy a meal -> fall back to resting, and remember the sting.
+                    st.last_meal_slot = slot   # settle the slot so we don't re-broke on re-entry
+                    agent.memory.add(MemoryItem(
+                        minute=now, text=f"Couldn't afford to eat at {loc.name}.", importance=5))
+                    st.current_action = "rest"
+                    self._apply_energy(agent, "rest", duration)
+                    return {"verb": "broke", "location": st.location}
 
         already_sleeping = action == "sleep" and st.current_action == "sleep"
         st.current_action = action

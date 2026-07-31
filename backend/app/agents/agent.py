@@ -40,6 +40,14 @@ class Agent:
     def name(self) -> str:
         return self.profile.name
 
+    @property
+    def home(self) -> str:
+        """Where this agent lives -- the location of their 'sleep' routine entry."""
+        for e in self.routine.entries:
+            if e.action == "sleep":
+                return e.location
+        return self.state.location
+
     def rel(self, other_id: str) -> Relationship:
         return self.relationships.setdefault(other_id, Relationship())
 

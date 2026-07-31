@@ -73,6 +73,9 @@ footer b{font-weight:500;font-size:14px}
 /* map svg -- storybook village */
 .loc-label{font-family:var(--mono);font-size:10px;font-weight:500;fill:var(--ink);text-anchor:middle}
 .loc-kind{font-family:var(--mono);font-size:8px;fill:var(--faint);letter-spacing:.12em;text-anchor:middle}
+.shop-rev-g rect{fill:var(--panel);stroke:var(--line);stroke-width:.5}
+.shop-rev{font-family:var(--mono);font-size:8.5px;font-weight:500;fill:var(--amber);text-anchor:middle}
+#inspector .money{color:var(--amber);font-weight:500}
 #terrain,#roads{shape-rendering:crispEdges}
 .river-hi{animation:ripple 1.3s steps(2) infinite}
 @keyframes ripple{from{transform:translateX(0)}to{transform:translateX(4px)}}
@@ -161,14 +164,15 @@ footer b{font-weight:500;font-size:14px}
 
 <script>
 const $=s=>document.querySelector(s);
-let LOCS={}, AGENTS={}, selected=null, LOC_LIST=[];
+let LOCS={}, AGENTS={}, selected=null, LOC_LIST=[], ECON=null;
 
 /* ---------- i18n ---------- */
 const I18N={
   en:{
     subtitle:'FIELD STATION · 5 AGENTS', feedTitle:'EVENT FEED', inspectorTitle:'AGENT INSPECTOR',
     inspectorPlaceholder:'Select an agent on the map to inspect memories, relationships, and decision traces.',
-    energy:'Energy', doing:'Doing', relationships:'RELATIONSHIPS', noRelationships:'No relationships yet.',
+    energy:'Energy', money:'Money', doing:'Doing', relationships:'RELATIONSHIPS', noRelationships:'No relationships yet.',
+    cafeToday:'Today',
     recentMemories:'RECENT MEMORIES', decisionTraces:'DECISION TRACES', noDecisions:'No decisions yet.', imp:'imp',
     'footer.calls':'LLM CALLS','footer.cache':'CACHE HITS','footer.tokens':'TOKENS IN/OUT',
     'footer.cost':'EST. COST','footer.rules':'DECISIONS BY RULES',
@@ -178,7 +182,8 @@ const I18N={
   zh:{
     subtitle:'田野觀測站 · 5 位智能體', feedTitle:'事件動態', inspectorTitle:'智能體檢視器',
     inspectorPlaceholder:'點選地圖上的智能體，檢視其記憶、關係與決策軌跡。',
-    energy:'精力', doing:'狀態', relationships:'人際關係', noRelationships:'尚無人際關係。',
+    energy:'精力', money:'金錢', doing:'狀態', relationships:'人際關係', noRelationships:'尚無人際關係。',
+    cafeToday:'今日',
     recentMemories:'近期記憶', decisionTraces:'決策軌跡', noDecisions:'尚無決策。', imp:'重要度',
     'footer.calls':'LLM 呼叫','footer.cache':'快取命中','footer.tokens':'輸入/輸出 Token',
     'footer.cost':'預估成本','footer.rules':'規則決策佔比',
@@ -407,10 +412,13 @@ function buildMap(locations){
     const el=document.createElementNS(SVGNS,'g');
     el.innerHTML=`<g shape-rendering="crispEdges" transform="${tf}">${b.rects}</g>`+
       `<text class="loc-label" x="${l.x}" y="${l.y+27}">${locById(l.id,l.name)}</text>`+
-      `<text class="loc-kind" x="${l.x}" y="${l.y+36}">${LANG==='zh'?(KINDS[l.kind]||l.kind):l.kind.toUpperCase()}</text>`;
+      `<text class="loc-kind" x="${l.x}" y="${l.y+36}">${LANG==='zh'?(KINDS[l.kind]||l.kind):l.kind.toUpperCase()}</text>`+
+      // owned shops get a live "today's takings" sign above the roof (filled by renderShopRev)
+      (l.owner?`<g class="shop-rev-g" transform="translate(${l.x},${l.y-30})"><rect x="-33" y="-8" width="66" height="13" rx="3"/><text id="rev-${l.id}" class="shop-rev"></text></g>`:'');
     g.appendChild(el);
     if(b.light){ const lg=document.createElementNS(SVGNS,'g'); lg.innerHTML=`<g shape-rendering="crispEdges" transform="${tf}">${b.light}</g>`; lights.appendChild(lg); }
   });
+  renderShopRev();   // refill takings after a rebuild (e.g. language switch)
 }
 function slotOffset(i,n){ const spread=Math.min(n,5); return (i-(spread-1)/2)*24; }
 // Standing zone: villagers stand BESIDE the building (on the roomier side of the
@@ -524,6 +532,7 @@ async function refreshInspector(id,scroll){
     <h2>${moodEmoji(a.state.mood)}${a.name}</h2>
     <div class="sub">${a.age} · ${occName(a.occupation)} · ${a.traits.map(traitName).join(t('listSep'))}</div>
     <div class="kv"><b>${t('energy')}</b><div class="bar"><i style="width:${a.state.energy}%"></i></div><span>${a.state.energy}</span></div>
+    <div class="kv"><b>${t('money')}</b><span class="money">💰 ${a.state.money??0}</span><span></span></div>
     <div class="kv"><b>${t('doing')}</b><span>${actName(a.state.action)} @ ${locByEn(a.state.location)}</span><span></span></div>
     <div class="eyebrow">${t('relationships')}</div>
     ${a.relationships.map(r=>`
@@ -567,6 +576,19 @@ async function pollUsage(){
   }catch(e){}
 }
 setInterval(pollUsage,4000); pollUsage();
+
+/* ---------- economy: live "today's takings" sign on owned shops ---------- */
+function renderShopRev(){
+  if(!ECON) return;
+  ECON.locations.forEach(l=>{
+    const el=document.getElementById('rev-'+l.id);
+    if(el) el.textContent=`${t('cafeToday')} $${Math.round(l.revenue_today)}`;
+  });
+}
+async function pollEconomy(){
+  try{ ECON=await (await fetch('/api/economy')).json(); renderShopRev(); }catch(e){}
+}
+setInterval(pollEconomy,4000); pollEconomy();
 </script>
 </body>
 </html>
