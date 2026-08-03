@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 
 from .base import LLMProvider, LLMResult
@@ -32,6 +33,25 @@ _CONCERNS = [
     "Honestly, things have been a bit stressful.",
     "I might make a big change soon. Not sure yet.",
 ]
+
+# zh-TW canned lines: when a real zh dialogue falls all the way to the mock floor
+# (every live provider down/rate-limited), keep the feed in fluent Chinese rather
+# than dropping to English. Generic, not contextual -- it's the last resort.
+_SMALL_TALK_ZH = [
+    ("你今天過得如何？", "還不錯，就老樣子。你呢？"),
+    ("你聽說公園那幅新壁畫了嗎？", "還沒！我該去看看。"),
+    ("最近生意還算穩定。", "那真是太好了，你值得的。"),
+    ("你今天看起來有點累。", "嗯…這週有點長。謝謝你關心。"),
+    ("今晚有什麼安排嗎？", "大概就早點休息吧，說真的。"),
+]
+
+_CONCERNS_ZH = [
+    "我最近一直在想工作的事。",
+    "老實說，最近壓力有點大。",
+    "我可能很快會做個大改變，還不確定。",
+]
+
+_CLOSER_ZH = "如果你想聊聊，我隨時都在。"
 
 
 class MockProvider(LLMProvider):
@@ -99,14 +119,19 @@ class MockProvider(LLMProvider):
                     "admitted": admit,
                 }
             else:
-                opener, reply = rng.choice(_SMALL_TALK)
+                zh = os.environ.get("AI_TOWN_LANG", "en").strip().lower().startswith("zh")
+                small_talk, concerns, closer = (
+                    (_SMALL_TALK_ZH, _CONCERNS_ZH, _CLOSER_ZH) if zh
+                    else (_SMALL_TALK, _CONCERNS, "I'm here if you want to talk about it.")
+                )
+                opener, reply = rng.choice(small_talk)
                 turns = [
                     {"speaker": a, "text": opener},
                     {"speaker": b, "text": reply},
                 ]
                 if rng.random() < 0.5:
-                    turns.append({"speaker": b, "text": rng.choice(_CONCERNS)})
-                    turns.append({"speaker": a, "text": "I'm here if you want to talk about it."})
+                    turns.append({"speaker": b, "text": rng.choice(concerns)})
+                    turns.append({"speaker": a, "text": closer})
                 # If A brought something up (a rumor), have A actually say it.
                 if mention:
                     turns = [{"speaker": a, "text": mention}] + turns

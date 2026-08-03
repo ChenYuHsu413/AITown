@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 
 from .env import load_env
+from .prompts import builders
 from .providers.base import LLMProvider
 from .providers.mock import MockProvider
 from .router import LLMRouter
@@ -59,11 +60,17 @@ def build_router(live: bool | None = None) -> LLMRouter:
                              input_price_per_m=0.05, output_price_per_m=0.08)
         large = GroqProvider(model="llama-3.3-70b-versatile",
                              input_price_per_m=0.59, output_price_per_m=0.79)
+    gem_lite = None
     if os.environ.get("GEMINI_API_KEY"):
         # 2.5-flash-lite was retired for new keys; 2.5-flash is current and,
         # with thinking disabled (see GeminiProvider), emits JSON reliably.
         gem = GeminiProvider(model="gemini-2.5-flash",
                              input_price_per_m=0.30, output_price_per_m=2.50)
+        # Second Gemini as a same-language backup: if 2.5-flash 429s on the free
+        # tier, 2.0-flash (also fluent in zh) catches the zh dialogue/reflection
+        # calls before they'd drop to the English mock floor.
+        gem_lite = GeminiProvider(model="gemini-2.0-flash",
+                                  input_price_per_m=0.10, output_price_per_m=0.40)
     if os.environ.get("OPENAI_API_KEY"):
         nano = OpenAIProvider(model="gpt-5-nano",
                               input_price_per_m=0.05, output_price_per_m=0.40)
@@ -84,4 +91,20 @@ def build_router(live: bool | None = None) -> LLMRouter:
         "normal": chain(gem, small, nano),
         "smart": chain(large, gem, mini),
     }
-    return LLMRouter(tiers=tiers, budget_usd=budget)
+
+    # ---- language-aware routing ---------------------------------------
+    # Free-text tasks (dialogue, reflection) are the ones the reader sees. In a
+    # non-English language, route them only through models that are reliable in
+    # that language. Groq's llama-3.1-8b (the cheap/normal workhorse) garbles
+    # Chinese into character soup, so it's dropped from these chains -- but
+    # llama-3.3-70b IS fluent in zh, so it stays as a high-free-tier backstop
+    # after Gemini (whose free tier is a hard 20 requests/day/model). Order:
+    # Gemini (best) -> Gemini-lite -> llama-3.3-70b (fluent, high quota) -> mock.
+    # English keeps the full dual chain (8b is fine there).
+    task_chains: dict[str, list[LLMProvider]] = {}
+    if builders.lang_is_zh() and (gem or gem_lite or large):
+        zh_reliable = chain(gem, gem_lite, large)  # no 8b; mock floor last
+        task_chains["dialogue"] = zh_reliable
+        task_chains["reflection"] = zh_reliable
+
+    return LLMRouter(tiers=tiers, task_chains=task_chains, budget_usd=budget)

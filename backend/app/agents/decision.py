@@ -37,6 +37,31 @@ TALK_DURATION_MIN = 10
 LOW_ENERGY = 20
 
 
+def _dialogue_ok(result) -> bool:
+    """Structural quality gate for a generated conversation (passed to the router
+    so a bad result is retried / falls through instead of landing on-screen):
+    real turns, each with non-empty, sensibly-sized text. Catches truncated JSON
+    and the empty-"text" JSON that Groq's 70b intermittently emits.
+
+    Deliberately NOT a language check: keeping weak-at-Chinese models off the zh
+    chain is handled by language-aware routing in the factory, and a structural-
+    only gate lets the English mock serve as a readable last resort (a rare, plain
+    fallback) rather than being rejected into an empty bubble."""
+    parsed = result.parsed
+    if not isinstance(parsed, dict):
+        return False
+    turns = parsed.get("turns")
+    if not isinstance(turns, list) or not turns or len(turns) > 12:
+        return False
+    for t in turns:
+        if not isinstance(t, dict):
+            return False
+        text = str(t.get("text", "")).strip()
+        if not text or len(text) > 500:
+            return False
+    return True
+
+
 @dataclass
 class Decision:
     action: str                        # move | work | rest | eat | sleep | talk | idle
@@ -357,7 +382,10 @@ class DecisionEngine:
             agent_id=a.id,
             sim_minute=now,
             schema={"type": "object"},
-            max_tokens=400,
+            # Chinese runs ~2-3x the tokens/char of English; 4 turns + JSON needs
+            # more headroom or the last turn truncates.
+            max_tokens=600 if builders.lang_is_zh() else 400,
+            validate=_dialogue_ok,
         )
         parsed = res.parsed if isinstance(res.parsed, dict) else {}
         turns = parsed.get("turns", [])
@@ -447,7 +475,7 @@ class DecisionEngine:
             agent_id=agent.id,
             sim_minute=now,
             schema={"type": "object"},
-            max_tokens=200,
+            max_tokens=300 if builders.lang_is_zh() else 200,
         )
         insights = []
         if isinstance(res.parsed, dict):

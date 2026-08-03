@@ -19,6 +19,15 @@ if TYPE_CHECKING:  # avoid circular imports at runtime
     from ...agents.agent import Agent
 
 
+def lang_code() -> str:
+    """Current generation language (AI_TOWN_LANG), normalized lower-case. 'en' default."""
+    return os.environ.get("AI_TOWN_LANG", "en").strip().lower() or "en"
+
+
+def lang_is_zh() -> bool:
+    return lang_code().startswith("zh")
+
+
 def _lang_directive() -> str:
     """Localize only the *free-text* the reader sees (dialogue lines, insights,
     retold gossip). JSON keys and action/enum values MUST stay English -- the

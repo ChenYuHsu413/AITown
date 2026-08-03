@@ -14,10 +14,13 @@ Task -> tier mapping (mirrors the plan):
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .providers.base import LLMProvider, LLMResult
 from .usage import LLMCall, UsageTracker
+
+SOFT_RETRIES = 1  # extra attempts on the same provider after an empty/garbled result
 
 TASK_TIERS: dict[str, str] = {
     "should_talk": "cheap",
@@ -36,6 +39,10 @@ TASK_TIERS: dict[str, str] = {
 @dataclass
 class LLMRouter:
     tiers: dict[str, list[LLMProvider]]  # tier -> fallback chain
+    # Per-task chain overrides (task -> chain), checked *before* the tier chain.
+    # Used for language-aware routing: e.g. zh-TW dialogue -> Gemini-only, so a
+    # weak-at-Chinese model never garbles the feed.
+    task_chains: dict[str, list[LLMProvider]] = field(default_factory=dict)
     usage: UsageTracker = field(default_factory=UsageTracker)
     budget_usd: float | None = None       # hard spend cap; None = unlimited
     _cache: dict[str, LLMResult] = field(default_factory=dict)
@@ -51,7 +58,13 @@ class LLMRouter:
         schema: dict | None = None,
         cache_key: str | None = None,
         max_tokens: int = 512,
+        validate: Callable[[LLMResult], bool] | None = None,
     ) -> LLMResult:
+        """``validate`` is an optional quality gate run on each provider's
+        output. A result that fails it (or, when ``schema`` was requested,
+        parses to None -- i.e. truncated/malformed JSON) is treated as a
+        provider failure and the chain falls through to the next provider,
+        so broken content never reaches the caller."""
         tier = TASK_TIERS.get(task, "normal")
 
         # ---- decision cache -------------------------------------
@@ -77,7 +90,8 @@ class LLMRouter:
                 return hit
 
         # ---- provider chain with fallback -----------------------
-        chain = self.tiers.get(tier) or self.tiers["normal"]
+        # Task override (language-aware routing) wins over the tier chain.
+        chain = self.task_chains.get(task) or self.tiers.get(tier) or self.tiers["normal"]
 
         # ---- budget guard ---------------------------------------
         # Once cumulative spend hits the cap, collapse to the free fallback
@@ -93,32 +107,72 @@ class LLMRouter:
             chain = chain[-1:]
 
         last_err: Exception | None = None
+        floor: tuple[LLMProvider, LLMResult] | None = None  # best-effort output if all gates fail
         for provider in chain:
-            try:
-                result = await provider.generate(
-                    messages, schema=schema, max_tokens=max_tokens
-                )
-            except Exception as err:  # 429, timeout, parse failure...
-                last_err = err
-                continue
+            result: LLMResult | None = None
+            reason: str | None = None
+            # Soft failures (empty/garbled/truncated JSON) are often intermittent
+            # -- e.g. Groq's 70b returns valid-but-empty "text" ~10% of the time --
+            # so retry the SAME provider once before moving on. Hard errors (429,
+            # timeout) won't fix on retry, so those break to the next provider.
+            for _ in range(1 + SOFT_RETRIES):
+                try:
+                    result = await provider.generate(
+                        messages, schema=schema, max_tokens=max_tokens
+                    )
+                except Exception as err:  # 429, timeout, HTTP error...
+                    last_err = err
+                    result = None
+                    break
+                reason = self._reject_reason(result, schema, validate)
+                if reason is None:
+                    break  # good output
 
-            self.usage.record(
-                LLMCall(
-                    sim_minute=sim_minute,
-                    agent_id=agent_id,
-                    task_type=task,
-                    provider=result.provider,
-                    model=result.model,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    latency_ms=result.latency_ms,
-                    estimated_cost=provider.estimate_cost(
-                        result.input_tokens, result.output_tokens
-                    ),
-                )
-            )
-            if full_key is not None:
-                self._cache[full_key] = result
+            if result is not None and reason is None:
+                self._record(provider, result, task=task, agent_id=agent_id, sim_minute=sim_minute)
+                if full_key is not None:
+                    self._cache[full_key] = result
+                return result
+            if result is not None:  # soft-failed every attempt -> remember, try next provider
+                last_err = RuntimeError(f"{provider.name}/{result.model}: {reason}")
+                if floor is None:
+                    floor = (provider, result)
+
+        # Nothing cleared the gates. Rather than hard-fail the tick, fall back to
+        # the first output we did get (typically the free mock floor).
+        if floor is not None:
+            provider, result = floor
+            self._record(provider, result, task=task, agent_id=agent_id, sim_minute=sim_minute)
             return result
 
-        raise RuntimeError(f"All providers failed for tier '{tier}': {last_err}")
+        raise RuntimeError(f"All providers failed for task '{task}' (tier '{tier}'): {last_err}")
+
+    @staticmethod
+    def _reject_reason(
+        result: LLMResult, schema: dict | None, validate: Callable[[LLMResult], bool] | None
+    ) -> str | None:
+        """None if the result is acceptable, else a short reason it should be
+        rejected (so the chain retries / falls through)."""
+        if schema is not None and result.parsed is None:
+            return "invalid/truncated JSON"
+        if validate is not None and not validate(result):
+            return "failed sanity check"
+        return None
+
+    def _record(self, provider: LLMProvider, result: LLMResult, *,
+                task: str, agent_id: str, sim_minute: int) -> None:
+        self.usage.record(
+            LLMCall(
+                sim_minute=sim_minute,
+                agent_id=agent_id,
+                task_type=task,
+                provider=result.provider,
+                model=result.model,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                latency_ms=result.latency_ms,
+                estimated_cost=provider.estimate_cost(
+                    result.input_tokens, result.output_tokens
+                ),
+            )
+        )
