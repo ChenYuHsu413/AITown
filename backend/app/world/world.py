@@ -60,6 +60,40 @@ class World:
         self._recent_arrivals: dict[str, list[tuple[int, str]]] = {
             lid: [] for lid in self.locations
         }  # location -> [(minute, agent_id)]
+        # World effects (weather / festivals). Pure Level-0 state; no LLM.
+        # Each: {"type": "rain"|"festival", "location": str, "until_minute": int}.
+        self.active_effects: list[dict] = []
+
+    # ---- world effects (rain / festival) ----------------------------
+
+    def effect_active(self, type: str) -> dict | None:
+        for eff in self.active_effects:
+            if eff["type"] == type:
+                return eff
+        return None
+
+    def set_effect(self, type: str, location: str, until_minute: int) -> bool:
+        """Add a world effect, or extend an existing one of the same type
+        (effects never stack -- a repeat just pushes ``until_minute`` out and
+        refreshes the location). Returns True only on a fresh activation."""
+        eff = self.effect_active(type)
+        if eff is not None:
+            eff["until_minute"] = max(eff["until_minute"], until_minute)
+            if location:
+                eff["location"] = location
+            return False
+        self.active_effects.append(
+            {"type": type, "location": location, "until_minute": until_minute}
+        )
+        return True
+
+    def expire_effects(self, now: int) -> list[dict]:
+        """Drop effects whose window has closed and return them, so the caller
+        (the engine) can publish the matching end events."""
+        expired = [e for e in self.active_effects if e["until_minute"] <= now]
+        if expired:
+            self.active_effects = [e for e in self.active_effects if e["until_minute"] > now]
+        return expired
 
     # ---- observation ------------------------------------------------
 
@@ -99,7 +133,9 @@ class World:
             self._recent_arrivals[target_location].append((now, agent.id))
             # Trim arrival logs so they don't grow forever.
             self._recent_arrivals[target_location] = self._recent_arrivals[target_location][-20:]
-            self._apply_energy(agent, "move", TRAVEL_MINUTES)
+            # Rain makes the walk 1.5x as tiring (pure rule -- energy only, not travel time).
+            travel = int(TRAVEL_MINUTES * 1.5) if self.effect_active("rain") else TRAVEL_MINUTES
+            self._apply_energy(agent, "move", travel)
             return {"verb": "arrive", "location": target_location}
 
         # Eating somewhere with an owner + price = a paid transaction (Level 0, no LLM).

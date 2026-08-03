@@ -121,6 +121,21 @@ footer b{font-weight:500;font-size:14px}
 .nametag text{font-family:var(--mono);font-size:8.5px;fill:var(--ink);text-anchor:middle;pointer-events:none}
 .bubble rect{fill:var(--ink)}
 .bubble text{font-family:var(--body);font-size:11px;fill:var(--paper)}
+
+/* world events: system feed rows + rain/festival map layers + God Mode panel */
+.ev.system{justify-content:center;text-align:center;font-style:italic;color:var(--amber);
+  background:var(--amber-soft);border-bottom-style:solid}
+.ev.system time{display:none}
+#rain,#festival{pointer-events:none}
+#raindrops{animation:rainfall .5s steps(2) infinite}
+@keyframes rainfall{from{transform:translate(0,0)}to{transform:translate(-4px,14px)}}
+#godpanel{position:absolute;top:52px;right:14px;z-index:20;display:flex;flex-direction:column;gap:6px;
+  background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;
+  box-shadow:0 4px 14px rgba(0,0,0,.12)}
+#godpanel button{font-family:var(--mono);font-size:12px;padding:7px 12px;background:var(--paper);
+  border:1px solid var(--line);border-radius:4px;color:var(--ink);cursor:pointer;text-align:left;white-space:nowrap}
+#godpanel button:hover{border-color:var(--amber)}
+@media (prefers-reduced-motion: reduce){ #raindrops{animation:none} }
 /* NB: #lights opacity is driven by the `opacity` ATTRIBUTE (set each tick in
    updateClock), NOT a CSS rule -- a CSS `opacity` here would override the
    attribute (presentation attrs rank lowest) and the windows would never glow. */
@@ -149,6 +164,11 @@ footer b{font-weight:500;font-size:14px}
     <button id="btn-5" class="active" data-i18n-title="title.s5" title="5 sim-minutes per second">5×</button>
     <button id="btn-20" data-i18n-title="title.s20" title="20 sim-minutes per second">20×</button>
     <button id="btn-lang" title="Switch language">中</button>
+    <button id="btn-god" data-i18n-title="title.god" title="World events">⚡</button>
+  </div>
+  <div id="godpanel" hidden>
+    <button id="god-rain" data-i18n="god.rain">Rain · 3h</button>
+    <button id="god-festival" data-i18n="god.festival">Park festival · 4h</button>
   </div>
 </header>
 
@@ -162,6 +182,8 @@ footer b{font-weight:500;font-size:14px}
       <g id="locs"></g>
       <g id="agents"></g>
       <g id="bubbles"></g>
+      <g id="festival" pointer-events="none"></g>
+      <g id="rain" opacity="0" pointer-events="none"><rect width="800" height="520" fill="#4a6a90" opacity="0.12"/><g id="raindrops"></g></g>
       <rect id="nightfall" width="800" height="520" fill="var(--night)" opacity="0" pointer-events="none"/>
       <g id="lights" opacity="0" pointer-events="none"></g>
     </svg>
@@ -208,6 +230,7 @@ const I18N={
     'footer.cost':'EST. COST','footer.rules':'DECISIONS BY RULES',
     'title.pause':'Pause simulation','title.s1':'1 sim-minute per second','title.s5':'5 sim-minutes per second',
     'title.s20':'20 sim-minutes per second','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
+    'title.god':'World events','god.rain':'Rain · 3h','god.festival':'Park festival · 4h',
   },
   zh:{
     subtitle:'田野觀測站 · 5 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', inspectorTitle:'智能體檢視器',
@@ -220,6 +243,7 @@ const I18N={
     'footer.cost':'預估成本','footer.rules':'規則決策佔比',
     'title.pause':'暫停模擬','title.s1':'每秒 1 模擬分鐘','title.s5':'每秒 5 模擬分鐘',
     'title.s20':'每秒 20 模擬分鐘','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
+    'title.god':'世界事件','god.rain':'下雨 3 小時','god.festival':'公園慶典 4 小時',
   },
 };
 const LOC_ZH={home_a:'河畔之家',home_b:'山丘公寓',cafe:'月光咖啡館',office:'湯森辦公室',park:'老橡樹公園'};  // keyed by location id
@@ -242,6 +266,8 @@ const EV_TMPL={
     share_rumor:(a,l,tg,sp)=>`${a} shared a rumor with ${tg}: ${sp}`,
     seek_out:(a,l,tg)=>`${a} went looking for ${tg}`,
     confronted:(a,l,tg,sp)=>`${a} confronted ${tg} about the rumor — they ${sp}`,
+    rain_start:()=>`🌧️ It started raining`, rain_end:()=>`🌤️ The rain stopped`,
+    festival_start:(a,l)=>`🎉 A festival began at ${l}`, festival_end:(a,l)=>`🎏 The festival at ${l} ended`,
     say:(a,l,tg,sp)=>`💬 ${a}: ${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}: ${sp}`,
   },
   zh:{
@@ -252,6 +278,8 @@ const EV_TMPL={
     share_rumor:(a,l,tg,sp)=>`${a} 向 ${tg} 傳了個八卦：${sp}`,
     seek_out:(a,l,tg)=>`${a} 去找 ${tg} 了`,
     confronted:(a,l,tg,sp)=>`${a} 當面質問了 ${tg}——對方${SPEECH_ZH[sp]||sp}`,
+    rain_start:()=>`🌧️ 下雨了`, rain_end:()=>`🌤️ 雨停了`,
+    festival_start:(a,l)=>`🎉 ${l} 的慶典開始了`, festival_end:(a,l)=>`🎏 ${l} 的慶典結束了`,
     say:(a,l,tg,sp)=>`💬 ${a}：${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}：${sp}`,
   },
 };
@@ -297,6 +325,7 @@ ws.onmessage=e=>{
   if(msg.type==='snapshot'){ buildMap(msg.locations); msg.events.forEach(addEvent); }
   updateClock(msg.minute,msg.clock,msg.paused,msg.speed);
   if(msg.agents) updateAgents(msg.agents);
+  if(msg.effects) renderEffects(msg.effects);      // rain/festival visuals switch in real time
   if(msg.type==='tick') msg.events.forEach(ev=>{addEvent(ev); maybeBubble(ev);});
 };
 setInterval(()=>{ if(ws.readyState===1) ws.send('ping'); },15000);
@@ -595,6 +624,35 @@ $('#btn-5').onclick=()=>ctl({cmd:'speed',speed:5});
 $('#btn-20').onclick=()=>ctl({cmd:'speed',speed:20});
 $('#btn-lang').onclick=toggleLang;
 applyLang();
+
+/* ---------- world events (rain / festival) ---------- */
+function initRain(){                                    // build sparse pixel raindrops once
+  const g=$('#raindrops'); if(!g||g.childElementCount) return;
+  let s='';
+  for(let i=0;i<70;i++){ const x=Math.round(Math.random()*820), y=Math.round(Math.random()*540);
+    s+=`<line x1="${x}" y1="${y}" x2="${x-3}" y2="${y+8}" stroke="#bcd3e6" stroke-width="1" stroke-opacity=".5"/>`; }
+  g.innerHTML=s;
+}
+function renderFestival(locId){                         // string of little pennants above the venue
+  const g=$('#festival'); if(!g) return;
+  const l=LOCS[locId]; if(!l){ g.innerHTML=''; return; }
+  const cols=['#D9544D','#E0A63C','#5F7D5B','#5E86B0'];
+  const y=l.y-38, x0=l.x-42, n=8, gap=12;
+  let s=`<line x1="${x0}" y1="${y}" x2="${x0+n*gap}" y2="${y}" stroke="#8a6a52" stroke-width="1"/>`;
+  for(let i=0;i<n;i++){ const x=x0+i*gap;
+    s+=`<path d="M${x} ${y} L${x+8} ${y} L${x+4} ${y+9} Z" fill="${cols[i%cols.length]}"/>`; }
+  g.innerHTML=s;
+}
+function renderEffects(effects){                        // driven by the state snapshot every tick
+  effects=effects||[];
+  const rain=effects.some(e=>e.type==='rain'), fest=effects.find(e=>e.type==='festival');
+  const rainG=$('#rain'); if(rainG){ if(rain) initRain(); rainG.setAttribute('opacity',rain?'1':'0'); }
+  const festG=$('#festival'); if(festG){ if(fest) renderFestival(fest.location); else festG.innerHTML=''; }
+}
+function worldEvent(body){ fetch('/api/world-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
+$('#btn-god').onclick=()=>{ const p=$('#godpanel'); p.hidden=!p.hidden; };
+$('#god-rain').onclick=()=>{ worldEvent({type:'rain',duration_minutes:180}); $('#godpanel').hidden=true; };
+$('#god-festival').onclick=()=>{ worldEvent({type:'festival',location:'park',duration_minutes:240}); $('#godpanel').hidden=true; };
 
 async function pollUsage(){
   try{

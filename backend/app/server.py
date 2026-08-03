@@ -90,6 +90,11 @@ class Sim:
             self._empty_since = None
             if self._idle:
                 self._idle = False
+                # A resuming client already received recent history in its snapshot;
+                # drop the queue accumulated while idle so those events aren't
+                # double-delivered on the first post-resume tick (e.g. God Mode
+                # events fired while nobody was watching).
+                self._new_events.clear()
                 print("[idle] simulation resumed")
             return False
         if self._empty_since is None:
@@ -115,6 +120,7 @@ class Sim:
             target = self.engine.now + step
             await self.engine.run_until(target)
             self.engine.now = max(self.engine.now, target)  # clock advances even in quiet periods
+            self.engine.expire_world_effects()  # end rain/festival on time even with no pending decisions
             await self._broadcast_tick()
 
     # ---- snapshots ------------------------------------------------
@@ -138,6 +144,17 @@ class Sim:
             )
         return out
 
+    def effects_json(self) -> list[dict]:
+        out = []
+        for e in self.world.active_effects:
+            lid = e.get("location", "")
+            out.append({
+                "type": e["type"], "location": lid,
+                "location_name": self.world.locations[lid].name if lid in self.world.locations else "",
+                "until_minute": e["until_minute"],
+            })
+        return out
+
     def snapshot(self) -> dict:
         return {
             "type": "snapshot",
@@ -151,6 +168,7 @@ class Sim:
                 for l in self.world.locations.values()
             ],
             "agents": self.agent_states(),
+            "effects": self.effects_json(),
             "events": [self._event_json(e) for e in self.engine.bus.events[-40:]],
         }
 
@@ -180,6 +198,7 @@ class Sim:
             "idle": self._idle,
             "speed": self.speed,
             "agents": self.agent_states(),
+            "effects": self.effects_json(),
             "events": [self._event_json(e) for e in self._new_events],
         }
         self._new_events.clear()
@@ -372,6 +391,31 @@ async def economy() -> JSONResponse:
         for a in agents.values()
     ]
     return JSONResponse({"locations": locations, "agents": wallets})
+
+
+@app.post("/api/world-event")
+async def world_event(body: dict) -> JSONResponse:
+    """God Mode: start (or extend) a world effect. Same-type effects never
+    stack -- a repeat just extends the window.
+      {"type": "rain", "duration_minutes": 180}
+      {"type": "festival", "location": "park", "duration_minutes": 240}"""
+    assert sim is not None
+    etype = str(body.get("type", ""))
+    if etype not in ("rain", "festival"):
+        return JSONResponse({"error": "type must be 'rain' or 'festival'"}, status_code=400)
+    try:
+        duration = int(body.get("duration_minutes", 180))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "duration_minutes must be an integer"}, status_code=400)
+    duration = max(1, min(duration, 24 * 60))
+    location = str(body.get("location", ""))
+    if etype == "festival":
+        if location not in sim.world.locations:
+            return JSONResponse({"error": "festival requires a known 'location'"}, status_code=400)
+    else:
+        location = ""  # rain is town-wide
+    eff = sim.engine.trigger_world_effect(etype, location, duration)
+    return JSONResponse({"ok": True, "effect": eff})
 
 
 @app.get("/api/relationships")

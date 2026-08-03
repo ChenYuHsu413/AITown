@@ -70,6 +70,10 @@ _EN_TEMPLATES = {
     "confronted": "{actor} confronted {target} about the rumor — they {text}",
     "day_summary": "{actor}'s day closed — {text}",
     "broke": "{actor} couldn't afford a meal at {loc}",
+    "rain_start": "It started raining",
+    "rain_end": "The rain stopped",
+    "festival_start": "A festival began at {loc}",
+    "festival_end": "The festival at {loc} ended",
     "say": "💬 {actor}: {text}",
     "insight": "💭 {actor}: {text}",
 }
@@ -178,6 +182,30 @@ class SimulationEngine:
         )
         self.bus.publish(ev)
 
+    # ---- world effects (rain / festival, Level 0) --------------------
+
+    def trigger_world_effect(self, etype: str, location: str, duration: int) -> dict | None:
+        """God Mode: start (or extend) a world effect. Publishes a system
+        start event only on a fresh activation; a repeat just extends the
+        window. Returns the live effect."""
+        until = self.now + max(1, duration)
+        newly = self.world.set_effect(etype, location, until)
+        if newly:
+            self._publish(
+                "system", "rain_start" if etype == "rain" else "festival_start",
+                location_id=location or "",
+            )
+        return self.world.effect_active(etype)
+
+    def expire_world_effects(self) -> None:
+        """Drop any effects whose window has closed and announce their end.
+        Safe to call every tick and from the server loop -- a no-op when idle."""
+        for eff in self.world.expire_effects(self.now):
+            self._publish(
+                "system", "rain_end" if eff["type"] == "rain" else "festival_end",
+                location_id=eff.get("location", ""),
+            )
+
     # ---- daily economy settlement (Level 0, no LLM) ------------------
 
     def _settle_days_through(self) -> None:
@@ -220,6 +248,7 @@ class SimulationEngine:
             return
         self.now = max(self.now, item.minute)
         self._settle_days_through()   # pay wages + close the cafe's books at each midnight
+        self.expire_world_effects()   # end rain/festival whose window has closed
         agent = self.world.agents[item.agent_id]
 
         # Busy agents (mid-conversation) get pushed to when they free up.

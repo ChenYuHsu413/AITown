@@ -220,6 +220,26 @@ class DecisionEngine:
             # (heard a bad rumor about its owner), eat at home instead.
             if entry.action == "eat" and agent.state.avoid_location and dest == agent.state.avoid_location:
                 dest = agent.home
+
+            # ---- world events (pure Level 0, no LLM) ------------------
+            rain = world.effect_active("rain")
+            festival = world.effect_active("festival")
+            # Festival: spend downtime (rest slots) at the festivities; work and
+            # sleep are untouched, so people only drift over once they're off.
+            if festival and entry.action == "rest":
+                dest = festival["location"]
+            # Rain (overrides festival): no one goes to a park -- head home instead,
+            # and those already at the park leave on their next decision.
+            park_rained_out = False
+            if rain:
+                d_loc = world.locations.get(dest)
+                if d_loc is not None and d_loc.kind == "park":
+                    dest = agent.home
+                    park_rained_out = True
+            # The festival crowd is in good spirits.
+            if festival and agent.state.location == festival["location"]:
+                agent.state.mood = "happy"
+
             until_next = agent.routine.next_boundary(minute_of_day) - minute_of_day
             if agent.state.location != dest:
                 decision = Decision(
@@ -227,9 +247,10 @@ class DecisionEngine:
                     duration=10, reason=f"routine: head to {dest}",
                 )
             else:
+                act = "rest" if park_rained_out else entry.action
                 decision = Decision(
-                    entry.action, duration=max(15, min(until_next, 120)),
-                    reason=f"routine: {entry.action}",
+                    act, duration=max(15, min(until_next, 120)),
+                    reason="routine: rest (rained out)" if park_rained_out else f"routine: {entry.action}",
                 )
             model_used = "rules" if decision.level == 0 else model_used
 
