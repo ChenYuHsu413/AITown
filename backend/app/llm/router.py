@@ -14,6 +14,8 @@ Task -> tier mapping (mirrors the plan):
 from __future__ import annotations
 
 import hashlib
+import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -47,6 +49,38 @@ class LLMRouter:
     budget_usd: float | None = None       # hard spend cap; None = unlimited
     _cache: dict[str, LLMResult] = field(default_factory=dict)
     _budget_logged: bool = False
+    _cooldown: dict[int, float] = field(default_factory=dict)  # id(provider) -> monotonic deadline
+
+    # ---- rate-limit cooldown ---------------------------------------
+    # A provider that just returned 429 is skipped for a cooldown window instead
+    # of being hammered on every call -- that both stops wasting calls and lets
+    # its per-minute bucket recover. The window comes from the response's
+    # Retry-After / "retry in Ns" hint, clamped to a sane range.
+    def _cooling(self, provider: LLMProvider) -> bool:
+        return self._cooldown.get(id(provider), 0.0) > time.monotonic()
+
+    def _start_cooldown(self, provider: LLMProvider, err: Exception) -> float:
+        secs = 30.0
+        resp = getattr(err, "response", None)
+        if resp is not None:
+            ra = getattr(resp, "headers", {}).get("retry-after") if hasattr(resp, "headers") else None
+            if ra:
+                try:
+                    secs = float(ra)
+                except ValueError:
+                    pass
+            else:
+                m = re.search(r"(?:retry|try again) in ([\d.]+)s", getattr(resp, "text", "") or "")
+                if m:
+                    secs = float(m.group(1))
+        # TPM/RPM buckets reset every minute, so keep the skip short -- a long
+        # cooldown from one transient 429 would otherwise sideline a healthy
+        # provider for the whole run.
+        secs = max(10.0, min(secs, 90.0))
+        self._cooldown[id(provider)] = time.monotonic() + secs
+        print(f"[cooldown] {provider.name}/{getattr(provider, 'model', '')} "
+              f"429 -> skipping for {secs:.0f}s", flush=True)
+        return secs
 
     async def generate(
         self,
@@ -109,6 +143,8 @@ class LLMRouter:
         last_err: Exception | None = None
         floor: tuple[LLMProvider, LLMResult] | None = None  # best-effort output if all gates fail
         for provider in chain:
+            if self._cooling(provider):
+                continue  # 429'd recently -> skip until its cooldown lapses
             result: LLMResult | None = None
             reason: str | None = None
             # Soft failures (empty/garbled/truncated JSON) are often intermittent
@@ -123,6 +159,8 @@ class LLMRouter:
                 except Exception as err:  # 429, timeout, HTTP error...
                     last_err = err
                     result = None
+                    if getattr(getattr(err, "response", None), "status_code", None) == 429:
+                        self._start_cooldown(provider, err)   # back off, don't hammer
                     break
                 reason = self._reject_reason(result, schema, validate)
                 if reason is None:

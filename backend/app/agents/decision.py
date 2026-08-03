@@ -399,6 +399,7 @@ class DecisionEngine:
                 a_wants_to_mention=confront_text or (fwd["text"] if fwd else None),
                 b_wants_to_mention=rev["text"] if rev else None,
                 is_confrontation=is_confront,
+                time_hint=builders.time_of_day(now),
             ),
             agent_id=a.id,
             sim_minute=now,

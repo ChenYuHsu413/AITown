@@ -49,6 +49,12 @@ def _lang_directive() -> str:
     )
 
 
+def time_of_day(minute: int) -> str:
+    h = (minute % 1440) // 60
+    return ("late night" if h < 6 else "morning" if h < 11 else "midday" if h < 14
+            else "afternoon" if h < 18 else "evening" if h < 22 else "night")
+
+
 def character_card(agent: "Agent") -> str:
     p = agent.profile
     traits = ", ".join(p.traits)
@@ -90,11 +96,12 @@ def should_talk_prompt(agent: "Agent", other_name: str, memories: list[str]) -> 
 def dialogue_prompt(
     a: "Agent", b: "Agent", a_mem: list[str], b_mem: list[str], max_turns: int = 4,
     a_wants_to_mention: str | None = None, b_wants_to_mention: str | None = None,
-    is_confrontation: bool = False,
+    is_confrontation: bool = False, time_hint: str = "",
 ) -> list[dict]:
+    scene = f"Scene: {time_hint + ' ' if time_hint else ''}at {a.state.location}.\n"
     user = (
         f"Simulate a conversation between {a.profile.name} and {b.profile.name}. "
-        f"Maximum {max_turns} turns.\n"
+        f"Maximum {max_turns} turns.\n{scene}"
         f"A: {character_card(a)} {state_line(a)}\n{memories_block(a_mem)}\n"
         f"B: {character_card(b)} {state_line(b)}\n{memories_block(b_mem)}"
     )
@@ -104,6 +111,9 @@ def dialogue_prompt(
         user += f"\n{b.profile.name} wants to bring up: {b_wants_to_mention}"
     system = (
         "You write short, natural conversations for a life simulation. "
+        "Ground it in the time of day, the place, each character's current mood and "
+        "their recent memories; vary the opening and don't fall back on generic "
+        "small talk when they already know each other. "
         "Respond ONLY with JSON: "
         '{"turns": [{"speaker": "...", "text": "..."}], '
         '"sentiment": 0..1, "trust_signal": 0..1, "conflict_signal": 0..1}.'

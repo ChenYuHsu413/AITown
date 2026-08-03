@@ -33,6 +33,7 @@ INDEX = ROOT / "frontend" / "index.html"
 TICK_REAL_SECONDS = 0.5
 START_MINUTE = 6 * 60  # Day 1, 06:00
 IDLE_GRACE_SECONDS = 10.0  # keep running this long after the last client leaves (survives a page refresh)
+MAX_LIVE_SPEED = 5.0       # in live mode, cap speed so LLM calls don't burst past free-tier rate limits
 
 
 class Sim:
@@ -46,6 +47,7 @@ class Sim:
         from backend.app.world.world import World
 
         self.router = build_router()
+        self.live = any(p.name != "mock" for chain in self.router.tiers.values() for p in chain)
         self.world = World(build_locations(), build_agents())
         self.engine = SimulationEngine(self.world, DecisionEngine(self.router))
         self.speed: float = 5.0          # sim minutes per real second
@@ -285,7 +287,8 @@ async def control(body: dict) -> JSONResponse:
     elif cmd == "play":
         sim.paused = False
     elif cmd == "speed":
-        sim.speed = float(body.get("speed", 5))
+        want = float(body.get("speed", 5))
+        sim.speed = min(want, MAX_LIVE_SPEED) if sim.live else want   # live: don't burst rate limits
         sim.paused = False
     return JSONResponse({"paused": sim.paused, "speed": sim.speed})
 

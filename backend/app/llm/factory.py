@@ -45,6 +45,8 @@ def build_router(live: bool | None = None) -> LLMRouter:
     mock = MockProvider()
 
     if not live:
+        print(f"[live] mock-only (AI_TOWN_LIVE={os.environ.get('AI_TOWN_LIVE')!r}) | "
+              f"lang={builders.lang_code()}", flush=True)
         return LLMRouter(
             tiers={"cheap": [mock], "normal": [mock], "smart": [mock]},
             budget_usd=budget,
@@ -106,5 +108,16 @@ def build_router(live: bool | None = None) -> LLMRouter:
         zh_reliable = chain(gem, gem_lite, large)  # no 8b; mock floor last
         task_chains["dialogue"] = zh_reliable
         task_chains["reflection"] = zh_reliable
+
+    # Startup live-status summary: make "am I actually on real models?" a one-line,
+    # unmissable fact (a server restarted without .env in scope would show mock-only).
+    tags = []
+    if small: tags.append("groq ✓")
+    if gem: tags.append("gemini ✓")
+    if nano: tags.append("openai ✓")
+    dchain = " → ".join(f"{p.name}/{getattr(p, 'model', '')}"
+                        for p in task_chains.get("dialogue", tiers["normal"]))
+    print(f"[live] providers: {' '.join(tags) if tags else 'mock-only'} | "
+          f"lang={builders.lang_code()} | dialogue: {dchain}", flush=True)
 
     return LLMRouter(tiers=tiers, task_chains=task_chains, budget_usd=budget)
