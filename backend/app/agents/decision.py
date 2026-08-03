@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 from dataclasses import dataclass, field
 
@@ -103,6 +104,33 @@ class DecisionEngine:
     router: LLMRouter
     traces: list[DecisionTrace] = field(default_factory=list)
     rumors: RumorRegistry = field(default_factory=RumorRegistry)
+    # Per-sim-day dialogue budget (live only) -- keeps free-tier token spend
+    # bounded. 0 = unlimited (mock / headless), so run_day is untouched.
+    dialogue_cap: int = 0
+    _dialogues_today: int = 0
+    _dialogue_day: int = -1
+
+    def __post_init__(self) -> None:
+        live = any(p.name != "mock" for chain in self.router.tiers.values() for p in chain)
+        if live and self.dialogue_cap == 0:
+            try:
+                self.dialogue_cap = int(os.environ.get("AI_TOWN_DIALOGUE_CAP", "12"))
+            except ValueError:
+                self.dialogue_cap = 12
+
+    def _roll_day(self, now: int) -> None:
+        day = now // (24 * 60)
+        if day != self._dialogue_day:
+            self._dialogue_day = day
+            self._dialogues_today = 0
+
+    def dialogue_cap_reached(self, now: int) -> bool:
+        """True once today's dialogue budget is spent -- the should_talk gate then
+        says 'no' by rule, saving even the cheap LLM call. Resets each sim-day."""
+        if self.dialogue_cap <= 0:
+            return False
+        self._roll_day(now)
+        return self._dialogues_today >= self.dialogue_cap
 
     async def decide(
         self, agent: Agent, world: World, obs: Observation, now: int
@@ -134,7 +162,9 @@ class DecisionEngine:
             decision = Decision("rest", duration=30, reason=f"energy {agent.state.energy} <= {LOW_ENERGY}")
 
         # ---- Level 1: social trigger (cheap LLM) ----------------------
-        if decision is None and obs.arrivals:
+        # Once the day's dialogue budget is spent, decline by rule -- no should_talk
+        # LLM call either. Agents still meet and move; they just chat less.
+        if decision is None and obs.arrivals and not self.dialogue_cap_reached(now):
             partner_id = obs.arrivals[0]
             partner = world.agents[partner_id]
             last = agent.state.last_talk_minute.get(partner_id, -10**9)
@@ -409,6 +439,8 @@ class DecisionEngine:
             max_tokens=600 if builders.lang_is_zh() else 400,
             validate=_dialogue_ok,
         )
+        self._roll_day(now)
+        self._dialogues_today += 1   # count every conversation against the daily budget
         parsed = res.parsed if isinstance(res.parsed, dict) else {}
         turns = parsed.get("turns", [])
         signals = {

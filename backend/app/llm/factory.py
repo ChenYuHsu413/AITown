@@ -79,12 +79,19 @@ def build_router(live: bool | None = None) -> LLMRouter:
         mini = OpenAIProvider(model="gpt-5-mini",
                               input_price_per_m=0.25, output_price_per_m=2.00)
 
-    if not any((small, gem, nano)):
-        print("[llm] AI_TOWN_LIVE=1 but no provider key found "
-              "(GROQ_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY) -- staying on mock")
+    openrouter = None
+    if os.environ.get("OPENROUTER_API_KEY"):
+        from .providers.openrouter_provider import OpenRouterProvider
+        openrouter = OpenRouterProvider()  # third free provider; English/structured only
 
-    def chain(*providers: LLMProvider | None) -> list[LLMProvider]:
+    if not any((small, gem, nano, openrouter)):
+        print("[llm] AI_TOWN_LIVE=1 but no provider key found "
+              "(GROQ_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY) -- staying on mock")
+
+    def chain(*providers: LLMProvider | None, or_tail: bool = True) -> list[LLMProvider]:
         out = [p for p in providers if p is not None]
+        if or_tail and openrouter is not None:
+            out.append(openrouter)  # last real fallback for English + structured tasks
         out.append(mock)  # free floor: never let a tier be all-live
         return out
 
@@ -105,7 +112,8 @@ def build_router(live: bool | None = None) -> LLMRouter:
     # English keeps the full dual chain (8b is fine there).
     task_chains: dict[str, list[LLMProvider]] = {}
     if builders.lang_is_zh() and (gem or gem_lite or large):
-        zh_reliable = chain(gem, gem_lite, large)  # no 8b; mock floor last
+        # or_tail=False: OpenRouter's free model isn't trusted for zh free text.
+        zh_reliable = chain(gem, gem_lite, large, or_tail=False)  # no 8b/openrouter; mock floor last
         task_chains["dialogue"] = zh_reliable
         task_chains["reflection"] = zh_reliable
 
@@ -115,6 +123,7 @@ def build_router(live: bool | None = None) -> LLMRouter:
     if small: tags.append("groq ✓")
     if gem: tags.append("gemini ✓")
     if nano: tags.append("openai ✓")
+    if openrouter: tags.append("openrouter ✓")
     dchain = " → ".join(f"{p.name}/{getattr(p, 'model', '')}"
                         for p in task_chains.get("dialogue", tiers["normal"]))
     print(f"[live] providers: {' '.join(tags) if tags else 'mock-only'} | "
