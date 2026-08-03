@@ -6,8 +6,10 @@ Used only as a last-resort tail on the English / structured-task chains (its fre
 models are reliable in English + JSON but not trusted for zh free text), giving a
 third free provider when both Groq and Gemini are rate-limited.
 
-Model defaults to a free slug and is overridable via ``OPENROUTER_MODEL``. Free
-models bill at $0, so the cost strip stays honest.
+Model defaults to ``openrouter/free`` -- OpenRouter's Free Models Router, which
+picks a currently-available free model itself, so a single free slug getting
+delisted no longer breaks us (individual ``*:free`` slugs churn often). Override
+with ``OPENROUTER_MODEL``. Free models bill at $0, so the cost strip stays honest.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import os
 from .openai_provider import OpenAIProvider
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+DEFAULT_MODEL = "openrouter/free"  # Free Models Router: auto-picks a live free model
 
 
 class OpenRouterProvider(OpenAIProvider):
