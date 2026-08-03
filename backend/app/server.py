@@ -432,12 +432,16 @@ async def usage() -> JSONResponse:
     assert sim is not None
     u = sim.router.usage
     by_task: dict[str, dict] = {}
+    by_model: dict[str, dict] = {}
     in_tok = out_tok = 0
     cost = 0.0
     for c in u.calls:
         row = by_task.setdefault(c.task_type, {"calls": 0, "cost": 0.0})
         row["calls"] += 1
         row["cost"] += c.estimated_cost
+        mrow = by_model.setdefault(f"{c.provider}/{c.model}", {"calls": 0, "cost": 0.0})
+        mrow["calls"] += 1
+        mrow["cost"] += c.estimated_cost
         in_tok += c.input_tokens
         out_tok += c.output_tokens
         cost += c.estimated_cost
@@ -450,8 +454,11 @@ async def usage() -> JSONResponse:
             "input_tokens": in_tok,
             "output_tokens": out_tok,
             "estimated_cost": round(cost, 6),
+            "budget_usd": sim.router.budget_usd,
             "by_task": [{"task": k, **{**v, "cost": round(v["cost"], 6)}} for k, v in
                         sorted(by_task.items(), key=lambda kv: -kv[1]["calls"])],
+            "by_model": [{"model": k, **{**v, "cost": round(v["cost"], 6)}} for k, v in
+                         sorted(by_model.items(), key=lambda kv: -kv[1]["calls"])],
             "decisions": total_decisions,
             "rules_only": rules_only,
         }

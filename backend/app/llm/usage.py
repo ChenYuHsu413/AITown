@@ -45,6 +45,10 @@ class UsageTracker:
     def cache_hits(self) -> int:
         return sum(1 for c in self.calls if c.cache_hit)
 
+    @property
+    def total_cost(self) -> float:
+        return sum(c.estimated_cost for c in self.calls)
+
     def summary(self) -> str:
         if not self.calls:
             return "No LLM calls recorded."

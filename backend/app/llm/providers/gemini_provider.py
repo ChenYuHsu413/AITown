@@ -47,17 +47,22 @@ class GeminiProvider(LLMProvider):
             if m["role"] != "system"
         ]
 
-        body: dict = {
-            "contents": contents,
-            "generationConfig": {
-                "maxOutputTokens": max_tokens,
-                "temperature": temperature,
-            },
+        gen_config: dict = {
+            "maxOutputTokens": max_tokens,
+            "temperature": temperature,
         }
+        # Gemini 2.5 models "think" by default, which can silently eat the whole
+        # output budget and return an empty/truncated candidate -> broken JSON.
+        # For the sim's short structured tasks we don't want thinking; spend the
+        # budget on the answer.
+        if self.model.startswith("gemini-2.5"):
+            gen_config["thinkingConfig"] = {"thinkingBudget": 0}
+
+        body: dict = {"contents": contents, "generationConfig": gen_config}
         if system_parts:
             body["systemInstruction"] = {"parts": [{"text": "\n".join(system_parts)}]}
         if schema is not None:
-            body["generationConfig"]["responseMimeType"] = "application/json"
+            gen_config["responseMimeType"] = "application/json"
 
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -71,7 +76,20 @@ class GeminiProvider(LLMProvider):
         data = resp.json()
         latency = int((time.perf_counter() - t0) * 1000)
 
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        # Robust extraction: a safety block or a truncated candidate must raise
+        # (not KeyError-crash), so the router falls cleanly through to the next
+        # provider in the chain instead of the whole tick dying.
+        candidates = data.get("candidates") or []
+        if not candidates:
+            reason = (data.get("promptFeedback") or {}).get("blockReason", "no candidates")
+            raise RuntimeError(f"gemini: response blocked/empty ({reason})")
+        cand = candidates[0]
+        parts = (cand.get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+        if not text:
+            raise RuntimeError(
+                f"gemini: empty text (finishReason={cand.get('finishReason', '?')})"
+            )
         parsed = None
         if schema is not None:
             try:

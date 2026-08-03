@@ -17,30 +17,10 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from backend.app.agents.decision import DecisionEngine
-from backend.app.llm.providers.mock import MockProvider
-from backend.app.llm.router import LLMRouter
+from backend.app.llm.factory import build_router  # shared: .env, Groq+Gemini, lang, budget
 from backend.app.simulation.engine import DAY_MIN, Event, SimulationEngine, fmt_time
 from backend.app.world.world import World
 from data.seed import build_agents, build_locations
-
-
-def build_router(live: bool) -> LLMRouter:
-    if live and (os.environ.get("OPENAI_API_KEY") or os.environ.get("GEMINI_API_KEY")):
-        from backend.app.llm.providers.gemini_provider import GeminiProvider
-        from backend.app.llm.providers.openai_provider import OpenAIProvider
-
-        nano = OpenAIProvider(model="gpt-5-nano", input_price_per_m=0.05, output_price_per_m=0.40)
-        flash = GeminiProvider(model="gemini-2.5-flash-lite", input_price_per_m=0.10, output_price_per_m=0.40)
-        mini = OpenAIProvider(model="gpt-5-mini", input_price_per_m=0.25, output_price_per_m=2.00)
-        mock = MockProvider()
-        # Fallback chains: Gemini 429 -> nano -> mock, etc.
-        return LLMRouter(tiers={
-            "cheap": [nano, flash, mock],
-            "normal": [flash, nano, mock],
-            "smart": [mini, flash, mock],
-        })
-    mock = MockProvider()
-    return LLMRouter(tiers={"cheap": [mock], "normal": [mock], "smart": [mock]})
 
 
 async def main() -> None:
@@ -49,7 +29,8 @@ async def main() -> None:
     parser.add_argument("--traces", type=int, default=5, help="how many decision traces to print")
     args = parser.parse_args()
 
-    router = build_router(args.live)
+    # --live forces live; without it, .env / AI_TOWN_LIVE decides.
+    router = build_router(live=True if args.live else None)
     world = World(build_locations(), build_agents())
     engine = SimulationEngine(world, DecisionEngine(router))
 

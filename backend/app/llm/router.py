@@ -37,7 +37,9 @@ TASK_TIERS: dict[str, str] = {
 class LLMRouter:
     tiers: dict[str, list[LLMProvider]]  # tier -> fallback chain
     usage: UsageTracker = field(default_factory=UsageTracker)
+    budget_usd: float | None = None       # hard spend cap; None = unlimited
     _cache: dict[str, LLMResult] = field(default_factory=dict)
+    _budget_logged: bool = False
 
     async def generate(
         self,
@@ -76,6 +78,20 @@ class LLMRouter:
 
         # ---- provider chain with fallback -----------------------
         chain = self.tiers.get(tier) or self.tiers["normal"]
+
+        # ---- budget guard ---------------------------------------
+        # Once cumulative spend hits the cap, collapse to the free fallback
+        # (factory guarantees the mock provider is always last in every chain).
+        # Cache hits above already returned for free; only real calls are gated.
+        if self.budget_usd is not None and self.usage.total_cost >= self.budget_usd:
+            if not self._budget_logged:
+                print(
+                    f"[budget] cap ${self.budget_usd:.2f} reached "
+                    f"(spent ${self.usage.total_cost:.4f}) -- routing to free mock provider"
+                )
+                self._budget_logged = True
+            chain = chain[-1:]
+
         last_err: Exception | None = None
         for provider in chain:
             try:

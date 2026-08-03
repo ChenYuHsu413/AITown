@@ -12,10 +12,32 @@ life every call. These builders assemble a *lean* context instead:
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # avoid circular imports at runtime
     from ...agents.agent import Agent
+
+
+def _lang_directive() -> str:
+    """Localize only the *free-text* the reader sees (dialogue lines, insights,
+    retold gossip). JSON keys and action/enum values MUST stay English -- the
+    decision layer parses those literally. Off (empty) unless AI_TOWN_LANG asks
+    for a non-English language, so mock/English runs are byte-for-byte unchanged.
+    """
+    lang = os.environ.get("AI_TOWN_LANG", "en").strip().lower()
+    if lang in ("", "en", "en-us", "english"):
+        return ""
+    if lang.startswith("zh"):
+        name = "Traditional Chinese (zh-TW)" if lang not in ("zh-cn", "zh-hans") else "Simplified Chinese"
+        return (
+            f" Write every human-readable text value (e.g. \"text\", \"insights\") "
+            f"in natural {name}. Keep all JSON keys and any action/enum values in English."
+        )
+    return (
+        f" Write every human-readable text value in natural '{lang}'. "
+        f"Keep all JSON keys and any action/enum values in English."
+    )
 
 
 def character_card(agent: "Agent") -> str:
@@ -92,7 +114,7 @@ def dialogue_prompt(
             f"{b.profile.name} admitted to it."
         )
     return [
-        {"role": "system", "content": system},
+        {"role": "system", "content": system + _lang_directive()},
         {"role": "user", "content": user},
     ]
 
@@ -119,6 +141,7 @@ def distort_prompt(text: str) -> list[dict]:
                 "You retell a piece of gossip in a life simulation, passing it along to "
                 "someone new. Rewrite it in your own words, allowing slight memory drift -- "
                 "one sentence, same gist. Respond ONLY with JSON: {\"text\": \"...\"}. Task: distort."
+                + _lang_directive()
             ),
         },
         {"role": "user", "content": f"Retell this: {text}"},
@@ -150,7 +173,8 @@ def reflection_prompt(agent: "Agent", day_events: list[str]) -> list[dict]:
         {
             "role": "system",
             "content": "You produce end-of-day reflection insights for a life-sim character. "
-            'Respond ONLY with JSON: {"insights": ["...", "..."]}. Task: reflection.',
+            'Respond ONLY with JSON: {"insights": ["...", "..."]}. Task: reflection.'
+            + _lang_directive(),
         },
         {
             "role": "user",

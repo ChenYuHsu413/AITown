@@ -16,17 +16,24 @@ from .base import LLMProvider, LLMResult
 class OpenAIProvider(LLMProvider):
     name = "openai"
 
+    # Chat-completions endpoint. Overridable so OpenAI-compatible vendors
+    # (Groq, Together, local vLLM, ...) can reuse this exact client.
+    base_url: str = "https://api.openai.com/v1/chat/completions"
+
     def __init__(
         self,
         model: str = "gpt-5-nano",
         input_price_per_m: float = 0.05,
         output_price_per_m: float = 0.40,
         api_key: str | None = None,
+        base_url: str | None = None,
     ):
         self.model = model
         self.input_price_per_m = input_price_per_m
         self.output_price_per_m = output_price_per_m
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        if base_url is not None:
+            self.base_url = base_url
 
     async def generate(
         self,
@@ -49,7 +56,7 @@ class OpenAIProvider(LLMProvider):
         t0 = time.perf_counter()
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
+                self.base_url,
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 json=body,
             )
