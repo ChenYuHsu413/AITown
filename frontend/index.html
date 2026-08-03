@@ -480,7 +480,10 @@ function buildMap(locations){
   });
   renderShopRev();   // refill takings after a rebuild (e.g. language switch)
 }
-function slotOffset(i,n){ const spread=Math.min(n,5); return (i-(spread-1)/2)*24; }
+// Slot spacing between co-located villagers. Must exceed the widest nametag so
+// adjacent name plates don't overlap and clip each other (e.g. "Alice"->"Alic").
+const SLOT=34;
+function slotOffset(i,n){ const spread=Math.min(n,5); return (i-(spread-1)/2)*SLOT; }
 // Standing zone: villagers stand BESIDE the building (on the roomier side of the
 // canvas), at roof-mid height so their heads/nametags sit up by the eaves — clear
 // of the location label, which lives centred below the building. clampX/clampY then
@@ -490,7 +493,7 @@ const clampX=x=>Math.max(26,Math.min(774,x));     // nametag/body stay within [0
 const clampY=y=>Math.max(44,Math.min(486,y));     // head origin: feet(+27)<=513, nametag(-24)>=20
 function standXY(l,idx,n){
   const half=FOOT[l.kind]||26;
-  const halfspread=(Math.min(n,5)-1)/2*24;         // widest slot offset for this crowd
+  const halfspread=(Math.min(n,5)-1)/2*SLOT;       // widest slot offset for this crowd
   const off=Math.max(half+18, 40+halfspread);      // push the row out so even the innermost clears the label
   const side=l.x>400?-1:1;                          // right-half locations stand to their left
   return [clampX(l.x+side*off+slotOffset(idx,n)), clampY(l.y+8)];
@@ -510,7 +513,7 @@ function updateAgents(list){
       el.setAttribute('class','agent agent-g');
       el.style.transition='transform 1s ease';
       el.style.setProperty('--d',(Object.keys(AGENTS).length*0.2)+'s');   // stagger idle frames per agent
-      const sid=spriteId(a.id), nw=a.name.length*4.6+8;
+      const sid=spriteId(a.id), nw=a.name.length*5.4+12;   // fit the mono label with margin
       el.innerHTML=`<ellipse class="shadow" cx="0" cy="27" rx="8" ry="2.5"/>
         <rect class="hit" x="-13" y="-8" width="26" height="40"/>
         <circle class="ring" r="11"/>
@@ -566,20 +569,64 @@ function addEvent(ev){
   feed.scrollTop=feed.scrollHeight;
 }
 
-/* ---------- speech bubbles ---------- */
+/* ---------- speech bubbles (one per speaker, collision-stacked) ----------
+   Multiple simultaneous conversations at one place used to pile bubbles into
+   an unreadable heap. Now: each speaker shows at most one bubble; a new bubble
+   that would overlap an existing one stacks upward (a tower, capped at 3 per
+   place, oldest evicted); everything is clamped inside the viewBox. */
+const BUBBLES=[];                        // {el, speaker, loc, box:{x,y,w,h}, timer, gone}
+const BUB_H=20, BUB_GAP=4, BUB_MAX_W=224, BUB_MAX_PER_LOC=3;
+const VB_W=800, VB_H=520;
+const bubEsc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const bubCharW=ch=>ch.codePointAt(0)>0x2E7F?11:6.2;    // CJK ~ full width, latin ~ half
+function bubFit(s){                       // clip to the max bubble width, adding an ellipsis
+  let w=0,out='';
+  for(const ch of s){ const cw=bubCharW(ch); if(w+cw>BUB_MAX_W-18) return out+'…'; w+=cw; out+=ch; }
+  return out;
+}
+function bubWidth(s){ let w=0; for(const ch of s) w+=bubCharW(ch); return w; }
+function bubHit(a,b){ return a.x<b.x+b.w && a.x+a.w>b.x && a.y<b.y+b.h && a.y+a.h>b.y; }
+function removeBubble(rec){
+  if(rec.gone) return; rec.gone=true; clearTimeout(rec.timer); rec.el.remove();
+  const i=BUBBLES.indexOf(rec); if(i>=0) BUBBLES.splice(i,1);
+}
 function maybeBubble(ev){
   if(ev.kind!=='dialogue') return;
   const el=AGENTS[ev.actor]; if(!el) return;            // position by agent id, no name-string matching
-  const tf=el.getAttribute('transform').match(/([\d.]+),([\d.]+)/); if(!tf) return;
-  const speech=ev.speech||'';
-  const x=+tf[1], y=+tf[2]-34, text=speech.slice(0,34)+(speech.length>34?'…':'');
-  const g=document.createElementNS('http://www.w3.org/2000/svg','g');
-  g.setAttribute('class','bubble');
-  const w=text.length*6.1+16;
-  g.innerHTML=`<rect x="${x-w/2}" y="${y-16}" width="${w}" height="20" rx="6"/>
-    <text x="${x-w/2+8}" y="${y-2}">${text.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</text>`;
+  const tf=el.getAttribute('transform').match(/(-?[\d.]+),(-?[\d.]+)/); if(!tf) return;
+  const ax=+tf[1], ay=+tf[2];
+  const text=bubFit(ev.speech||''); if(!text) return;
+  const w=Math.min(BUB_MAX_W, bubWidth(text)+16), h=BUB_H;
+
+  // (1) one bubble per speaker: drop this speaker's previous one
+  BUBBLES.filter(b=>b.speaker===ev.actor).forEach(removeBubble);
+
+  // start above the head, then stack upward past any bubble it would overlap
+  let bx=ax-w/2, by=ay-34-h, guard=0;
+  while(guard++<6 && BUBBLES.some(b=>bubHit({x:bx,y:by,w,h},b.box))) by-=(h+BUB_GAP);
+
+  // (3) clamp inside the viewBox: push in horizontally; if off the top, flip below the speaker
+  bx=Math.max(2,Math.min(bx,VB_W-w-2));
+  if(by<2){
+    by=ay+22; let g2=0;
+    while(g2++<6 && BUBBLES.some(b=>bubHit({x:bx,y:by,w,h},b.box))) by+=(h+BUB_GAP);
+    by=Math.min(by,VB_H-h-2);
+  }
+
+  const g=document.createElementNS(SVGNS,'g'); g.setAttribute('class','bubble');
+  g.innerHTML=`<rect x="${bx}" y="${by}" width="${w}" height="${h}" rx="6"/>`
+    +`<text x="${bx+8}" y="${by+14}">${bubEsc(text)}</text>`;
   $('#bubbles').appendChild(g);
-  setTimeout(()=>g.remove(),3800);
+
+  // (4) lifetime scales with length so long lines stay readable
+  const rec={el:g, speaker:ev.actor, loc:ev.location, box:{x:bx,y:by,w,h}, timer:null, gone:false};
+  const life=Math.min(6000, 3000 + Math.ceil(text.length/10)*500);
+  rec.timer=setTimeout(()=>removeBubble(rec), life);
+  BUBBLES.push(rec);
+
+  // (2) cap the tower per place; evict the oldest beyond the limit
+  const here=BUBBLES.filter(b=>b.loc===ev.location);
+  while(here.length>BUB_MAX_PER_LOC) removeBubble(here.shift());
 }
 
 /* ---------- inspector ---------- */
