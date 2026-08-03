@@ -33,7 +33,9 @@ class OpenRouterProvider(OpenAIProvider):
         api_key: str | None = None,
     ):
         super().__init__(
-            model=model or os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL),
+            # `... or DEFAULT_MODEL` (not a get-default): an empty OPENROUTER_MODEL=
+            # placeholder in .env would otherwise resolve to "" and break the call.
+            model=model or os.environ.get("OPENROUTER_MODEL") or DEFAULT_MODEL,
             input_price_per_m=input_price_per_m,
             output_price_per_m=output_price_per_m,
             api_key=api_key or os.environ.get("OPENROUTER_API_KEY", ""),
