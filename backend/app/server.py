@@ -374,6 +374,39 @@ async def economy() -> JSONResponse:
     return JSONResponse({"locations": locations, "agents": wallets})
 
 
+@app.get("/api/relationships")
+async def relationships() -> JSONResponse:
+    """Town-wide social graph. One undirected edge per pair that has a
+    relationship record in EITHER direction; both directions' numbers ride
+    along so the UI can show asymmetry (one-sided trust after a rumor). A
+    missing direction falls back to the neutral baseline (a fresh Relationship
+    is 30/30/0), which is exactly what `agent.rel()` would return."""
+    assert sim is not None
+    agents = sim.world.agents
+    ids = list(agents)
+    nodes = [
+        {"id": a.id, "name": a.name, "occupation": a.profile.occupation}
+        for a in agents.values()
+    ]
+    edges = []
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            aid, bid = ids[i], ids[j]
+            rab = agents[aid].relationships.get(bid)
+            rba = agents[bid].relationships.get(aid)
+            if rab is None and rba is None:
+                continue  # never interacted -> no edge
+            f_ab, t_ab, c_ab = (rab.friendship, rab.trust, rab.conflict) if rab else (30.0, 30.0, 0.0)
+            f_ba, t_ba, c_ba = (rba.friendship, rba.trust, rba.conflict) if rba else (30.0, 30.0, 0.0)
+            edges.append({
+                "a": aid, "b": bid,
+                "friendship_ab": round(f_ab), "friendship_ba": round(f_ba),
+                "trust_ab": round(t_ab), "trust_ba": round(t_ba),
+                "conflict_max": round(max(c_ab, c_ba)),
+            })
+    return JSONResponse({"nodes": nodes, "edges": edges})
+
+
 @app.get("/api/agents/{agent_id}")
 async def agent_detail(agent_id: str) -> JSONResponse:
     assert sim is not None

@@ -46,6 +46,28 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 .ev.dialogue{border-left:3px solid var(--amber);padding-left:8px;background:var(--amber-soft)}
 .ev.reflection{border-left:3px solid var(--moss);padding-left:8px}
 
+/* aside tabs (feed | relationship graph) */
+.tabs{display:flex;border-bottom:1px solid var(--line)}
+.tabs .tab{flex:1;font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint);
+  background:none;border:none;border-bottom:2px solid transparent;padding:11px 8px 9px;cursor:pointer}
+.tabs .tab.active{color:var(--ink);border-bottom-color:var(--amber)}
+.tabs .tab:focus-visible{outline:2px solid var(--amber);outline-offset:-2px}
+[hidden]{display:none!important}
+
+/* relationship graph */
+#graph{flex:1;min-height:0;position:relative;overflow:hidden}
+#relsvg{width:100%;height:100%;display:block}
+.rnode{cursor:pointer}
+.rnode-sh{fill:#000;opacity:.10}
+.rnode-hit{fill:transparent}
+.rnode-name{font-family:var(--mono);font-size:9px;fill:var(--ink);text-anchor:middle;pointer-events:none}
+.redge{stroke-linecap:round}
+.redge-hit{stroke:transparent;stroke-width:12;fill:none;cursor:pointer}
+#reltip{position:absolute;pointer-events:none;background:var(--ink);color:var(--paper);font-family:var(--mono);
+  font-size:10px;line-height:1.55;padding:5px 8px;border-radius:5px;white-space:nowrap;z-index:5}
+#reltip b{font-weight:600;font-family:var(--body)}
+@media (prefers-reduced-motion: reduce){ .rnode{transition:none!important} }
+
 /* inspector */
 #inspector{border-top:1px solid var(--line);max-height:52%;overflow-y:auto;padding-bottom:12px}
 #inspector .placeholder{padding:14px;font-size:13px;color:var(--faint)}
@@ -145,8 +167,15 @@ footer b{font-weight:500;font-size:14px}
     </svg>
   </div>
   <aside>
-    <div class="eyebrow" data-i18n="feedTitle">EVENT FEED</div>
+    <div class="tabs" role="tablist">
+      <button id="tab-feed" class="tab active" role="tab" data-i18n="feedTitle">EVENT FEED</button>
+      <button id="tab-graph" class="tab" role="tab" data-i18n="graphTitle">RELATIONSHIPS</button>
+    </div>
     <div id="feed"></div>
+    <div id="graph" hidden>
+      <svg id="relsvg" viewBox="0 0 300 300" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Relationship graph"></svg>
+      <div id="reltip" hidden></div>
+    </div>
     <div id="inspector">
       <div class="eyebrow" data-i18n="inspectorTitle">AGENT INSPECTOR</div>
       <div class="placeholder" data-i18n="inspectorPlaceholder">Select an agent on the map to inspect memories, relationships, and decision traces.</div>
@@ -169,9 +198,10 @@ let LOCS={}, AGENTS={}, selected=null, LOC_LIST=[], ECON=null;
 /* ---------- i18n ---------- */
 const I18N={
   en:{
-    subtitle:'FIELD STATION · 5 AGENTS', feedTitle:'EVENT FEED', inspectorTitle:'AGENT INSPECTOR',
+    subtitle:'FIELD STATION · 5 AGENTS', feedTitle:'EVENT FEED', graphTitle:'RELATIONSHIPS', inspectorTitle:'AGENT INSPECTOR',
     inspectorPlaceholder:'Select an agent on the map to inspect memories, relationships, and decision traces.',
     energy:'Energy', money:'Money', doing:'Doing', relationships:'RELATIONSHIPS', noRelationships:'No relationships yet.',
+    relFriend:'friendship', relTrust:'trust',
     cafeToday:'Today',
     recentMemories:'RECENT MEMORIES', decisionTraces:'DECISION TRACES', noDecisions:'No decisions yet.', imp:'imp',
     'footer.calls':'LLM CALLS','footer.cache':'CACHE HITS','footer.tokens':'TOKENS IN/OUT',
@@ -180,9 +210,10 @@ const I18N={
     'title.s20':'20 sim-minutes per second','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
   },
   zh:{
-    subtitle:'田野觀測站 · 5 位智能體', feedTitle:'事件動態', inspectorTitle:'智能體檢視器',
+    subtitle:'田野觀測站 · 5 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', inspectorTitle:'智能體檢視器',
     inspectorPlaceholder:'點選地圖上的智能體，檢視其記憶、關係與決策軌跡。',
     energy:'精力', money:'金錢', doing:'狀態', relationships:'人際關係', noRelationships:'尚無人際關係。',
+    relFriend:'友誼', relTrust:'信任',
     cafeToday:'今日',
     recentMemories:'近期記憶', decisionTraces:'決策軌跡', noDecisions:'尚無決策。', imp:'重要度',
     'footer.calls':'LLM 呼叫','footer.cache':'快取命中','footer.tokens':'輸入/輸出 Token',
@@ -576,6 +607,151 @@ async function pollUsage(){
   }catch(e){}
 }
 setInterval(pollUsage,4000); pollUsage();
+
+/* ---------- relationship graph (self-written mini force-directed, no deps) ----------
+   Model lives in RG {nodes, edges, idx}; physics runs on rAF only while the graph
+   tab is visible, and stops (rgRAF=0) once motion settles -> idle CPU stays low.
+   Data is re-fetched every 5s: values update in place (no relayout); a genuinely
+   new edge adds a line and re-heats the layout for a few frames. */
+const REDUCE_MOTION=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const RG_CX=150, RG_CY=150;
+const K_REP=1600, K_SPRING=0.02, K_CENTER=0.02, DAMP=0.86;
+const RLEN_MAX=108, RLEN_MIN=42;   // spring rest length at friendship 0 / 100 (better friends sit closer)
+                                   // kept small so the 5-node layout settles inside the box, not on its walls
+let RG=null, REL_DATA=null, rgRAF=0, rgCool=0, rgFrames=0;
+const favg=e=>(e.friendship_ab+e.friendship_ba)/2;
+const ekey=e=>e.a+'|'+e.b;
+
+function simStep(){
+  const N=RG.nodes;
+  for(const n of N){ n.fx=0; n.fy=0; }
+  for(let i=0;i<N.length;i++)for(let j=i+1;j<N.length;j++){       // repulsion (all pairs)
+    const a=N[i],b=N[j]; let dx=a.x-b.x, dy=a.y-b.y, d2=dx*dx+dy*dy||0.01, d=Math.sqrt(d2);
+    const f=K_REP/d2, ux=dx/d, uy=dy/d; a.fx+=ux*f; a.fy+=uy*f; b.fx-=ux*f; b.fy-=uy*f;
+  }
+  for(const e of RG.edges){                                       // springs (edges)
+    const a=N[e.ai],b=N[e.bi]; let dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy)||0.01;
+    const L=RLEN_MAX-(favg(e.data)/100)*(RLEN_MAX-RLEN_MIN), f=K_SPRING*(d-L), ux=dx/d, uy=dy/d;
+    a.fx+=ux*f; a.fy+=uy*f; b.fx-=ux*f; b.fy-=uy*f;
+  }
+  let move=0;
+  for(const n of N){
+    n.fx+=(RG_CX-n.x)*K_CENTER; n.fy+=(RG_CY-n.y)*K_CENTER;       // centering
+    n.vx=(n.vx+n.fx)*DAMP; n.vy=(n.vy+n.fy)*DAMP;
+    n.x=Math.max(30,Math.min(270,n.x+n.vx)); n.y=Math.max(30,Math.min(260,n.y+n.vy));
+    move+=Math.abs(n.vx)+Math.abs(n.vy);
+  }
+  return move;
+}
+function renderPositions(){
+  if(!RG) return;
+  for(const n of RG.nodes) n.el.setAttribute('transform',`translate(${n.x.toFixed(1)},${n.y.toFixed(1)})`);
+  for(const e of RG.edges){ const a=RG.nodes[e.ai], b=RG.nodes[e.bi];
+    for(const ln of [e.line,e.hit]){
+      ln.setAttribute('x1',a.x.toFixed(1)); ln.setAttribute('y1',a.y.toFixed(1));
+      ln.setAttribute('x2',b.x.toFixed(1)); ln.setAttribute('y2',b.y.toFixed(1));
+    }
+  }
+}
+function renderEdgeStyles(){                                       // visual attrs from live values
+  if(!RG) return;
+  for(const e of RG.edges){ const d=e.data, f=favg(d);
+    // dashed = lopsided bond, either way: friendship gap (unrequited) OR trust gap
+    // (one-sided distrust after a rumor erodes it). Whichever is wider.
+    const conflict=d.conflict_max>25,
+      asym=Math.max(Math.abs(d.friendship_ab-d.friendship_ba),Math.abs(d.trust_ab-d.trust_ba))>20;
+    e.line.setAttribute('stroke-width',(1+f/100*4).toFixed(2));    // 1..5px by friendship average
+    e.line.setAttribute('stroke',conflict?'#C0503A':(f>=55?'#5F7D5B':'#9aa89b'));
+    e.line.setAttribute('stroke-dasharray',asym?'4 3':'none');     // dashed = lopsided relationship
+    e.line.setAttribute('stroke-opacity','.85');
+  }
+}
+function newEdgeEl(ed){
+  const g=document.createElementNS(SVGNS,'g'); g.setAttribute('class','redge-g');
+  g.innerHTML=`<line class="redge"/><line class="redge-hit"/>`;
+  const e={ai:RG.idx[ed.a],bi:RG.idx[ed.b],data:ed,line:g.querySelector('.redge'),hit:g.querySelector('.redge-hit')};
+  const tip=ev=>showRelTip(e,ev);
+  e.hit.addEventListener('mousemove',tip); e.hit.addEventListener('mouseenter',tip);
+  e.hit.addEventListener('mouseleave',hideRelTip);
+  $('#redges').appendChild(g); return e;
+}
+function buildGraph(data){
+  const svg=$('#relsvg'); svg.innerHTML='';
+  const nodes=data.nodes.map((n,i)=>{ const ang=-Math.PI/2+i*2*Math.PI/data.nodes.length;
+    return {id:n.id,name:n.name,x:RG_CX+Math.cos(ang)*80,y:RG_CY+Math.sin(ang)*80,vx:0,vy:0}; });
+  const idx={}; nodes.forEach((n,i)=>idx[n.id]=i);
+  const eg=document.createElementNS(SVGNS,'g'); eg.id='redges';           // edges under nodes
+  const ng=document.createElementNS(SVGNS,'g'); ng.id='rnodes';
+  svg.appendChild(eg); svg.appendChild(ng);
+  RG={nodes,edges:[],idx};
+  RG.edges=data.edges.map(newEdgeEl);
+  nodes.forEach(n=>{ const sid=spriteId(n.id);
+    const g=document.createElementNS(SVGNS,'g'); g.setAttribute('class','rnode');
+    g.innerHTML=`<ellipse class="rnode-sh" cx="0" cy="17" rx="8" ry="2.5"/>
+      <g transform="translate(0,-2) scale(0.8)"><use href="#spr-${sid}-f1"/></g>
+      <circle class="rnode-hit" r="17"/><text class="rnode-name" y="30"></text>`;
+    g.querySelector('.rnode-name').textContent=n.name;
+    g.addEventListener('click',()=>inspect(n.id));
+    ng.appendChild(g); n.el=g;
+  });
+  renderEdgeStyles();
+  for(let i=0;i<240;i++) simStep();                                        // warm up to a settled layout
+  renderPositions(); rgCool=0;
+  if(!$('#graph').hidden && !REDUCE_MOTION) startRAF();
+}
+function applyData(data){
+  data.nodes.forEach(n=>{ if(RG.idx[n.id]==null){ buildGraph(data); } });  // node set changed -> rebuild
+  if(!RG) return;
+  const seen=new Set(RG.edges.map(e=>ekey(e.data))); let added=false;
+  data.edges.forEach(ed=>{
+    if(seen.has(ekey(ed))){ RG.edges.find(e=>ekey(e.data)===ekey(ed)).data=ed; }
+    else{ RG.edges.push(newEdgeEl(ed)); added=true; }                      // brand-new relationship
+  });
+  data.nodes.forEach(n=>{ const i=RG.idx[n.id]; if(i!=null) RG.nodes[i].name=n.name; });
+  renderEdgeStyles();
+  if(added) kick();                                                        // only new edges re-heat the layout
+}
+function rgTick(){ const move=simStep(); renderPositions(); rgFrames++;
+  if(move<0.5){ if(++rgCool>15){ rgRAF=0; return; } } else rgCool=0;
+  if(rgFrames>500){ rgRAF=0; return; }        // hard cap: guarantee the loop always goes idle
+  rgRAF=requestAnimationFrame(rgTick);
+}
+function startRAF(){
+  if(REDUCE_MOTION){ for(let i=0;i<200;i++) simStep(); renderPositions(); rgRAF=0; return; }
+  if(!rgRAF){ rgCool=0; rgFrames=0; rgRAF=requestAnimationFrame(rgTick); }
+}
+function stopRAF(){ if(rgRAF){ cancelAnimationFrame(rgRAF); rgRAF=0; } }
+function kick(){ if($('#graph').hidden) return; rgCool=0; startRAF(); }
+function showRelTip(e,ev){
+  const d=e.data, A=RG.nodes[e.ai].name, B=RG.nodes[e.bi].name, tip=$('#reltip');
+  tip.innerHTML=`<b>${A} ↔ ${B}</b><br>${t('relFriend')} ${A}→${B} ${d.friendship_ab} / ${B}→${A} ${d.friendship_ba}`
+    +`<br>${t('relTrust')} ${A}→${B} ${d.trust_ab} / ${B}→${A} ${d.trust_ba}`;
+  tip.hidden=false;
+  const w=$('#graph').getBoundingClientRect();
+  let x=ev.clientX-w.left+12, y=ev.clientY-w.top+12;
+  x=Math.min(x,w.width-tip.offsetWidth-6); y=Math.min(y,w.height-tip.offsetHeight-6);
+  tip.style.left=Math.max(4,x)+'px'; tip.style.top=Math.max(4,y)+'px';
+}
+function hideRelTip(){ $('#reltip').hidden=true; }
+function showTab(which){
+  const feed=which!=='graph';
+  $('#feed').hidden=!feed; $('#graph').hidden=feed;
+  $('#tab-feed').classList.toggle('active',feed);
+  $('#tab-graph').classList.toggle('active',!feed);
+  if(feed){ stopRAF(); hideRelTip(); return; }
+  if(!RG && REL_DATA) buildGraph(REL_DATA);
+  else if(RG){ if(REDUCE_MOTION){ for(let i=0;i<120;i++) simStep(); renderPositions(); } else startRAF(); }
+}
+$('#tab-feed').onclick=()=>showTab('feed');
+$('#tab-graph').onclick=()=>showTab('graph');
+async function pollRel(){
+  try{ const d=await (await fetch('/api/relationships')).json();
+    REL_DATA=d;
+    if(RG) applyData(d);
+    else if(!$('#graph').hidden) buildGraph(d);
+  }catch(e){}
+}
+setInterval(pollRel,5000); pollRel();
 
 /* ---------- economy: live "today's takings" sign on owned shops ---------- */
 function renderShopRev(){
