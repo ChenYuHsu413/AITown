@@ -60,8 +60,10 @@ def build_router(live: bool | None = None) -> LLMRouter:
         large = GroqProvider(model="llama-3.3-70b-versatile",
                              input_price_per_m=0.59, output_price_per_m=0.79)
     if os.environ.get("GEMINI_API_KEY"):
-        gem = GeminiProvider(model="gemini-2.5-flash-lite",
-                             input_price_per_m=0.10, output_price_per_m=0.40)
+        # 2.5-flash-lite was retired for new keys; 2.5-flash is current and,
+        # with thinking disabled (see GeminiProvider), emits JSON reliably.
+        gem = GeminiProvider(model="gemini-2.5-flash",
+                             input_price_per_m=0.30, output_price_per_m=2.50)
     if os.environ.get("OPENAI_API_KEY"):
         nano = OpenAIProvider(model="gpt-5-nano",
                               input_price_per_m=0.05, output_price_per_m=0.40)
