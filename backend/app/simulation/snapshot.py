@@ -32,7 +32,10 @@ if TYPE_CHECKING:
 #   v1 -> v2: added per-agent semantic memory (beliefs).
 #   v2 -> v3: added the secret registry (secrets & confiding).
 #   v3 -> v4: added per-location landmarks (world objects & their progress).
-SCHEMA_VERSION = 4
+#   v4 -> v5: town expansion to 10 residents + 2 locations. Restore is unchanged --
+#             it only overlays agents/locations present in the payload, so an old
+#             5-agent snapshot loads with the new 5 residents kept at seed state.
+SCHEMA_VERSION = 5
 
 
 # ---- capture -------------------------------------------------------------

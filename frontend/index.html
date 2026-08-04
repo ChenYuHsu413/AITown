@@ -402,7 +402,7 @@ let LOCS={}, AGENTS={}, selected=null, LOC_LIST=[], ECON=null;
 /* ---------- i18n ---------- */
 const I18N={
   en:{
-    subtitle:'FIELD STATION · 5 AGENTS', feedTitle:'EVENT FEED', graphTitle:'RELATIONSHIPS', replayTitle:'REPLAY', inspectorTitle:'AGENT INSPECTOR',
+    subtitle:'FIELD STATION · 10 AGENTS', feedTitle:'EVENT FEED', graphTitle:'RELATIONSHIPS', replayTitle:'REPLAY', inspectorTitle:'AGENT INSPECTOR',
     'replay.run':'Run', 'replay.play':'Play', 'replay.pause':'Pause', 'replay.badge':'⏪ REPLAYING',
     'replay.noDB':'Replay needs a database. Set AI_TOWN_DB_URL to record history you can scrub through.',
     'replay.empty':'This run has no events to replay yet.', 'replay.events':'events', 'replay.loading':'Loading history…',
@@ -435,7 +435,7 @@ const I18N={
     'social.becameRumor':'→ now a rumor','social.origin':'origin','social.expandHint':'tap to trace the retelling',
   },
   zh:{
-    subtitle:'田野觀測站 · 5 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', replayTitle:'回放', inspectorTitle:'智能體檢視器',
+    subtitle:'田野觀測站 · 10 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', replayTitle:'回放', inspectorTitle:'智能體檢視器',
     'replay.run':'場次', 'replay.play':'播放', 'replay.pause':'暫停', 'replay.badge':'⏪ 回放中',
     'replay.noDB':'回放需要資料庫。設定 AI_TOWN_DB_URL 後才會記錄可拖曳回放的歷史。',
     'replay.empty':'這個場次還沒有可回放的事件。', 'replay.events':'事件', 'replay.loading':'載入歷史中…',
@@ -468,13 +468,17 @@ const I18N={
     'social.becameRumor':'→ 已成謠言','social.origin':'起頭','social.expandHint':'點擊追溯傳話過程',
   },
 };
-const LOC_ZH={home_a:'河畔之家',home_b:'山丘公寓',cafe:'月光咖啡館',office:'湯森辦公室',park:'老橡樹公園'};  // keyed by location id
-const KINDS={home:'住家',cafe:'咖啡館',office:'辦公室',park:'公園'};
+const LOC_ZH={home_a:'河畔之家',home_b:'山丘公寓',cafe:'月光咖啡館',office:'湯森辦公室',park:'老橡樹公園',
+  bakery:'日出烘焙坊',market:'老街市場'};  // keyed by location id
+const KINDS={home:'住家',cafe:'咖啡館',office:'辦公室',park:'公園',bakery:'烘焙坊',market:'市場'};
 const ACTIONS={work:'工作',eat:'用餐',move:'移動',sleep:'睡眠',rest:'休息',idle:'閒置',talk:'交談'};
-const OCCS={'Cafe Owner':'咖啡館老闆','Office Worker':'上班族','Doctor':'醫生','Retired Teacher':'退休教師','Art Student':'藝術系學生'};
+const OCCS={'Cafe Owner':'咖啡館老闆','Office Worker':'上班族','Doctor':'醫生','Retired Teacher':'退休教師','Art Student':'藝術系學生',
+  'Baker':'烘焙師','Postman':'郵差','Market Vendor':'市場攤販','Student':'學生','Retired Nurse':'退休護士'};
 const TRAITS={curious:'好奇',friendly:'友善',gossipy:'八卦',quiet:'安靜',loyal:'忠誠',stressed:'焦慮',
   calm:'冷靜',observant:'敏銳',helpful:'樂於助人',wise:'睿智',talkative:'健談',nostalgic:'念舊',
-  creative:'有創意',dreamy:'愛幻想','night-owl':'夜貓子'};
+  creative:'有創意',dreamy:'愛幻想','night-owl':'夜貓子',
+  hardworking:'勤奮',proud:'自豪',competitive:'好勝',cheerful:'開朗',restless:'閒不住',
+  frugal:'節儉',shy:'害羞',artistic:'有藝術氣質',kind:'善良',private:'內斂'};
 // Confrontation verdicts are a small closed vocabulary (unlike free speech) → map to zh; unknown falls through verbatim.
 const SPEECH_ZH={'admitted it':'承認了','denied it':'否認了'};
 // Landmark names are internal English; map the small set for the zh event feed.
@@ -585,6 +589,11 @@ const SPR_PAL={
   carol:{o:'#33262f',h:'#8a4b3b',k:'#f1c7a2',e:'#33262f',c:'#8E6FB3',d:'#64478c'},
   david:{o:'#332b33',h:'#b9b4ae',k:'#e9be97',e:'#332b33',c:'#E0A63C',d:'#b07e22'},
   emma: {o:'#3a2b36',h:'#e3c36b',k:'#f1c7a2',e:'#3a2b36',c:'#D46BA0',d:'#a8407a'},
+  rosa: {o:'#38292a',h:'#5a3a26',k:'#e9be97',e:'#38292a',c:'#D9803A',d:'#a85e22'},  // baker: warm terracotta
+  ken:  {o:'#26262e',h:'#2b2630',k:'#d8a878',e:'#26262e',c:'#2F9E8F',d:'#1f6e63'},  // postman: teal
+  mei:  {o:'#2e2b2c',h:'#8a8580',k:'#e6c9a8',e:'#2e2b2c',c:'#5B9E6B',d:'#3f7049'},  // vendor: green
+  leo:  {o:'#2b2c33',h:'#6a4a30',k:'#f1c7a2',e:'#2b2c33',c:'#6E7BC4',d:'#48539a'},  // student: indigo
+  grace:{o:'#312e30',h:'#cfc8c0',k:'#ecd6c0',e:'#312e30',c:'#9C93B8',d:'#6f6690'},  // retired nurse: lavender-grey
 };
 const FALLBACK_ID='alice';
 const F1=[
@@ -674,8 +683,32 @@ function parkSprite(l){
   s+=P(2,20,30,1,'#000',.12);
   return {rects:s, light:'', w, h};
 }
+function bakerySprite(l){
+  const w=24,h=20; let s='';
+  for(let r=0;r<5;r++){ s+=P(1+r,r,w-2-r,2,r<2?'#CE9552':'#B87A3C'); }  // sloped (lean-to) roof
+  s+=P(2,8,20,12,'#F0E2CC')+P(20,8,2,12,'#dccbad');            // wall + right shadow
+  s+=P(4,11,9,6,'#EAD9B8')+P(4,11,9,1,'#c9b088')+P(4,16,9,1,'#c9b088')+P(8,11,1,6,'#c9b088'); // display window
+  s+=P(5,13,3,2,'#C8873C')+P(9,13,3,2,'#B5732E');             // two loaves in the window
+  s+=P(15,12,5,8,'#9C6B3F')+P(15,12,1,8,'#744e2c');           // door
+  s+=P(16,6,4,4,'#D9A65A')+P(17,6,2,1,'#e8be7e')+P(16,7,1,2,'#e8be7e')+P(17,9,2,1,'#b5843c'); // round bread sign
+  s+=P(2,20,20,1,'#000',.14);
+  return {rects:s, light:P(4,11,9,6,'#FFCF6E'), w, h};
+}
+function marketSprite(l){
+  const w=30,h=18; let s='';
+  for(let c=0;c<28;c+=2){ s+=P(1+c,2,2,3,(c>>1)%2?'#E38C6B':'#F0E2CE'); } // striped sun-canopy
+  s+=P(0,5,30,1,'#b06a4c');                                    // canopy underside
+  s+=P(2,5,2,12,'#8a6239')+P(26,5,2,12,'#8a6239')+P(14,5,2,12,'#7a5535'); // support posts
+  s+=P(4,12,9,5,'#b98a5a')+P(4,12,9,1,'#cfa877');             // left stall counter
+  s+=P(17,12,9,5,'#b98a5a')+P(17,12,9,1,'#cfa877');           // right stall counter
+  s+=P(5,10,2,2,'#C0503A')+P(8,10,2,2,'#E0A63C')+P(11,10,1,2,'#5B9E6B'); // produce (left)
+  s+=P(18,10,2,2,'#8E6FB3')+P(21,10,2,2,'#C0503A')+P(24,10,1,2,'#E0A63C'); // produce (right)
+  s+=P(2,17,26,1,'#000',.14);
+  return {rects:s, light:'', w, h};
+}
 function buildingSVG(l){
-  return l.kind==='home'?homeSprite(l):l.kind==='cafe'?cafeSprite(l):l.kind==='office'?officeSprite(l):parkSprite(l);
+  return l.kind==='home'?homeSprite(l):l.kind==='cafe'?cafeSprite(l):l.kind==='office'?officeSprite(l)
+    :l.kind==='bakery'?bakerySprite(l):l.kind==='market'?marketSprite(l):parkSprite(l);
 }
 // Static terrain (pixel river + grass tufts): built ONCE, never per-tick.
 function buildTerrain(){
@@ -754,17 +787,17 @@ function updateLandmarks(list){
 // Slot spacing between co-located villagers. Must exceed the widest nametag so
 // adjacent name plates don't overlap and clip each other (e.g. "Alice"->"Alic").
 const SLOT=34;
-function slotOffset(i,n){ const spread=Math.min(n,5); return (i-(spread-1)/2)*SLOT; }
+function slotOffset(i,n){ const spread=Math.min(n,6); return (i-(spread-1)/2)*SLOT; }
 // Standing zone: villagers stand BESIDE the building (on the roomier side of the
 // canvas), at roof-mid height so their heads/nametags sit up by the eaves — clear
 // of the location label, which lives centred below the building. clampX/clampY then
 // guarantee the final point (after slot spread) keeps the whole villager on-canvas.
-const FOOT={home:22,cafe:26,office:22,park:34};   // horizontal half-width of each pixel footprint
+const FOOT={home:22,cafe:26,office:22,park:34,bakery:24,market:30};   // horizontal half-width of each pixel footprint
 const clampX=x=>Math.max(26,Math.min(774,x));     // nametag/body stay within [0,800]
 const clampY=y=>Math.max(44,Math.min(486,y));     // head origin: feet(+27)<=513, nametag(-24)>=20
 function standXY(l,idx,n){
   const half=FOOT[l.kind]||26;
-  const halfspread=(Math.min(n,5)-1)/2*SLOT;       // widest slot offset for this crowd
+  const halfspread=(Math.min(n,6)-1)/2*SLOT;       // widest slot offset for this crowd
   const off=Math.max(half+18, 40+halfspread);      // push the row out so even the innermost clears the label
   const side=l.x>400?-1:1;                          // right-half locations stand to their left
   return [clampX(l.x+side*off+slotOffset(idx,n)), clampY(l.y+8)];
@@ -1079,8 +1112,9 @@ $('#god-rain').onclick=()=>{ worldEvent({type:'rain',duration_minutes:180}); $('
 $('#god-festival').onclick=()=>{ worldEvent({type:'festival',location:'park',duration_minutes:240}); $('#godpanel').hidden=true; };
 
 /* ---------- God Mode: rumor seeding ---------- */
-// The fixed 5-agent cast (names stay English everywhere, like the rest of the UI).
-const CAST=[['alice','Alice'],['bob','Bob'],['carol','Carol'],['david','David'],['emma','Emma']];
+// The fixed 10-agent cast (names stay English everywhere, like the rest of the UI).
+const CAST=[['alice','Alice'],['bob','Bob'],['carol','Carol'],['david','David'],['emma','Emma'],
+  ['rosa','Rosa'],['ken','Ken'],['mei','Mei'],['leo','Leo'],['grace','Grace']];
 // Each preset seeds fixed English content (internal-English rule) from a sensible
 // default starter; the "Started by" dropdown can override that starter.
 const RUMOR_PRESETS={
@@ -1279,11 +1313,12 @@ function simStep(){
   for(const n of N){ n.fx=0; n.fy=0; }
   for(let i=0;i<N.length;i++)for(let j=i+1;j<N.length;j++){       // repulsion (all pairs)
     const a=N[i],b=N[j]; let dx=a.x-b.x, dy=a.y-b.y, d2=dx*dx+dy*dy||0.01, d=Math.sqrt(d2);
-    const f=K_REP/d2, ux=dx/d, uy=dy/d; a.fx+=ux*f; a.fy+=uy*f; b.fx-=ux*f; b.fy-=uy*f;
+    const f=(RG.krep||K_REP)/d2, ux=dx/d, uy=dy/d; a.fx+=ux*f; a.fy+=uy*f; b.fx-=ux*f; b.fy-=uy*f;
   }
+  const lmax=RG.rlenMax||RLEN_MAX, lmin=RG.rlenMin||RLEN_MIN;
   for(const e of RG.edges){                                       // springs (edges)
     const a=N[e.ai],b=N[e.bi]; let dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy)||0.01;
-    const L=RLEN_MAX-(favg(e.data)/100)*(RLEN_MAX-RLEN_MIN), f=K_SPRING*(d-L), ux=dx/d, uy=dy/d;
+    const L=lmax-(favg(e.data)/100)*(lmax-lmin), f=K_SPRING*(d-L), ux=dx/d, uy=dy/d;
     a.fx+=ux*f; a.fy+=uy*f; b.fx-=ux*f; b.fy-=uy*f;
   }
   let move=0;
@@ -1329,13 +1364,19 @@ function newEdgeEl(ed){
 }
 function buildGraph(data){
   const svg=$('#relsvg'); svg.innerHTML='';
+  // Layout scales with node count: a 10-node town needs shorter springs + a wider
+  // start ring so it fills the 300px box instead of knotting up (or hitting walls).
+  const N=Math.max(1,data.nodes.length);
+  const tight=Math.min(1, 6/N);                                    // 5-6 nodes: 1.0 (unchanged); 10: 0.6
+  const radius=Math.min(96, 60+N*4);
   const nodes=data.nodes.map((n,i)=>{ const ang=-Math.PI/2+i*2*Math.PI/data.nodes.length;
-    return {id:n.id,name:n.name,x:RG_CX+Math.cos(ang)*80,y:RG_CY+Math.sin(ang)*80,vx:0,vy:0}; });
+    return {id:n.id,name:n.name,x:RG_CX+Math.cos(ang)*radius,y:RG_CY+Math.sin(ang)*radius,vx:0,vy:0}; });
   const idx={}; nodes.forEach((n,i)=>idx[n.id]=i);
   const eg=document.createElementNS(SVGNS,'g'); eg.id='redges';           // edges under nodes
   const ng=document.createElementNS(SVGNS,'g'); ng.id='rnodes';
   svg.appendChild(eg); svg.appendChild(ng);
-  RG={nodes,edges:[],idx};
+  RG={nodes,edges:[],idx,
+      krep:K_REP*(0.65+0.35*tight), rlenMax:RLEN_MAX*tight, rlenMin:RLEN_MIN*tight};
   RG.edges=data.edges.map(newEdgeEl);
   nodes.forEach(n=>{ const sid=spriteId(n.id);
     const g=document.createElementNS(SVGNS,'g'); g.setAttribute('class','rnode');

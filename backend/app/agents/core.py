@@ -21,6 +21,8 @@ class Profile:
     traits: list[str] = field(default_factory=list)
     goals: list[dict] = field(default_factory=list)  # {"goal": str, "priority": float}
     daily_wage: float = 0.0                 # flat daily income paid at each day boundary
+    reflection_threshold: int = 25          # importance to accumulate before a Level-3 reflection fires
+                                            # (raise it for quiet background characters -> fewer smart-tier calls)
 
     @property
     def extraversion(self) -> float:

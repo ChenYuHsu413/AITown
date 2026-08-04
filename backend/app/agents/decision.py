@@ -46,6 +46,13 @@ TALK_COOLDOWN_MIN = 90        # don't re-approach the same person within 90 sim-
 TALK_DURATION_MIN = 10
 LOW_ENERGY = 20
 
+# Social tiering (pure rules, before the cheap should_talk call). Close friends
+# chat freely; acquaintances less; near-strangers rarely -- so the cheap-tier call
+# volume stays bounded as the town grows and social circles form on their own.
+SOCIAL_TIER_FRIEND = 55       # friendship >= this -> full rate
+SOCIAL_TIER_ACQUAINT = 35     # 35..55 -> x0.6; below -> x0.3
+INTROVERT_EXTRAVERSION = 0.45  # quiet personalities (Leo, Grace) damp their rate a further x0.7
+
 
 _CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 # Latin letters glued straight onto CJK with no space -- the tell of weak-model
@@ -156,9 +163,9 @@ class DecisionEngine:
         live = any(p.name != "mock" for chain in self.router.tiers.values() for p in chain)
         if live and self.dialogue_cap == 0:
             try:
-                self.dialogue_cap = int(os.environ.get("AI_TOWN_DIALOGUE_CAP", "12"))
+                self.dialogue_cap = int(os.environ.get("AI_TOWN_DIALOGUE_CAP", "25"))
             except ValueError:
-                self.dialogue_cap = 12
+                self.dialogue_cap = 25
 
     def _roll_day(self, now: int) -> None:
         day = now // (24 * 60)
@@ -215,7 +222,8 @@ class DecisionEngine:
                 partner.state.busy_until <= now
                 and partner.state.current_action != "sleep"
             )
-            if partner_free and now - last >= TALK_COOLDOWN_MIN and agent.state.current_action != "sleep":
+            if partner_free and now - last >= TALK_COOLDOWN_MIN and agent.state.current_action != "sleep" \
+                    and self._social_gate(agent, partner_id, now):
                 memories = await agent.memory.retrieve_async(f"{partner.name} {obs.location}", k=5)
                 res = await self.router.generate(
                     task="should_talk",
@@ -298,9 +306,16 @@ class DecisionEngine:
         if decision is None:
             dest = entry.location
             # Economy: if the routine sends us to eat at a shop we're shunning
-            # (heard a bad rumor about its owner), eat at home instead.
+            # (heard a bad rumor about its owner), take our custom to a RIVAL shop
+            # instead of eating at home -- so a rumor that hurts the cafe feeds the
+            # bakery, closing the competition loop. Home is only the last resort.
             if entry.action == "eat" and agent.state.avoid_location and dest == agent.state.avoid_location:
-                dest = agent.home
+                rival = next(
+                    (lid for lid, loc in world.locations.items()
+                     if loc.price > 0 and loc.owner and lid != agent.state.avoid_location),
+                    None,
+                )
+                dest = rival or agent.home
 
             # ---- world events (pure Level 0, no LLM) ------------------
             rain = world.effect_active("rain")
@@ -345,6 +360,22 @@ class DecisionEngine:
         )
         self.traces.append(trace)
         return decision
+
+    def _social_gate(self, agent: Agent, partner_id: str, now: int) -> bool:
+        """Tiered pre-check before the cheap should_talk call. Returns True to let
+        the LLM decide, False to skip by rule. Probability keys off how close the
+        two already are (a fresh pair defaults to the neutral friendship 30, i.e.
+        a stranger) and dampens for quiet personalities. Deterministic per
+        (pair, minute) so mock runs stay reproducible."""
+        rel = agent.relationships.get(partner_id)
+        f = rel.friendship if rel is not None else 30.0
+        p = 1.0 if f >= SOCIAL_TIER_FRIEND else 0.6 if f >= SOCIAL_TIER_ACQUAINT else 0.3
+        if agent.profile.extraversion < INTROVERT_EXTRAVERSION:
+            p *= 0.7
+        if p >= 1.0:
+            return True
+        seed = int(hashlib.sha256(f"talk|{agent.id}|{partner_id}|{now}".encode()).hexdigest()[:8], 16)
+        return random.Random(seed).random() < p
 
     def _record_observations(self, agent: Agent, world: World, now: int) -> None:
         """Pure-rules observable-activity memory. Noticing a neighbour at work on a
@@ -818,9 +849,11 @@ class DecisionEngine:
     # ---- Level 3: reflection -----------------------------------------
 
     async def maybe_reflect(
-        self, agent: Agent, world: World, now: int, threshold: int = 25
+        self, agent: Agent, world: World, now: int
     ) -> tuple[list[str], list[dict]]:
-        if agent.memory.importance_since_reflection < threshold:
+        # Individualized: quiet background characters (Grace, Mei) reflect less
+        # often, trimming their smart-tier spend without silencing the leads.
+        if agent.memory.importance_since_reflection < agent.profile.reflection_threshold:
             return [], []
         day_start = now - (now % (24 * 60))
         events = agent.memory.today(day_start)
