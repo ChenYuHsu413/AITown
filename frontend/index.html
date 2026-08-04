@@ -1477,7 +1477,10 @@ const RG_CENTER=0.022;              // gentle pull to centre (keeps the cloud ce
 const RG_COLL_HX=21, RG_COLL_HY=19; // half-extents of the sprite+label collision box (~42x38, hard constraint)
 const RG_EDGE_R=15;                 // pull each edge endpoint back to the node body so lines don't cover sprites
 const RG_FILL=0.84;                 // target: settled node cloud fills this fraction of the panel (per axis)
-let REL_DATA=null, rgRAF=0, rgCool=0, rgFrames=0, rgDrag=null;   // RG is declared earlier (near LANG)
+const RG_DAMP=0.66;                 // velocity damping per frame -> springs settle instead of bouncing
+const RG_MICRO=0.3;                 // sub-pixel motion is zeroed -> the graph truly comes to rest (no micro-jitter)
+const RG_DRAG_TEMP=0.2;             // drag re-heat = 20% of the initial layout temp: small, local nudges only
+let REL_DATA=null, rgRAF=0, rgCool=0, rgFrames=0, rgDrag=null, rgDragMoveT=0;   // RG is declared earlier (near LANG)
 const RG_PINS={};                   // id -> {nx,ny} normalized pin positions; session memory, reset on reload
 const favg=e=>(e.friendship_ab+e.friendship_ba)/2;
 const ekey=e=>e.a+'|'+e.b;
@@ -1519,16 +1522,32 @@ function simStep(){
     a.dx+=ux*f; a.dy+=uy*f; b.dx-=ux*f; b.dy-=uy*f;
   }
   let move=0; const temp=RG.temp, mx=RG.mx, my=RG.my;
+  // While dragging, keep the disturbance local: nodes far from the dragged node
+  // barely feel its force (the collision pass still pushes whatever it bumps).
+  const drag=rgDrag, LOC2=(3*RG_COLL_HX)*(3*RG_COLL_HX);
   for(const n of N){
-    if(n.fixed) continue;                                         // pinned/dragged: exert force, receive none
+    if(n.fixed){ n.vx=0; n.vy=0; continue; }                     // pinned/dragged: exert force, receive none
+    if(drag && drag!==n){
+      const ex=n.x-drag.x, ey=n.y-drag.y;
+      if(ex*ex+ey*ey>LOC2){                                      // far from the dragged node -> coast to a stop, no new force
+        n.vx*=0.5; n.vy*=0.5;
+        if(Math.abs(n.vx)+Math.abs(n.vy)<RG_MICRO){ n.vx=0; n.vy=0; }
+        n.x+=n.vx; n.y+=n.vy; move+=Math.abs(n.vx)+Math.abs(n.vy);
+        continue;                                                // (collision below still nudges anything it bumps)
+      }
+    }
     n.dx+=(CX-n.x)*RG_CENTER*k; n.dy+=(CYn-n.y/asp)*RG_CENTER*k;  // gentle centering (in normalized space)
-    const dl=Math.hypot(n.dx,n.dy)||1e-6, step=Math.min(dl,temp);
-    n.x+=n.dx/dl*step; n.y+=n.dy/dl*step*asp; move+=step;         // map the y step back to real px
+    // Damped integration (real px; the normalized y force maps back via *asp).
+    let vx=(n.vx+n.dx)*RG_DAMP, vy=(n.vy+n.dy*asp)*RG_DAMP;
+    const sp=Math.hypot(vx,vy);
+    if(sp>temp){ const s=temp/sp; vx*=s; vy*=s; }                 // temperature caps the speed
+    if(Math.hypot(vx,vy)<RG_MICRO){ vx=0; vy=0; }                // micro-cutoff -> real rest
+    n.vx=vx; n.vy=vy; n.x+=vx; n.y+=vy; move+=Math.abs(vx)+Math.abs(vy);
   }
   move+=resolveCollisions();                                      // hard constraint; residual counts as motion
   for(const n of N){ if(n.fixed) continue;                        // keep everyone inside the panel
     n.x=Math.max(mx,Math.min(RG.W-mx,n.x)); n.y=Math.max(my,Math.min(RG.H-my,n.y)); }
-  RG.temp=Math.max(0.4, temp*0.96);                              // cool toward rest
+  RG.temp=Math.max(0.35, temp*0.9);                              // cool fast toward rest
   return move;
 }
 // Scale the cloud's bounding box to fill ~RG_FILL of the panel on BOTH axes
@@ -1597,14 +1616,16 @@ function applyPins(){                                              // restore se
 }
 function svgPoint(ev){ const r=$('#relsvg').getBoundingClientRect();
   return {x:(ev.clientX-r.left)*RG.W/(r.width||1), y:(ev.clientY-r.top)*RG.H/(r.height||1)}; }
-function beginDrag(n){ rgDrag=n; n.fixed=true; n.el.classList.add('dragging'); rgCool=0;
-  RG.temp=Math.max(RG.temp, Math.min(RG.W,RG.H)/12); if(!REDUCE_MOTION) startRAF(); }
+function dragTemp(){ return (RG.temp0||Math.min(RG.W,RG.H)/6)*RG_DRAG_TEMP; }
+function beginDrag(n){ rgDrag=n; rgDragMoveT=performance.now(); n.fixed=true; n.el.classList.add('dragging');
+  rgCool=0; RG.temp=dragTemp(); if(!REDUCE_MOTION) startRAF(); }
 function endDrag(n){ rgDrag=null; n.el.classList.remove('dragging');
   n.pinned=true; n.fixed=true; n.el.classList.add('pinned'); RG_PINS[n.id]={nx:n.x/RG.W, ny:n.y/RG.H};
-  reheat(); }
+  rgCool=0; RG.temp=dragTemp();                                   // no big re-heat -> settles within ~1s
+  if(REDUCE_MOTION){ for(let i=0;i<60;i++) simStep(); renderPositions(); } else startRAF(); }
 function unpin(n){ n.pinned=false; n.fixed=false; n.el.classList.remove('pinned'); delete RG_PINS[n.id]; reheat(); }
-function reheat(){ rgCool=0; RG.temp=Math.min(RG.W,RG.H)/9;
-  if(REDUCE_MOTION){ for(let i=0;i<160;i++) simStep(); settleFit(); renderPositions(); } else startRAF(); }
+function reheat(){ rgCool=0; RG.temp=(RG.temp0||Math.min(RG.W,RG.H)/6)*0.35;   // modest, local re-settle
+  if(REDUCE_MOTION){ for(let i=0;i<120;i++) simStep(); settleFit(); renderPositions(); } else startRAF(); }
 function attachNodePointer(n){
   const g=n.el;
   g.addEventListener('pointerdown',ev=>{
@@ -1614,8 +1635,9 @@ function attachNodePointer(n){
     try{ g.setPointerCapture(id); }catch(e){}
     const onMove=e=>{ const p=svgPoint(e);
       if(!moved && Math.hypot(p.x-start.x,p.y-start.y)>4){ moved=true; beginDrag(n); }   // >4px => drag
-      if(moved){ n.x=p.x; n.y=p.y; RG.temp=Math.max(RG.temp,10);                          // keep others responsive
-        if(REDUCE_MOTION){ for(let i=0;i<24;i++) simStep(); renderPositions(); } }        // reduced motion: jump others
+      if(moved){ n.x=p.x; n.y=p.y; rgDragMoveT=performance.now(); RG.temp=dragTemp();      // low, local re-heat
+        if(REDUCE_MOTION){ for(let i=0;i<24;i++) simStep(); renderPositions(); }
+        else if(!rgRAF) startRAF(); }                                                     // keep the loop alive while dragging
     };
     const onUp=()=>{
       try{ g.releasePointerCapture(id); }catch(e){}
@@ -1636,13 +1658,13 @@ function buildGraph(data){
   const N=Math.max(1,data.nodes.length);
   const R0=0.34*Math.min(W,H);                                    // start ring already near the target size
   const nodes=data.nodes.map((n,i)=>{ const ang=-Math.PI/2+i*2*Math.PI/data.nodes.length;
-    return {id:n.id,name:n.name,x:W/2+Math.cos(ang)*R0,y:H/2+Math.sin(ang)*R0,dx:0,dy:0,pinned:false,fixed:false}; });
+    return {id:n.id,name:n.name,x:W/2+Math.cos(ang)*R0,y:H/2+Math.sin(ang)*R0,dx:0,dy:0,vx:0,vy:0,pinned:false,fixed:false}; });
   const idx={}; nodes.forEach((n,i)=>idx[n.id]=i);
   const eg=document.createElementNS(SVGNS,'g'); eg.id='redges';           // edges under nodes
   const ng=document.createElementNS(SVGNS,'g'); ng.id='rnodes';
   svg.appendChild(eg); svg.appendChild(ng);
   RG={nodes,edges:[],idx,W,H,mx:RG_COLL_HX+3,my:RG_COLL_HY+3,
-      k:rgIdeal(W,N), temp:Math.min(W,H)/6};
+      k:rgIdeal(W,N), temp0:Math.min(W,H)/6, temp:Math.min(W,H)/6};
   RG.edges=data.edges.map(newEdgeEl);
   nodes.forEach(n=>{ const sid=spriteId(n.id);
     const g=document.createElementNS(SVGNS,'g'); g.setAttribute('class','rnode');
@@ -1681,16 +1703,19 @@ function rgResize(){
   const {w:W,h:H}=rgDims(); if(W<2||H<2) return;                           // hidden/collapsed -> skip
   const sx=W/RG.W, sy=H/RG.H;
   if(Math.abs(sx-1)<0.001 && Math.abs(sy-1)<0.001) return;
-  for(const n of RG.nodes){ n.x*=sx; n.y*=sy; }                            // scale everyone (incl. pins) to the new box
-  RG.W=W; RG.H=H; RG.k=rgIdeal(W,RG.nodes.length); RG.temp=Math.min(W,H)/10;
+  for(const n of RG.nodes){ n.x*=sx; n.y*=sy; n.vx=0; n.vy=0; }            // scale everyone (incl. pins) to the new box
+  RG.W=W; RG.H=H; RG.k=rgIdeal(W,RG.nodes.length); RG.temp0=Math.min(W,H)/6; RG.temp=RG.temp0*0.5;
   $('#relsvg').setAttribute('viewBox',`0 0 ${W} ${H}`);
   if($('#graph').hidden){ renderPositions(); return; }
   if(REDUCE_MOTION){ for(let i=0;i<120;i++) simStep(); settleFit(); renderPositions(); } else { rgCool=0; startRAF(); }
 }
 try{ new ResizeObserver(()=>rgResize()).observe($('#graph')); }catch(e){}
 addEventListener('resize',()=>rgResize());   // fallback for environments where ResizeObserver is unreliable
-function rgTick(){ const move=simStep(); renderPositions(); rgFrames++;
-  if(move<RG.nodes.length*0.6){ if(++rgCool>15){ settleFit(); rgRAF=0; return; } } else rgCool=0;
+function rgTick(){
+  // Dragging but the pointer has been still >0.3s -> cool early so it settles.
+  if(rgDrag && performance.now()-rgDragMoveT>300) RG.temp*=0.8;
+  const move=simStep(); renderPositions(); rgFrames++;
+  if(!rgDrag && move<RG.nodes.length*0.6){ if(++rgCool>15){ settleFit(); rgRAF=0; return; } } else rgCool=0;
   if(rgFrames>600){ settleFit(); rgRAF=0; return; }   // hard cap: guarantee the loop always goes idle
   rgRAF=requestAnimationFrame(rgTick);
 }
