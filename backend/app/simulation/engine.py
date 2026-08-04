@@ -86,6 +86,23 @@ _EN_TEMPLATES = {
     "festival_end": "The festival at {loc} ended",
     "say": "💬 {actor}: {text}",
     "insight": "💭 {actor}: {text}",
+    "leak": "{actor} let slip a secret about {target}",
+    "secret_born": "{actor} started quietly keeping something to themselves",
+    "week_close": "The week's books were settled",
+}
+
+# The town's living history: the notable beats worth remembering (see Sim.chronicle
+# / the frontend Chronicle). Confide/confront/landmark/belief/broke/world-events are
+# ordinary bus events; leak/secret_born/week_close are published just for this.
+CHRONICLE_VERBS = {
+    "confide", "confronted", "landmark_done", "belief", "broke",
+    "rain_start", "rain_end", "festival_start", "festival_end",
+    "leak", "secret_born", "week_close",
+}
+CHRONICLE_ICONS = {
+    "confide": "🤫", "confronted": "⚖️", "landmark_done": "🎨", "belief": "💭",
+    "broke": "💸", "rain_start": "🌧️", "rain_end": "🌤️", "festival_start": "🎉",
+    "festival_end": "🎏", "leak": "🕳️", "secret_born": "🔒", "week_close": "📅",
 }
 
 
@@ -151,6 +168,10 @@ class SimulationEngine:
         builders.set_roster([(a.id.capitalize(), a.name) for a in world.agents.values()])
         self.scheduler = Scheduler()
         self.bus = EventBus()
+        # The town's rolling chronicle of notable beats (last 200), fed straight off
+        # the bus. Persisted in the snapshot; served at /api/chronicle.
+        self.chronicle: list[dict] = []
+        self.bus.subscribers.append(self._chronicle_add)
         self.now = 0
         self._last_decision_at: dict[str, int] = {}
         self._last_day = 0
@@ -205,6 +226,23 @@ class SimulationEngine:
             verb, ev.actor_name, ev.target_name, ev.location_name, text
         )
         self.bus.publish(ev)
+
+    def _chronicle_add(self, ev: Event) -> None:
+        """Bus subscriber: keep the notable beats (last 200) as the town's history.
+        Structured fields mirror the event so the UI renders/translates them like
+        any other event and can jump replay to the minute."""
+        if ev.verb not in CHRONICLE_VERBS:
+            return
+        self.chronicle.append({
+            "minute": ev.minute, "kind": ev.kind, "verb": ev.verb,
+            "icon_hint": CHRONICLE_ICONS.get(ev.verb, "•"),
+            "actor": ev.actor, "actor_name": ev.actor_name,
+            "target": ev.target, "target_name": ev.target_name,
+            "location": ev.location, "location_name": ev.location_name,
+            "speech": ev.text,
+        })
+        if len(self.chronicle) > 200:
+            del self.chronicle[:-200]
 
     # ---- world effects (rain / festival, Level 0) --------------------
 
@@ -285,6 +323,8 @@ class SimulationEngine:
         for ag in self.world.agents.values():
             ag.state.money += ag.profile.daily_wage
             ag.semantic.decay()   # unreinforced impressions fade a little each day
+        if week_close:
+            self._publish("system", "week_close")   # a chronicle beat: the week's books closed
 
     async def tick(self) -> None:
         item = self.scheduler.pop_next()
@@ -338,7 +378,9 @@ class SimulationEngine:
 
         # Reflection check (Level 3) fires only on accumulated importance. It also
         # distills lasting beliefs from repeated experience (semantic memory).
-        insights, beliefs = await self.decisions.maybe_reflect(agent, self.world, self.now)
+        insights, beliefs, secret_born = await self.decisions.maybe_reflect(agent, self.world, self.now)
+        if secret_born:  # content-free beat: the town notes they're holding something back
+            self._publish("reflection", "secret_born", actor=agent, location_id=agent.state.location)
         for ins in insights:
             self._publish(
                 "reflection", "insight", actor=agent,
@@ -381,6 +423,13 @@ class SimulationEngine:
                 target=self.world.agents.get(sr["to"]),
                 location_id=a.state.location, text=sr["text"],
             )
+            if sr.get("leak"):  # a confided secret just became gossip -> a chronicle beat
+                self._publish(
+                    "action", "leak",
+                    actor=self.world.agents.get(sr["from"]),
+                    target=self.world.agents.get(sr.get("subject", "")),
+                    location_id=a.state.location, text=sr["text"],
+                )
         for cf in confided:  # content-free: the world sees they opened up, not what about
             self._publish(
                 "action", "confide",

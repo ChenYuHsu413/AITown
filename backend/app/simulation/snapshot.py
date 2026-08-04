@@ -35,7 +35,8 @@ if TYPE_CHECKING:
 #   v4 -> v5: town expansion to 10 residents + 2 locations. Restore is unchanged --
 #             it only overlays agents/locations present in the payload, so an old
 #             5-agent snapshot loads with the new 5 residents kept at seed state.
-SCHEMA_VERSION = 5
+#   v5 -> v6: the rolling chronicle (town history) rides along; absent -> empty.
+SCHEMA_VERSION = 6
 
 
 # ---- capture -------------------------------------------------------------
@@ -60,6 +61,7 @@ def capture(engine: "SimulationEngine", world: "World", decisions: "DecisionEngi
         },
         "active_effects": [dict(e) for e in world.active_effects],
         "dialogue": {"day": decisions._dialogue_day, "count": decisions._dialogues_today},
+        "chronicle": [dict(c) for c in engine.chronicle[-200:]],
     }
 
 
@@ -119,6 +121,9 @@ def restore(payload: dict, engine: "SimulationEngine", world: "World",
         decisions._dialogue_day = int(dialogue["day"])
     if "count" in dialogue:
         decisions._dialogues_today = int(dialogue["count"])
+
+    if "chronicle" in payload:  # v6+; older snapshots keep the empty history
+        engine.chronicle = [dict(c) for c in (payload.get("chronicle") or []) if isinstance(c, dict)]
 
     return minute
 

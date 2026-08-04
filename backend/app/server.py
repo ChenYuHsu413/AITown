@@ -354,48 +354,24 @@ class Sim:
             self._away_mark = {"minute": self.engine.now, "event_idx": len(self.engine.bus.events)}
 
     def _build_away_summary(self, mark: dict) -> dict:
-        """Summarize everything that happened while nobody was watching: elapsed
-        sim time, activity tallies, and up to 10 dated highlights (confide /
-        confront / secret-leaked-to-rumor / landmark finished / weekly books)."""
+        """Summarize what happened while nobody was watching: elapsed sim time,
+        activity tallies, and up to 10 dated highlights. Highlights come straight
+        from the chronicle (the single source of the town's notable beats) -- the
+        card and the live Chronicle section render the same data two ways."""
         start = int(mark.get("minute", self.engine.now))
         now = self.engine.now
         idx = int(mark.get("event_idx", 0))
         window = self.engine.bus.events[idx:]
-        agents = self.world.agents
-
-        def name_of(aid: str) -> str:
-            return agents[aid].name if aid in agents else aid
 
         dialogues = sum(1 for e in window if e.verb == "talk_start")
-        beliefs = sum(1 for e in window if e.verb == "belief")
-        new_rumors = [r for r in self.engine.decisions.rumors.rumors.values()
-                      if r.created_minute >= start]
+        beliefs = sum(1 for c in self.engine.chronicle if c["minute"] >= start and c["verb"] == "belief")
+        new_rumors = sum(1 for r in self.engine.decisions.rumors.rumors.values()
+                         if r.created_minute >= start)
         new_secrets = sum(1 for s in self.engine.decisions.secrets.secrets.values()
                           if s.created_minute >= start)
 
-        major: list[dict] = []
-        for e in window:
-            if e.verb in ("confide", "confronted", "landmark_done"):
-                major.append(self._event_json(e))
-        for r in new_rumors:  # a secret that leaked into a rumor while away
-            if r.from_secret_id:
-                major.append({
-                    "minute": r.created_minute, "clock": fmt_time(r.created_minute),
-                    "kind": "system", "verb": "leak",
-                    "actor": r.origin, "actor_name": name_of(r.origin),
-                    "target": "", "target_name": "", "location": "", "location_name": "",
-                    "speech": "", "text": "",
-                })
-        first_day = start // DAY_MIN + 1
-        for day in range(first_day, now // DAY_MIN + 1):  # weekly settlement (Sunday close)
-            m = day * DAY_MIN
-            if start < m <= now and (day - 1) % 7 == 6:
-                major.append({
-                    "minute": m, "clock": fmt_time(m), "kind": "system", "verb": "week_close",
-                    "actor": "", "actor_name": "", "target": "", "target_name": "",
-                    "location": "", "location_name": "", "speech": "", "text": "",
-                })
-        major.sort(key=lambda e: e["minute"])
+        major = [{**c, "clock": fmt_time(c["minute"])}
+                 for c in self.engine.chronicle if c["minute"] >= start]
         if len(major) > 10:
             major = major[-10:]  # keep the most recent highlights
 
@@ -405,7 +381,7 @@ class Sim:
             "from_clock": fmt_time(start), "to_clock": fmt_time(now),
             "sim_days": round((now - start) / DAY_MIN, 1),
             "dialogues": dialogues,
-            "rumors": len(new_rumors),
+            "rumors": new_rumors,
             "secrets": new_secrets,
             "beliefs": beliefs,
             "events": major,
@@ -928,6 +904,17 @@ async def agent_detail(agent_id: str) -> JSONResponse:
             ][::-1],
         }
     )
+
+
+@app.get("/api/chronicle")
+async def chronicle(limit: int = 200) -> JSONResponse:
+    """The town's living history -- the notable beats (confide/confront/leak/
+    landmark/belief/secret/broke/world-events/weekly-books), newest last. The feed
+    tab's Chronicle section seeds from this, then appends live from the event stream."""
+    assert sim is not None
+    limit = max(1, min(limit, 200))
+    items = [{**c, "clock": fmt_time(c["minute"])} for c in sim.engine.chronicle[-limit:]]
+    return JSONResponse({"chronicle": items})
 
 
 @app.post("/api/translate")

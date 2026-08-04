@@ -694,7 +694,8 @@ class DecisionEngine:
             if shop:
                 c.state.avoid_location = shop
         gossip_bond = c.rel(b.id); gossip_bond.friendship += 1; gossip_bond.clamp()
-        return {"rumor_id": rumor.id, "text": text, "from": b.id, "to": c.id}
+        return {"rumor_id": rumor.id, "text": text, "from": b.id, "to": c.id,
+                "leak": True, "subject": secret.owner}
 
     async def run_conversation(
         self, a: Agent, b: Agent, world: World, now: int, confront_text: str | None = None,
@@ -932,11 +933,11 @@ class DecisionEngine:
 
     async def maybe_reflect(
         self, agent: Agent, world: World, now: int
-    ) -> tuple[list[str], list[dict]]:
+    ) -> tuple[list[str], list[dict], bool]:
         # Individualized: quiet background characters (Grace, Mei) reflect less
         # often, trimming their smart-tier spend without silencing the leads.
         if agent.memory.importance_since_reflection < agent.profile.reflection_threshold:
-            return [], []
+            return [], [], False
         day_start = now - (now % (24 * 60))
         events = _resolve_mems(agent.memory.today(day_start), world)
         res = await self.router.generate(
@@ -949,26 +950,28 @@ class DecisionEngine:
         )
         insights: list[str] = []
         belief_events: list[dict] = []
+        secret_born = False
         if isinstance(res.parsed, dict):
             insights = [str(x) for x in res.parsed.get("insights", [])]
             belief_events = self._form_beliefs(agent, world, res.parsed.get("beliefs", []), now)
-            self._maybe_new_secret(agent, res.parsed.get("new_secret"), now)
+            secret_born = self._maybe_new_secret(agent, res.parsed.get("new_secret"), now)
         for ins in insights:
             agent.memory.add(MemoryItem(minute=now, text=ins, importance=5, kind="reflection"))
         agent.memory.importance_since_reflection = 0
-        return insights, belief_events
+        return insights, belief_events, secret_born
 
-    def _maybe_new_secret(self, agent: Agent, raw: object, now: int) -> None:
+    def _maybe_new_secret(self, agent: Agent, raw: object, now: int) -> bool:
         """Add a private matter surfaced by reflection (owner = the reflecting
-        agent). Capped at 4 per agent so it can't run away; secrets carry no
-        event -- they live only in the registry until confided or leaked."""
+        agent). Capped at 4 per agent so it can't run away. Returns True if one was
+        born (the engine then publishes a content-free ``secret_born`` beat)."""
         if not isinstance(raw, dict):
-            return
+            return False
         text = str(raw.get("text", "")).strip()
         if not text or len(self.secrets.secrets_of(agent.id)) >= 4:
-            return
+            return False
         try:
             sensitivity = float(raw.get("sensitivity", 0.5))
         except (TypeError, ValueError):
             sensitivity = 0.5
         self.secrets.add(agent.id, text, sensitivity, now)
+        return True
