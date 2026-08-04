@@ -129,12 +129,34 @@ footer b{font-weight:500;font-size:14px}
 #rain,#festival{pointer-events:none}
 #raindrops{animation:rainfall .5s steps(2) infinite}
 @keyframes rainfall{from{transform:translate(0,0)}to{transform:translate(-4px,14px)}}
-#godpanel{position:absolute;top:52px;right:14px;z-index:20;display:flex;flex-direction:column;gap:6px;
+#godpanel{position:absolute;top:52px;right:14px;z-index:20;display:flex;flex-direction:column;gap:6px;width:212px;
+  max-height:calc(100% - 66px);overflow-y:auto;
   background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;
   box-shadow:0 4px 14px rgba(0,0,0,.12)}
 #godpanel button{font-family:var(--mono);font-size:12px;padding:7px 12px;background:var(--paper);
   border:1px solid var(--line);border-radius:4px;color:var(--ink);cursor:pointer;text-align:left;white-space:nowrap}
 #godpanel button:hover{border-color:var(--amber)}
+#godpanel button:disabled{opacity:.45;cursor:not-allowed}
+/* rumor sub-panel */
+.god-sec{font-family:var(--mono);font-size:9px;letter-spacing:.16em;color:var(--faint);
+  padding:4px 2px 0;border-top:1px solid var(--line);margin-top:2px}
+.god-row{display:flex;align-items:center;gap:6px}
+.god-row label{font-family:var(--mono);font-size:10px;color:var(--faint);white-space:nowrap}
+#godpanel select,#godpanel input{flex:1;min-width:0;font-family:var(--mono);font-size:11px;padding:5px 6px;
+  background:var(--paper);border:1px solid var(--line);border-radius:4px;color:var(--ink)}
+#godpanel input:focus,#godpanel select:focus{outline:2px solid var(--amber);outline-offset:1px}
+.god-preset{font-size:11.5px!important}
+.god-toggle{color:var(--faint);font-style:italic}
+#god-feedback{font-family:var(--mono);font-size:11px;line-height:1.4;padding:3px 2px;color:var(--moss);
+  transition:opacity .5s}
+#god-feedback.err{color:#C0503A}
+#god-feedback.fade{opacity:0}
+#god-rumors{display:flex;flex-direction:column;gap:5px}
+.god-rumor{font-size:11px;line-height:1.35;padding:4px 4px;border:1px solid var(--line);border-radius:4px;background:var(--paper)}
+.god-rtext{color:var(--ink);word-break:break-word}
+.god-rmeta{font-family:var(--mono);font-size:9.5px;color:var(--faint);margin-top:2px}
+.god-rmeta .god-rstat{color:var(--amber)}
+.god-empty{font-size:11px;color:var(--faint);padding:2px}
 @media (prefers-reduced-motion: reduce){ #raindrops{animation:none} }
 /* NB: #lights opacity is driven by the `opacity` ATTRIBUTE (set each tick in
    updateClock), NOT a CSS rule -- a CSS `opacity` here would override the
@@ -169,6 +191,29 @@ footer b{font-weight:500;font-size:14px}
   <div id="godpanel" hidden>
     <button id="god-rain" data-i18n="god.rain">Rain · 3h</button>
     <button id="god-festival" data-i18n="god.festival">Park festival · 4h</button>
+
+    <div class="god-sec" data-i18n="god.rumorHead">RUMORS</div>
+    <div class="god-row">
+      <label data-i18n="god.startedBy">Started by</label>
+      <select id="god-starter"></select>
+    </div>
+    <button class="god-preset" data-preset="cafe_closing" data-i18n="god.preset.cafe">Cafe closing</button>
+    <button class="god-preset" data-preset="bob_quit" data-i18n="god.preset.bob">Bob quitting</button>
+    <button class="god-preset" data-preset="emma_award" data-i18n="god.preset.emma">Emma's award</button>
+    <button class="god-preset" data-preset="carol_moving" data-i18n="god.preset.carol">Carol moving</button>
+
+    <button id="god-custom-toggle" class="god-toggle" data-i18n="god.customToggle">Custom rumor…</button>
+    <div id="god-custom" hidden>
+      <input id="god-text" type="text" data-i18n-ph="god.textPh" placeholder="Rumor text (English)">
+      <div class="god-row"><label data-i18n="god.about">About</label><select id="god-subject"></select></div>
+      <div class="god-row"><label data-i18n="god.startedBy">Started by</label><select id="god-custom-starter"></select></div>
+      <button id="god-seed" data-i18n="god.spread">Spread rumor</button>
+    </div>
+
+    <div id="god-feedback" hidden></div>
+
+    <div class="god-sec" data-i18n="god.activeHead">ACTIVE RUMORS</div>
+    <div id="god-rumors"></div>
   </div>
 </header>
 
@@ -231,6 +276,14 @@ const I18N={
     'title.pause':'Pause simulation','title.s1':'1 sim-minute per second','title.s5':'5 sim-minutes per second',
     'title.s20':'20 sim-minutes per second','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
     'title.god':'World events','god.rain':'Rain · 3h','god.festival':'Park festival · 4h',
+    'god.rumorHead':'RUMORS','god.startedBy':'Started by','god.presetDefault':'(preset default)',
+    'god.preset.cafe':'Cafe closing','god.preset.bob':'Bob quitting','god.preset.emma':"Emma's award",'god.preset.carol':'Carol moving',
+    'god.customToggle':'Custom rumor…','god.about':'About','god.noSubject':'(no subject)',
+    'god.textPh':'Rumor text (English)','god.spread':'Spread rumor',
+    'god.spreadOk':'Rumor spread','god.failed':'Failed: ',
+    'god.activeHead':'ACTIVE RUMORS','god.spreading':'spreading',
+    'god.stAdmitted':'✓ confronted · admitted','god.stDenied':'✓ confronted · denied',
+    'god.knownBy':'known by {n}','god.noRumors':'No rumors yet.',
   },
   zh:{
     subtitle:'田野觀測站 · 5 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', inspectorTitle:'智能體檢視器',
@@ -244,6 +297,14 @@ const I18N={
     'title.pause':'暫停模擬','title.s1':'每秒 1 模擬分鐘','title.s5':'每秒 5 模擬分鐘',
     'title.s20':'每秒 20 模擬分鐘','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
     'title.god':'世界事件','god.rain':'下雨 3 小時','god.festival':'公園慶典 4 小時',
+    'god.rumorHead':'謠言','god.startedBy':'由誰起頭','god.presetDefault':'(預設起頭者)',
+    'god.preset.cafe':'咖啡館要倒了','god.preset.bob':'Bob 要離職了','god.preset.emma':'Emma 的壁畫得獎了','god.preset.carol':'Carol 要搬走了',
+    'god.customToggle':'自訂謠言…','god.about':'主角','god.noSubject':'(無主角)',
+    'god.textPh':'謠言內容（英文）','god.spread':'散播謠言',
+    'god.spreadOk':'謠言已散播','god.failed':'失敗：',
+    'god.activeHead':'現存謠言','god.spreading':'傳播中',
+    'god.stAdmitted':'✓ 已對質・承認','god.stDenied':'✓ 已對質・否認',
+    'god.knownBy':'{n} 人知曉','god.noRumors':'尚無謠言。',
   },
 };
 const LOC_ZH={home_a:'河畔之家',home_b:'山丘公寓',cafe:'月光咖啡館',office:'湯森辦公室',park:'老橡樹公園'};  // keyed by location id
@@ -308,6 +369,7 @@ function memText(raw){
 function applyLang(){
   document.querySelectorAll('[data-i18n]').forEach(el=>{el.textContent=t(el.dataset.i18n);});
   document.querySelectorAll('[data-i18n-title]').forEach(el=>{el.title=t(el.dataset.i18nTitle);});
+  document.querySelectorAll('[data-i18n-ph]').forEach(el=>{el.placeholder=t(el.dataset.i18nPh);});
   $('#map').setAttribute('aria-label',t('mapAria'));
   $('#btn-lang').textContent=LANG==='en'?'中':'EN';
   $('#btn-lang').title=t('title.lang');
@@ -315,6 +377,7 @@ function applyLang(){
   if(LOC_LIST.length) buildMap(LOC_LIST);                          // relabel map
   $('#feed').querySelectorAll('.ev').forEach(d=>{d.lastChild.textContent=evText(JSON.parse(d.dataset.ev));});
   if(selected) refreshInspector(selected,false);                  // else static placeholder already updated
+  if(!$('#godpanel').hidden) loadRumorList();                     // re-render rumor list in the new language
 }
 function toggleLang(){ LANG=LANG==='en'?'zh':'en'; localStorage.setItem('lang',LANG); applyLang(); }
 
@@ -697,9 +760,85 @@ function renderEffects(effects){                        // driven by the state s
   const festG=$('#festival'); if(festG){ if(fest) renderFestival(fest.location); else festG.innerHTML=''; }
 }
 function worldEvent(body){ fetch('/api/world-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
-$('#btn-god').onclick=()=>{ const p=$('#godpanel'); p.hidden=!p.hidden; };
+$('#btn-god').onclick=()=>{ const p=$('#godpanel'); p.hidden=!p.hidden; if(!p.hidden) loadRumorList(); };
 $('#god-rain').onclick=()=>{ worldEvent({type:'rain',duration_minutes:180}); $('#godpanel').hidden=true; };
 $('#god-festival').onclick=()=>{ worldEvent({type:'festival',location:'park',duration_minutes:240}); $('#godpanel').hidden=true; };
+
+/* ---------- God Mode: rumor seeding ---------- */
+// The fixed 5-agent cast (names stay English everywhere, like the rest of the UI).
+const CAST=[['alice','Alice'],['bob','Bob'],['carol','Carol'],['david','David'],['emma','Emma']];
+// Each preset seeds fixed English content (internal-English rule) from a sensible
+// default starter; the "Started by" dropdown can override that starter.
+const RUMOR_PRESETS={
+  cafe_closing:{agent:'david', text:"Alice's cafe might be closing next month", subject:'alice'},
+  bob_quit:    {agent:'carol', text:"Bob is planning to quit his job soon",      subject:'bob'},
+  emma_award:  {agent:'david', text:"Emma's mural won a city art award",         subject:'emma'},
+  carol_moving:{agent:'bob',   text:"Carol is moving to another town",           subject:'carol'},
+};
+function fillAgentSelect(sel,{presetDefault,none}={}){
+  let html='';
+  if(presetDefault) html+=`<option value="" data-i18n="god.presetDefault">${t('god.presetDefault')}</option>`;
+  if(none) html+=`<option value="" data-i18n="god.noSubject">${t('god.noSubject')}</option>`;
+  html+=CAST.map(([id,name])=>`<option value="${id}">${name}</option>`).join('');
+  sel.innerHTML=html;
+}
+function initGodRumor(){
+  fillAgentSelect($('#god-starter'),{presetDefault:true});
+  fillAgentSelect($('#god-subject'),{none:true});
+  fillAgentSelect($('#god-custom-starter'));
+  $('#god-custom-starter').value='alice';
+  document.querySelectorAll('.god-preset').forEach(b=>b.onclick=()=>{
+    const p=RUMOR_PRESETS[b.dataset.preset];
+    seedRumor({agent_id:$('#god-starter').value||p.agent, text:p.text, subject:p.subject});
+  });
+  $('#god-custom-toggle').onclick=()=>{ $('#god-custom').hidden=!$('#god-custom').hidden; };
+  $('#god-text').oninput=updateSeedBtn;
+  $('#god-seed').onclick=()=>{
+    const text=$('#god-text').value.trim(); if(!text) return;
+    seedRumor({agent_id:$('#god-custom-starter').value, text, subject:$('#god-subject').value});
+  };
+  updateSeedBtn();
+}
+function updateSeedBtn(){ $('#god-seed').disabled=!$('#god-text').value.trim(); }
+async function seedRumor(body){
+  try{
+    const r=await fetch('/api/rumors',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+    godFeedback(`🗣️ ${t('god.spreadOk')} (sentiment: ${(+d.sentiment).toFixed(2)})`,false);
+    $('#god-text').value=''; updateSeedBtn();
+    loadRumorList();                                     // reflect the new rumor immediately
+  }catch(e){ godFeedback(`${t('god.failed')}${e.message}`,true); }
+}
+let godFbTimer=null;
+function godFeedback(msg,isErr){
+  const el=$('#god-feedback');
+  el.textContent=msg; el.hidden=false; el.classList.toggle('err',isErr); el.classList.remove('fade');
+  clearTimeout(godFbTimer);
+  godFbTimer=setTimeout(()=>{ el.classList.add('fade');                 // 3s hold, then fade out
+    setTimeout(()=>{ el.hidden=true; el.classList.remove('fade'); },600); },3000);
+}
+function rumorStatus(r){
+  if(r.resolved) return r.outcome==='admitted'?t('god.stAdmitted'):t('god.stDenied');
+  return t('god.spreading');
+}
+async function loadRumorList(){
+  try{
+    const d=await (await fetch('/api/rumors')).json();
+    const box=$('#god-rumors'); box.innerHTML='';
+    if(!d.rumors||!d.rumors.length){ box.innerHTML=`<div class="god-empty">${t('god.noRumors')}</div>`; return; }
+    d.rumors.forEach(r=>{
+      const latest=r.versions.length?r.versions[r.versions.length-1].text:'';   // most-drifted wording
+      const row=document.createElement('div'); row.className='god-rumor';
+      row.innerHTML=`<div class="god-rtext"></div><div class="god-rmeta"><span></span> · <span class="god-rstat"></span></div>`;
+      row.querySelector('.god-rtext').textContent=latest;                        // free text -> textContent (no injection)
+      row.querySelector('.god-rmeta span').textContent=t('god.knownBy').replace('{n}',r.versions.length);
+      row.querySelector('.god-rstat').textContent=rumorStatus(r);
+    box.appendChild(row);
+    });
+  }catch(e){}
+}
+initGodRumor();
 
 async function pollUsage(){
   try{
