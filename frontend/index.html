@@ -36,6 +36,10 @@ header{display:flex;align-items:center;gap:20px;padding:10px 18px;border-bottom:
   #llm-dot{animation:none;opacity:.75}
   .controls #btn-pause.pending{animation:none;opacity:.55}
 }
+/* the light installation twinkles once completed */
+.installation.done{animation:instTwinkle 1.3s ease-in-out infinite}
+@keyframes instTwinkle{0%,100%{opacity:1}50%{opacity:.68}}
+@media (prefers-reduced-motion:reduce){ .installation.done{animation:none} }
 #daystrip{flex:1;height:6px;border:1px solid var(--line);border-radius:3px;position:relative;background:
   linear-gradient(90deg,#131F35 0%,#131F35 20%,#c98a3a 27%,#f2ecd8 40%,#f2ecd8 62%,#c98a3a 75%,#131F35 85%,#131F35 100%)}
 #sun{position:absolute;top:-4px;width:12px;height:12px;border-radius:50%;background:var(--ink);border:2px solid var(--paper);transform:translateX(-50%)}
@@ -294,10 +298,10 @@ footer b{font-weight:500;font-size:14px}
       <label data-i18n="god.startedBy">Started by</label>
       <select id="god-starter"></select>
     </div>
-    <button class="god-preset" data-preset="cafe_closing" data-i18n="god.preset.cafe">Cafe closing</button>
-    <button class="god-preset" data-preset="bob_quit" data-i18n="god.preset.bob">Bob quitting</button>
-    <button class="god-preset" data-preset="emma_award" data-i18n="god.preset.emma">Emma's award</button>
-    <button class="god-preset" data-preset="carol_moving" data-i18n="god.preset.carol">Carol moving</button>
+    <button class="god-preset" data-preset="cafe_crisis" data-i18n="god.preset.cafe">Cafe crisis</button>
+    <button class="god-preset" data-preset="xue_quit" data-i18n="god.preset.xue">Xue quitting</button>
+    <button class="god-preset" data-preset="aisi_award" data-i18n="god.preset.aisi">Aisi's award</button>
+    <button class="god-preset" data-preset="azong_move" data-i18n="god.preset.azong">Azong moving</button>
 
     <button id="god-custom-toggle" class="god-toggle" data-i18n="god.customToggle">Custom rumor…</button>
     <div id="god-custom" hidden>
@@ -419,7 +423,7 @@ const I18N={
     'title.s20':'20 sim-minutes per second','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
     'title.god':'World events','god.rain':'Rain · 3h','god.festival':'Park festival · 4h',
     'god.rumorHead':'RUMORS','god.startedBy':'Started by','god.presetDefault':'(preset default)',
-    'god.preset.cafe':'Cafe closing','god.preset.bob':'Bob quitting','god.preset.emma':"Emma's award",'god.preset.carol':'Carol moving',
+    'god.preset.cafe':'Cafe crisis','god.preset.xue':'Xue quitting','god.preset.aisi':"Aisi's award",'god.preset.azong':'Azong moving',
     'god.customToggle':'Custom rumor…','god.about':'About','god.noSubject':'(no subject)',
     'god.textPh':'Rumor text (English)','god.spread':'Spread rumor',
     'god.spreadOk':'Rumor spread','god.failed':'Failed: ',
@@ -452,7 +456,7 @@ const I18N={
     'title.s20':'每秒 20 模擬分鐘','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
     'title.god':'世界事件','god.rain':'下雨 3 小時','god.festival':'公園慶典 4 小時',
     'god.rumorHead':'謠言','god.startedBy':'由誰起頭','god.presetDefault':'(預設起頭者)',
-    'god.preset.cafe':'咖啡館要倒了','god.preset.bob':'Bob 要離職了','god.preset.emma':'Emma 的壁畫得獎了','god.preset.carol':'Carol 要搬走了',
+    'god.preset.cafe':'咖啡館危機','god.preset.xue':'雪要離職','god.preset.aisi':'艾斯得獎','god.preset.azong':'阿總搬遷',
     'god.customToggle':'自訂謠言…','god.about':'主角','god.noSubject':'(無主角)',
     'god.textPh':'謠言內容（英文）','god.spread':'散播謠言',
     'god.spreadOk':'謠言已散播','god.failed':'失敗：',
@@ -473,16 +477,28 @@ const LOC_ZH={home_a:'河畔之家',home_b:'山丘公寓',cafe:'月光咖啡館'
 const KINDS={home:'住家',cafe:'咖啡館',office:'辦公室',park:'公園',bakery:'烘焙坊',market:'市場'};
 const ACTIONS={work:'工作',eat:'用餐',move:'移動',sleep:'睡眠',rest:'休息',idle:'閒置',talk:'交談'};
 const OCCS={'Cafe Owner':'咖啡館老闆','Office Worker':'上班族','Doctor':'醫生','Retired Teacher':'退休教師','Art Student':'藝術系學生',
-  'Baker':'烘焙師','Postman':'郵差','Market Vendor':'市場攤販','Student':'學生','Retired Nurse':'退休護士'};
+  'Baker':'烘焙師','Postman':'郵差','Market Vendor':'市場攤販','Student':'學生','Retired Nurse':'退休護士',
+  'Engineer':'工程師','Freelance Designer':'自由設計師','Retired':'退休'};
 const TRAITS={curious:'好奇',friendly:'友善',gossipy:'八卦',quiet:'安靜',loyal:'忠誠',stressed:'焦慮',
   calm:'冷靜',observant:'敏銳',helpful:'樂於助人',wise:'睿智',talkative:'健談',nostalgic:'念舊',
   creative:'有創意',dreamy:'愛幻想','night-owl':'夜貓子',
   hardworking:'勤奮',proud:'自豪',competitive:'好勝',cheerful:'開朗',restless:'閒不住',
-  frugal:'節儉',shy:'害羞',artistic:'有藝術氣質',kind:'善良',private:'內斂'};
+  frugal:'節儉',shy:'害羞',artistic:'有藝術氣質',kind:'善良',private:'內斂',
+  technical:'技術控',focused:'專注',easygoing:'隨和',sociable:'善交際'};
+// Residents: Chinese display names (zh) and capitalized-pinyin (en), keyed by id.
+// The whole UI shows names through agentName(id) so both languages stay consistent.
+const NAME_ZH={jiji:'ㄐㄐ',ange:'安哥',oula:'歐拉',lengyue:'冷月',azong:'阿總',
+  xixi:'希希',aisi:'艾斯',xue:'雪',long:'瓏',kuaizheng:'蒯政'};
+const NAME_EN={jiji:'Jiji',ange:'Ange',oula:'Oula',lengyue:'Lengyue',azong:'Azong',
+  xixi:'Xixi',aisi:'Aisi',xue:'Xue',long:'Long',kuaizheng:'Kuaizheng'};
+const agentName=(id,fb)=>LANG==='zh'?(NAME_ZH[id]||fb||id):(NAME_EN[id]||fb||id);
+// nametag pixel width: CJK glyphs ~13px, latin ~6.2px, plus padding.
+function agentNameW(id){ const n=agentName(id); let w=0;
+  for(const c of n) w+=/[㄀-鿿豈-﫿]/.test(c)?13:6.2; return Math.ceil(w)+14; }
 // Confrontation verdicts are a small closed vocabulary (unlike free speech) → map to zh; unknown falls through verbatim.
 const SPEECH_ZH={'admitted it':'承認了','denied it':'否認了'};
 // Landmark names are internal English; map the small set for the zh event feed.
-const LANDMARK_ZH={'the mural':'壁畫'};
+const LANDMARK_ZH={'the interactive light installation':'互動燈光裝置'};
 // Event Contract v1 templates, keyed by ev.verb. (a)ctor, (l)ocation, (tg)target, (sp)eech.
 // speech is model-generated free text — inserted verbatim, never translated.
 const EV_TMPL={
@@ -518,6 +534,7 @@ const EV_TMPL={
   },
 };
 let LANG=localStorage.getItem('lang')||(navigator.language&&navigator.language.startsWith('zh')?'zh':'en');
+let RG=null;   // relationship-graph model; declared early so the initial applyLang() can null-check it
 const t=k=>(I18N[LANG]&&I18N[LANG][k])??I18N.en[k]??k;
 const locById=(id,fb)=>LANG==='zh'?(LOC_ZH[id]||fb||id):(fb||id);           // events + map (have the id)
 const locByEn=n=>{ if(LANG!=='zh') return n;                                  // inspector (only has English name)
@@ -527,13 +544,17 @@ const MOOD_EMOJI={upset:'😠',worried:'😟',happy:'🙂'};
 const moodEmoji=m=>MOOD_EMOJI[m]?MOOD_EMOJI[m]+' ':'';
 const actName=a=>LANG==='zh'?(ACTIONS[a]||a):a;
 const traitName=x=>LANG==='zh'?(TRAITS[x]||x):x;
-// A belief's subject display name: localize location subjects to zh; agents/self keep their name.
-const subjName=b=>(LANG==='zh'&&LOCS[b.subject])?(LOC_ZH[b.subject]||b.subject_name):b.subject_name;
+// A belief's subject display name: locations localize to zh; agents go through
+// agentName (id-keyed); 'self' keeps the server-sent name.
+const subjName=b=> b.subject==='self' ? b.subject_name
+  : LOCS[b.subject] ? locById(b.subject,b.subject_name)
+  : agentName(b.subject,b.subject_name);
 // Render one structured event via its verb template. Unknown verb → deprecated ev.text fallback.
 function evText(ev){
   const tmpl=(EV_TMPL[LANG]||EV_TMPL.en)[ev.verb];
   if(!tmpl) return ev.text||'';   // reserved for future verbs (Contract §fallback)
-  return tmpl(ev.actor_name||ev.actor, locById(ev.location,ev.location_name), ev.target_name||ev.target, ev.speech||'');
+  return tmpl(agentName(ev.actor,ev.actor_name), locById(ev.location,ev.location_name),
+              agentName(ev.target,ev.target_name), ev.speech||'');
 }
 // Translate memory text where it follows a known template.
 function memText(raw){
@@ -550,6 +571,8 @@ function applyLang(){
   $('#btn-lang').title=t('title.lang');
   document.documentElement.lang=LANG==='zh'?'zh-Hant':'en';
   if(LOC_LIST.length) buildMap(LOC_LIST);                          // relabel map
+  refreshNametags();                                               // villager labels follow the language
+  if(RG) relabelGraph();                                           // relationship-graph node labels too
   document.querySelectorAll('#feed .ev,#replay-feed .ev').forEach(d=>{d.lastChild.textContent=evText(JSON.parse(d.dataset.ev));});
   if(selected && !$("#inspector").hidden) refreshInspector(selected,false);                  // else static placeholder already updated
   if(!$('#social').hidden) loadSocial();               // re-render the secrets/rumors tab in the new language
@@ -583,19 +606,21 @@ const ROOF={home_a:'#C77A57',home_b:'#7E97C6'};   // two homes, two roof colours
    <defs>; agents only <use> them and toggle a class -- rects are never redrawn.
    Palette per character: o outline, h hair, k skin, e eye, c cloth, d cloth-shadow.
    Cloth hue keeps each agent's existing colour identity. */
+// One palette per resident; cloth hues span the wheel and no two repeat, hair
+// varies too (o outline, h hair, k skin, e eye, c cloth, d cloth-shadow).
 const SPR_PAL={
-  alice:{o:'#3a2e33',h:'#7a4a24',k:'#f1c7a2',e:'#3a2e33',c:'#E4674F',d:'#b23f2c'},
-  bob:  {o:'#2b2630',h:'#2e2a33',k:'#e9be97',e:'#2b2630',c:'#4E86B0',d:'#305f82'},
-  carol:{o:'#33262f',h:'#8a4b3b',k:'#f1c7a2',e:'#33262f',c:'#8E6FB3',d:'#64478c'},
-  david:{o:'#332b33',h:'#b9b4ae',k:'#e9be97',e:'#332b33',c:'#E0A63C',d:'#b07e22'},
-  emma: {o:'#3a2b36',h:'#e3c36b',k:'#f1c7a2',e:'#3a2b36',c:'#D46BA0',d:'#a8407a'},
-  rosa: {o:'#38292a',h:'#5a3a26',k:'#e9be97',e:'#38292a',c:'#D9803A',d:'#a85e22'},  // baker: warm terracotta
-  ken:  {o:'#26262e',h:'#2b2630',k:'#d8a878',e:'#26262e',c:'#2F9E8F',d:'#1f6e63'},  // postman: teal
-  mei:  {o:'#2e2b2c',h:'#8a8580',k:'#e6c9a8',e:'#2e2b2c',c:'#5B9E6B',d:'#3f7049'},  // vendor: green
-  leo:  {o:'#2b2c33',h:'#6a4a30',k:'#f1c7a2',e:'#2b2c33',c:'#6E7BC4',d:'#48539a'},  // student: indigo
-  grace:{o:'#312e30',h:'#cfc8c0',k:'#ecd6c0',e:'#312e30',c:'#9C93B8',d:'#6f6690'},  // retired nurse: lavender-grey
+  jiji:     {o:'#3a2e33',h:'#4a3524',k:'#f1c7a2',e:'#3a2e33',c:'#E4674F',d:'#b23f2c'},  // cafe owner: red
+  ange:     {o:'#38292a',h:'#5a3a26',k:'#e9be97',e:'#38292a',c:'#D9803A',d:'#a85e22'},  // baker: terracotta
+  oula:     {o:'#26262e',h:'#2b2630',k:'#d8a878',e:'#26262e',c:'#2F9E8F',d:'#1f6e63'},  // postman: teal
+  lengyue:  {o:'#33262f',h:'#3a2a3a',k:'#f1c7a2',e:'#33262f',c:'#8E6FB3',d:'#64478c'},  // doctor: violet
+  azong:    {o:'#332b33',h:'#6b4128',k:'#ecd6c0',e:'#332b33',c:'#D4A63C',d:'#a87f22'},  // designer: mustard
+  xixi:     {o:'#2b2c33',h:'#6a4a30',k:'#f1c7a2',e:'#2b2c33',c:'#6E7BC4',d:'#48539a'},  // student: indigo
+  aisi:     {o:'#3a2b36',h:'#d9b24f',k:'#f1c7a2',e:'#3a2b36',c:'#D46BA0',d:'#a8407a'},  // engineer: magenta
+  xue:      {o:'#2b2630',h:'#2e2a33',k:'#e9be97',e:'#2b2630',c:'#4E86B0',d:'#305f82'},  // office worker: blue
+  long:     {o:'#2e2b2c',h:'#8a8580',k:'#e6c9a8',e:'#2e2b2c',c:'#5B9E6B',d:'#3f7049'},  // vendor: green
+  kuaizheng:{o:'#312e30',h:'#c8c2ba',k:'#ecd6c0',e:'#312e30',c:'#A98B5E',d:'#7d6540'},  // retired: khaki
 };
-const FALLBACK_ID='alice';
+const FALLBACK_ID='jiji';
 const F1=[
   "....oooo....","..oohhhhoo..",".ohhhhhhhho.",".ohhkkkkhho.",
   ".ohkkkkkkho.",".ohkekkekho.",".ohkkkkkkho.","..okkkkko...",
@@ -753,36 +778,39 @@ function buildMap(locations){
   });
   renderShopRev();   // refill takings after a rebuild (e.g. language switch)
 }
-// ---- world objects: the park mural (progress fills the wall bottom-up) ----
+// ---- world objects: Aisi's interactive light installation ----
 // Data-driven from /ws landmarks: buildMap draws the buildings, updateLandmarks
-// paints the mural over the park at its live progress. A 12x16 pixel wall on the
-// same 2px grid; the painted picture is revealed from the bottom as it fills.
+// draws the installation over the park at its live progress. A 4x4 lamp array on
+// the same 2px grid; lamps light up bottom-up as progress climbs, and the whole
+// piece twinkles once completed.
 let LANDMARKS=[];
-function muralPixels(p,done){
-  const W=12,H=16;
-  const cut=H-Math.round(H*Math.max(0,Math.min(1,done?1:p)));  // rows above cut = bare wall
-  const band=y=> y<5?'#8fc7e8': y<10?'#e5a35e':'#5f8f52';       // sky / warm hill / grass
-  let s=P(0,0,W,H,'#d8d0be');                                   // bare plaster wall
-  for(let y=cut;y<H;y++) s+=P(0,y,W,1,band(y));                 // painted bands (bottom-up)
-  if(cut<=1) s+=P(8,1,3,3,'#ffd867')+P(8,1,1,3,'#f0b93f');     // sun (top rows revealed)
-  if(cut<=11) s+=P(2,12,2,3,'#7bb06a')+P(6,11,2,4,'#4b7742')+P(9,12,2,3,'#7bb06a'); // grass tufts
-  const fr=done?'#7a5c3a':'#9a927f';                            // finished piece gets a wood frame
-  s+=P(0,0,W,1,fr)+P(0,H-1,W,1,fr)+P(0,0,1,H,fr)+P(W-1,0,1,H,fr);
-  if(done) s+=P(1,1,1,1,'#fff')+P(W-2,2,1,1,'#fff')+P(3,4,1,1,'#ffe9a8'); // little sparkles
+const INST_HUES=['#ffd867','#5fd0e0','#ff8fc0','#8fe0a0'];       // warm/cyan/pink/green lamps
+function installationPixels(p,done){
+  const cols=[1,4,7,10], rows=[13,9,5,1];                        // lamp grid: bottom row first
+  const N=cols.length*rows.length;
+  const lit=done?N:Math.round(N*Math.max(0,Math.min(1,p)));
+  let s=P(0,14,12,2,'#3d4450');                                  // base plinth
+  cols.forEach(x=>{ s+=P(x,1,2,13,'#4a5160'); });                // light posts
+  let i=0;
+  for(let r=0;r<rows.length;r++)for(let c=0;c<cols.length;c++){
+    const on=i<lit, col=on?INST_HUES[(r+c)%INST_HUES.length]:'#2f3540';
+    s+=P(cols[c],rows[r],2,2,col);
+    if(on) s+=P(cols[c],rows[r],1,1,'#ffffff');                  // lit lamps get a highlight pixel
+    i++;
+  }
   return s;
 }
-function renderMural(lm){
+function renderLandmark(lm){
   const loc=LOCS[lm.location]; if(!loc) return '';
-  const done=lm.state==='completed', W=12,H=16,sc=2;
+  const done=lm.state==='completed', H=16,sc=2;
   const bx=loc.x-58, by=loc.y+14-H*sc;                          // stand just left of the park trees
-  return `<g class="mural" shape-rendering="crispEdges" transform="translate(${bx},${by}) scale(${sc})">`
-    +muralPixels(lm.progress,done)
-    +`<rect x="4" y="16" width="4" height="4" fill="#8a6239"/></g>`;  // short easel post
+  return `<g class="installation${done?' done':''}" shape-rendering="crispEdges" transform="translate(${bx},${by}) scale(${sc})">`
+    +installationPixels(lm.progress,done)+`</g>`;
 }
 function updateLandmarks(list){
   LANDMARKS=list||[];
   const g=$('#landmarks'); if(!g) return;
-  g.innerHTML=LANDMARKS.map(renderMural).join('');
+  g.innerHTML=LANDMARKS.map(renderLandmark).join('');
 }
 // Slot spacing between co-located villagers. Must exceed the widest nametag so
 // adjacent name plates don't overlap and clip each other (e.g. "Alice"->"Alic").
@@ -803,6 +831,16 @@ function standXY(l,idx,n){
   return [clampX(l.x+side*off+slotOffset(idx,n)), clampY(l.y+8)];
 }
 const LASTPOS={};
+// Rewrite a villager's nametag only when the display name changes (language switch);
+// cheap enough to call every tick via the data-n cache.
+function syncNametag(el,id,fb){
+  const tag=el.querySelector('.nametag'), dn=agentName(id,fb);
+  if(tag.dataset.n===dn) return;
+  tag.dataset.n=dn; const w=agentNameW(id);
+  tag.querySelector('text').textContent=dn;
+  const r=tag.querySelector('rect'); r.setAttribute('x',-w/2); r.setAttribute('width',w);
+}
+function refreshNametags(){ for(const id in AGENTS) syncNametag(AGENTS[id],id); }
 function updateAgents(list){
   const g=$('#agents');
   const byLoc={};
@@ -817,7 +855,7 @@ function updateAgents(list){
       el.setAttribute('class','agent agent-g');
       el.style.transition='transform 1s ease';
       el.style.setProperty('--d',(Object.keys(AGENTS).length*0.2)+'s');   // stagger idle frames per agent
-      const sid=spriteId(a.id), nw=a.name.length*5.4+12;   // fit the mono label with margin
+      const sid=spriteId(a.id), nw=agentNameW(a.id);   // Chinese/pinyin nametag, width per glyph
       el.innerHTML=`<ellipse class="shadow" cx="0" cy="27" rx="8" ry="2.5"/>
         <rect class="hit" x="-13" y="-8" width="26" height="40"/>
         <circle class="ring" r="11"/>
@@ -827,7 +865,7 @@ function updateAgents(list){
           <use class="fr fs"  href="#spr-${sid}-fs"/>
         </g>
         <text class="zzz" x="9" y="-9">z</text>
-        <g class="nametag"><rect x="${-nw/2}" y="-24" width="${nw}" height="11" rx="3"/><text y="-15.5">${a.name}</text></g>`;
+        <g class="nametag" data-n="${agentName(a.id,a.name)}"><rect x="${-nw/2}" y="-24" width="${nw}" height="11" rx="3"/><text y="-15.5">${agentName(a.id,a.name)}</text></g>`;
       el.addEventListener('click',()=>inspect(a.id));
       g.appendChild(el); AGENTS[a.id]=el;
     }
@@ -837,6 +875,7 @@ function updateAgents(list){
       clearTimeout(el._wt); el._wt=setTimeout(()=>el.classList.remove('walking'),1000);
     }
     LASTPOS[a.id]={x,y};
+    syncNametag(el,a.id,a.name);                          // keep the label in the current language
     el.setAttribute('transform',`translate(${x},${y})`);
     el.classList.toggle('talking',a.action==='talk');
     el.classList.toggle('sleeping',a.action==='sleep');
@@ -1003,14 +1042,14 @@ async function refreshInspector(id,scroll){
   const a=await r.json();
   const box=$('#insp-body');
   box.innerHTML=`
-    <h2>${moodEmoji(a.state.mood)}${a.name}</h2>
+    <h2>${moodEmoji(a.state.mood)}${agentName(a.id,a.name)}</h2>
     <div class="sub">${a.age} · ${occName(a.occupation)} · ${a.traits.map(traitName).join(t('listSep'))}</div>
     <div class="kv"><b>${t('energy')}</b><div class="bar"><i style="width:${a.state.energy}%"></i></div><span>${a.state.energy}</span></div>
     <div class="kv"><b>${t('money')}</b><span class="money">💰 ${a.state.money??0}</span><span></span></div>
     <div class="kv"><b>${t('doing')}</b><span>${actName(a.state.action)} @ ${locByEn(a.state.location)}</span><span></span></div>
     <div class="eyebrow">${t('relationships')}</div>
     ${a.relationships.map(r=>`
-      <div class="kv"><b>${r.name}</b><div class="bar amber"><i style="width:${r.friendship}%"></i></div><span>${r.friendship}</span></div>`).join('')||`<div class="placeholder">${t('noRelationships')}</div>`}
+      <div class="kv"><b>${agentName(r.id,r.name)}</b><div class="bar amber"><i style="width:${r.friendship}%"></i></div><span>${r.friendship}</span></div>`).join('')||`<div class="placeholder">${t('noRelationships')}</div>`}
     <div class="eyebrow">${t('beliefsTitle')}</div>
     ${(a.beliefs&&a.beliefs.length)?a.beliefs.map(b=>{const c=Math.round(b.confidence*100);return `
       <div class="blf"><div class="blf-top"><b></b><span class="blf-conf">${c}%</span></div>
@@ -1112,29 +1151,28 @@ $('#god-rain').onclick=()=>{ worldEvent({type:'rain',duration_minutes:180}); $('
 $('#god-festival').onclick=()=>{ worldEvent({type:'festival',location:'park',duration_minutes:240}); $('#godpanel').hidden=true; };
 
 /* ---------- God Mode: rumor seeding ---------- */
-// The fixed 10-agent cast (names stay English everywhere, like the rest of the UI).
-const CAST=[['alice','Alice'],['bob','Bob'],['carol','Carol'],['david','David'],['emma','Emma'],
-  ['rosa','Rosa'],['ken','Ken'],['mei','Mei'],['leo','Leo'],['grace','Grace']];
-// Each preset seeds fixed English content (internal-English rule) from a sensible
-// default starter; the "Started by" dropdown can override that starter.
+// The fixed 10-agent cast, by id; the dropdown shows names via agentName().
+const CAST=['jiji','ange','oula','lengyue','azong','xixi','aisi','xue','long','kuaizheng'];
+// Each preset seeds fixed English content (internal-English rule; names in pinyin)
+// from a sensible default starter; the "Started by" dropdown can override it.
 const RUMOR_PRESETS={
-  cafe_closing:{agent:'david', text:"Alice's cafe might be closing next month", subject:'alice'},
-  bob_quit:    {agent:'carol', text:"Bob is planning to quit his job soon",      subject:'bob'},
-  emma_award:  {agent:'david', text:"Emma's mural won a city art award",         subject:'emma'},
-  carol_moving:{agent:'bob',   text:"Carol is moving to another town",           subject:'carol'},
+  cafe_crisis:{agent:'oula',    text:"Jiji's cafe might be closing soon",           subject:'jiji'},
+  xue_quit:   {agent:'lengyue', text:"Xue is planning to quit her job soon",        subject:'xue'},
+  aisi_award: {agent:'oula',    text:"Aisi's light installation won a design award", subject:'aisi'},
+  azong_move: {agent:'xue',     text:"Azong might be moving her studio out of town", subject:'azong'},
 };
 function fillAgentSelect(sel,{presetDefault,none}={}){
   let html='';
   if(presetDefault) html+=`<option value="" data-i18n="god.presetDefault">${t('god.presetDefault')}</option>`;
   if(none) html+=`<option value="" data-i18n="god.noSubject">${t('god.noSubject')}</option>`;
-  html+=CAST.map(([id,name])=>`<option value="${id}">${name}</option>`).join('');
+  html+=CAST.map(id=>`<option value="${id}">${agentName(id)}</option>`).join('');
   sel.innerHTML=html;
 }
 function initGodRumor(){
   fillAgentSelect($('#god-starter'),{presetDefault:true});
   fillAgentSelect($('#god-subject'),{none:true});
   fillAgentSelect($('#god-custom-starter'));
-  $('#god-custom-starter').value='alice';
+  $('#god-custom-starter').value='jiji';
   document.querySelectorAll('.god-preset').forEach(b=>b.onclick=()=>{
     const p=RUMOR_PRESETS[b.dataset.preset];
     seedRumor({agent_id:$('#god-starter').value||p.agent, text:p.text, subject:p.subject});
@@ -1175,7 +1213,7 @@ initGodRumor();
 /* ---------- God Mode: secrets (plant + observe) ---------- */
 function initGodSecret(){
   fillAgentSelect($('#god-secret-owner'));
-  $('#god-secret-owner').value='bob';
+  $('#god-secret-owner').value='xue';
   $('#god-secret-toggle').onclick=()=>{ $('#god-secret-form').hidden=!$('#god-secret-form').hidden; };
   $('#god-secret-plant').onclick=async()=>{
     const text=$('#god-secret-text').value.trim(); if(!text) return;
@@ -1304,7 +1342,7 @@ const RG_CX=150, RG_CY=150;
 const K_REP=1600, K_SPRING=0.02, K_CENTER=0.02, DAMP=0.86;
 const RLEN_MAX=108, RLEN_MIN=42;   // spring rest length at friendship 0 / 100 (better friends sit closer)
                                    // kept small so the 5-node layout settles inside the box, not on its walls
-let RG=null, REL_DATA=null, rgRAF=0, rgCool=0, rgFrames=0;
+let REL_DATA=null, rgRAF=0, rgCool=0, rgFrames=0;   // RG is declared earlier (near LANG)
 const favg=e=>(e.friendship_ab+e.friendship_ba)/2;
 const ekey=e=>e.a+'|'+e.b;
 
@@ -1383,7 +1421,7 @@ function buildGraph(data){
     g.innerHTML=`<ellipse class="rnode-sh" cx="0" cy="17" rx="8" ry="2.5"/>
       <g transform="translate(0,-2) scale(0.8)"><use href="#spr-${sid}-f1"/></g>
       <circle class="rnode-hit" r="17"/><text class="rnode-name" y="30"></text>`;
-    g.querySelector('.rnode-name').textContent=n.name;
+    g.querySelector('.rnode-name').textContent=agentName(n.id,n.name);
     g.addEventListener('click',()=>inspect(n.id));
     ng.appendChild(g); n.el=g;
   });
@@ -1391,6 +1429,10 @@ function buildGraph(data){
   for(let i=0;i<240;i++) simStep();                                        // warm up to a settled layout
   renderPositions(); rgCool=0;
   if(!$('#graph').hidden && !REDUCE_MOTION) startRAF();
+}
+function relabelGraph(){   // refresh node labels after a language switch
+  if(!RG) return;
+  for(const n of RG.nodes){ const tx=n.el&&n.el.querySelector('.rnode-name'); if(tx) tx.textContent=agentName(n.id,n.name); }
 }
 function applyData(data){
   data.nodes.forEach(n=>{ if(RG.idx[n.id]==null){ buildGraph(data); } });  // node set changed -> rebuild
@@ -1416,7 +1458,7 @@ function startRAF(){
 function stopRAF(){ if(rgRAF){ cancelAnimationFrame(rgRAF); rgRAF=0; } }
 function kick(){ if($('#graph').hidden) return; rgCool=0; startRAF(); }
 function showRelTip(e,ev){
-  const d=e.data, A=RG.nodes[e.ai].name, B=RG.nodes[e.bi].name, tip=$('#reltip');
+  const d=e.data, A=agentName(RG.nodes[e.ai].id,RG.nodes[e.ai].name), B=agentName(RG.nodes[e.bi].id,RG.nodes[e.bi].name), tip=$('#reltip');
   tip.innerHTML=`<b>${A} ↔ ${B}</b><br>${t('relFriend')} ${A}→${B} ${d.friendship_ab} / ${B}→${A} ${d.friendship_ba}`
     +`<br>${t('relTrust')} ${A}→${B} ${d.trust_ab} / ${B}→${A} ${d.trust_ba}`;
   tip.hidden=false;
@@ -1477,8 +1519,9 @@ setInterval(pollEconomy,4000); pollEconomy();
    sim is never disturbed. Positions are reconstructed from `arrive` events;
    everything else (bubbles, effects, night, feed) replays through the existing
    renderers. */
-const SEED_LOC={alice:'home_a',bob:'home_b',carol:'home_a',david:'home_b',emma:'home_a'};  // fallback = home
-const AGENT_NAME=Object.fromEntries(CAST);        // id -> display name (fixed cast; events store only ids)
+const SEED_LOC={jiji:'home_a',oula:'home_a',lengyue:'home_a',xixi:'home_a',aisi:'home_a',
+  ange:'home_b',azong:'home_b',xue:'home_b',long:'home_b',kuaizheng:'home_b'};  // replay start fallback (old-run ids -> home_a)
+const AGENT_NAME={...NAME_ZH};                     // id -> zh name; evText re-localizes via agentName (old-run ids fall back to the id)
 const ACTION_VERBS={sleep:1,eat:1,work:1,rest:1,idle:1,broke:1,talk_start:1};
 const REPLAY_WIN=720;                             // fetch history in 12-sim-hour windows (never one giant query)
 const REPLAY={on:false,runs:[],runId:'',current:'',minMin:0,maxMin:0,cur:0,idx:0,
@@ -1521,8 +1564,8 @@ function applyEventState(ev){
 }
 function replayRenderAgents(){
   const byLoc={};
-  CAST.forEach(([id])=>{ const l=REPLAY.loc[id]||SEED_LOC[id]||'home_a'; (byLoc[l]=byLoc[l]||[]).push(id); });
-  CAST.forEach(([id])=>{
+  CAST.forEach(id=>{ const l=REPLAY.loc[id]||SEED_LOC[id]||'home_a'; (byLoc[l]=byLoc[l]||[]).push(id); });
+  CAST.forEach(id=>{
     const el=AGENTS[id]; if(!el) return;
     const l=REPLAY.loc[id]||SEED_LOC[id]||'home_a', peers=byLoc[l], idx=peers.indexOf(id);
     const loc=LOCS[l]||{kind:'home',x:400,y:260};
