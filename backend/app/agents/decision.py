@@ -61,6 +61,13 @@ _CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 _GLUE_RE = re.compile(r"[㐀-䶿一-鿿][a-z]{3,}|[a-z]{3,}[㐀-䶿一-鿿]")
 
 
+def _has_cjk(text: str) -> bool:
+    """True if the text contains any CJK -- used to reject a zh hallucination in
+    English-canonical knowledge (distort/leak), which must stay English so the
+    version chain has one language and the display layer can translate it."""
+    return bool(_CJK_RE.search(text or ""))
+
+
 def _zh_text_ok(text: str) -> bool:
     """Gibberish gate for a single zh dialogue turn (the precondition for putting
     a new model on the zh chain). Rejects character-soup weak models emit:
@@ -559,8 +566,9 @@ class DecisionEngine:
                 schema={"type": "object"},
                 max_tokens=80,
             )
-            if isinstance(res.parsed, dict) and res.parsed.get("text"):
-                text = str(res.parsed["text"])
+            new = str(res.parsed.get("text") or "") if isinstance(res.parsed, dict) else ""
+            if new and not _has_cjk(new):   # reject a zh hallucination -> keep the prior English version
+                text = new
 
         if rumor.subject and rumor.subject == b.id:
             # The rumor made it back to the person it is about -- no relationship
@@ -662,7 +670,9 @@ class DecisionEngine:
             agent_id=b.id, sim_minute=now, schema={"type": "object"}, max_tokens=80,
         )
         parsed = res.parsed if isinstance(res.parsed, dict) else {}
-        text = str(parsed.get("text") or "").strip() or f"{owner_name} has been hiding something."
+        text = str(parsed.get("text") or "").strip()
+        if not text or _has_cjk(text):   # English-canonical -> reject a zh hallucination, use a plain fallback
+            text = f"{owner_name} has been hiding something."
         try:
             sentiment = max(-1.0, min(1.0, float(parsed.get("sentiment", -0.3))))
         except (TypeError, ValueError):
@@ -863,13 +873,15 @@ class DecisionEngine:
         n = str(raw or "").strip().lower()
         if not n:
             return None
-        if n in ("self", agent.name.lower()):
+        # Beliefs are now English-canonical, so the model names people by their
+        # pinyin (== the agent id); still accept the zh name for older payloads.
+        if n in ("self", agent.name.lower(), agent.id):
             return ("self", agent.name)
         for a in world.agents.values():
-            if a.name.lower() == n:
+            if n in (a.name.lower(), a.id):
                 return (a.id, a.name)
         for loc in world.locations.values():
-            if loc.name.lower() == n:
+            if n in (loc.name.lower(), loc.id):
                 return (loc.id, loc.name)
         return None
 

@@ -140,8 +140,11 @@ def build_router(live: bool | None = None) -> LLMRouter:
         # Chinese-capable openrouter_zh goes on the tail (before mock) instead, and a
         # gibberish gate (see decision._zh_text_ok) rejects any character-soup it emits.
         zh_reliable = chain(gem, gem_lite, large, openrouter_zh, or_tail=False)  # mock floor last
+        # dialogue = live zh performance; translate = English knowledge -> zh for display.
+        # (reflection/distort/leak are now English-canonical, so they use the normal
+        # English chains -- no zh routing.)
         task_chains["dialogue"] = zh_reliable
-        task_chains["reflection"] = zh_reliable
+        task_chains["translate"] = zh_reliable
 
     # Startup live-status summary: make "am I actually on real models?" a one-line,
     # unmissable fact (a server restarted without .env in scope would show mock-only).

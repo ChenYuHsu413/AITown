@@ -145,6 +145,10 @@ class SimulationEngine:
     def __init__(self, world: World, decision_engine: DecisionEngine):
         self.world = world
         self.decisions = decision_engine
+        # Publish the cast to the prompt builders so every free-text prompt can
+        # forbid inventing names (Lengyue must never become a hallucinated name).
+        from ..llm.prompts import builders
+        builders.set_roster([(a.id.capitalize(), a.name) for a in world.agents.values()])
         self.scheduler = Scheduler()
         self.bus = EventBus()
         self.now = 0

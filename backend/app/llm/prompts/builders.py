@@ -55,11 +55,38 @@ def time_of_day(minute: int) -> str:
             else "afternoon" if h < 18 else "evening" if h < 22 else "night")
 
 
-def character_card(agent: "Agent") -> str:
+# ---- name roster (anti-hallucination) --------------------------------------
+# The town's full cast, set once at startup. Every free-text prompt lists it and
+# forbids inventing other names -- so a weak model can't turn "Lengyue" into a
+# hallucinated "楊鈺瑩". Stored as (english_pinyin, zh) pairs.
+_ROSTER: list[tuple[str, str]] = []
+
+
+def set_roster(pairs: list[tuple[str, str]]) -> None:
+    global _ROSTER
+    _ROSTER = list(pairs)
+
+
+def roster_directive(english_only: bool = False) -> str:
+    if not _ROSTER:
+        return ""
+    names = ", ".join(f"{en} ({zh})" if zh and zh != en else en for en, zh in _ROSTER)
+    out = (f" The only people who exist in this town are: {names}. "
+           f"Refer to a person by exactly one of these names and never invent any other name.")
+    if english_only:
+        out += " Always use the English (first shown) form of each name."
+    return out
+
+
+def roster_pairs() -> list[tuple[str, str]]:
+    return list(_ROSTER)
+
+
+def character_card(agent: "Agent", name: str | None = None) -> str:
     p = agent.profile
     traits = ", ".join(p.traits)
     return (
-        f"{p.name}, {p.age}, {p.occupation}. Traits: {traits}. "
+        f"{name or p.name}, {p.age}, {p.occupation}. Traits: {traits}. "
         f"Top goal: {p.goals[0]['goal'] if p.goals else 'none'}."
     )
 
@@ -149,7 +176,7 @@ def dialogue_prompt(
             f"{b.profile.name} admitted to it."
         )
     return [
-        {"role": "system", "content": system + _lang_directive()},
+        {"role": "system", "content": system + roster_directive() + _lang_directive()},
         {"role": "user", "content": user},
     ]
 
@@ -162,6 +189,7 @@ def appraise_prompt(text: str) -> list[dict]:
                 "You judge whether a statement is positive or negative for the person it is "
                 "about, in a life simulation. Respond ONLY with JSON: {\"sentiment\": -1..1} "
                 "(-1 very negative, +1 very positive). Task: appraise."
+                + roster_directive()
             ),
         },
         {"role": "user", "content": text},
@@ -175,8 +203,9 @@ def distort_prompt(text: str) -> list[dict]:
             "content": (
                 "You retell a piece of gossip in a life simulation, passing it along to "
                 "someone new. Rewrite it in your own words, allowing slight memory drift -- "
-                "one sentence, same gist. Respond ONLY with JSON: {\"text\": \"...\"}. Task: distort."
-                + _lang_directive()
+                "one sentence, same gist. Write in English (this is internal knowledge, not "
+                "spoken lines). Respond ONLY with JSON: {\"text\": \"...\"}. Task: distort."
+                + roster_directive(english_only=True)
             ),
         },
         {"role": "user", "content": f"Retell this: {text}"},
@@ -190,9 +219,10 @@ def leak_prompt(owner_name: str, secret_text: str) -> list[dict]:
             "content": (
                 "You turn someone's private secret into a piece of third-person gossip about them, as it "
                 "would first be whispered to another person. One sentence, same substance, named in the third "
-                'person. Respond ONLY with JSON: {"text": "...", "sentiment": -1..1} where sentiment is how '
+                "person. Write in English (this is internal knowledge, not spoken lines). "
+                'Respond ONLY with JSON: {"text": "...", "sentiment": -1..1} where sentiment is how '
                 "damaging/negative it is for that person. Task: leak."
-                + _lang_directive()
+                + roster_directive(english_only=True)
             ),
         },
         {"role": "user", "content": f"{owner_name}'s secret: {secret_text}"},
@@ -236,15 +266,39 @@ def reflection_prompt(agent: "Agent", day_events: list[str]) -> list[dict]:
                 '"new_secret" is a private matter this character is quietly keeping from others -- return one '
                 "ONLY if today surfaced a clear unspoken worry or hidden truth of their own; otherwise null "
                 '(be sparing). "sensitivity" is how private it is. '
+                "Write all text in English (this is internal knowledge, translated for display separately). "
                 "Task: reflection."
-                + _lang_directive()
+                + roster_directive(english_only=True)
             ),
         },
         {
             "role": "user",
             "content": (
-                f"{character_card(agent)}\n"
+                # Present the reflecting agent by their English name too, so beliefs
+                # come back with roster names the sim can resolve.
+                f"{character_card(agent, name=agent.id.capitalize())}\n"
                 "Events today:\n" + "\n".join(f"- {e}" for e in day_events[-15:])
             ),
         },
+    ]
+
+
+def translate_prompt(text: str) -> list[dict]:
+    """Display-layer only: render a piece of English knowledge text into
+    Traditional Chinese, with the name roster as a hard mapping so residents keep
+    their canonical zh names (Lengyue -> 冷月)."""
+    pairs = roster_pairs()
+    mapping = "; ".join(f"{en}={zh}" for en, zh in pairs if zh and zh != en)
+    guide = f" Use these exact name translations: {mapping}." if mapping else ""
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You translate short life-sim gossip/impression text from English into natural "
+                "Traditional Chinese (zh-TW). Keep it one line, same meaning, no notes or quotes."
+                + guide
+                + ' Respond ONLY with JSON: {"text": "..."}. Task: translate.'
+            ),
+        },
+        {"role": "user", "content": text},
     ]

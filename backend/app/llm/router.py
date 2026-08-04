@@ -31,6 +31,7 @@ TASK_TIERS: dict[str, str] = {
     "summary": "cheap",
     "distort": "cheap",
     "appraise": "cheap",
+    "translate": "cheap",
     "decision": "normal",
     "dialogue": "normal",
     "reflection": "smart",

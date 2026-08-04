@@ -1155,18 +1155,23 @@ async function refreshInspector(id,scroll){
       <div class="m">${tr.clock} · L${tr.level} · ${tr.model}</div>
       <span class="obs"></span><br><b>→ ${actName(tr.action)}</b> — <span class="rsn"></span></div>`).join('')||`<div class="placeholder">${t('noDecisions')}</div>`}`;
   // Fill free-form / user-content fields via textContent to avoid HTML injection.
+  const trP=[];
   (a.beliefs||[]).forEach((b,i)=>{
     const el=box.querySelectorAll('.blf')[i]; if(!el) return;
     const sign=b.sentiment<0?'⊖ ':b.sentiment>0?'⊕ ':'';
     const src=b.source_count>1?` · ${t('beliefSrc').replace('{n}',b.source_count)}`:'';
     el.querySelector('b').textContent=sign+(subjName(b)||b.subject_name)+src;
-    el.querySelector('.blf-text').textContent=b.text;
+    const bt=el.querySelector('.blf-text'); bt.textContent=b.text; trP.push({el:bt,en:b.text});  // belief: English -> zh
   });
   box.querySelectorAll('.mem').forEach((el,i)=>{
-    const m=a.memories[i];
-    el.children[1].textContent=(m.kind==='rumor'?'🗣️ ':m.kind==='secret'?'🤫 ':'')+memText(m.text);
+    const m=a.memories[i], pre=(m.kind==='rumor'?'🗣️ ':m.kind==='secret'?'🤫 ':''), body=memText(m.text);
+    el.children[1].textContent=pre+body;
+    // Free-text knowledge memories (reflection insights, rumor/secret text) are
+    // English-canonical -> translate for zh; templated ones memText already handles.
+    if(m.kind==='reflection'||m.kind==='rumor'||m.kind==='secret') trP.push({el:el.children[1],en:body,pre});
     el.children[2].textContent=`${t('imp')} ${m.importance}`;
   });
+  trSwap(trP);
   box.querySelectorAll('.trace').forEach((el,i)=>{
     el.querySelector('.obs').textContent=a.last_decisions[i].observation;
     el.querySelector('.rsn').textContent=a.last_decisions[i].reason;
@@ -1336,6 +1341,32 @@ function ownerSprite(id){
 }
 function lockIcons(sens){ const n=sens<0.34?1:sens<0.67?2:3; return '🔒'.repeat(n); }
 
+/* ---------- display-layer translation (zh only) ----------
+   Knowledge text (secrets, rumors, beliefs, reflection memories) is stored in
+   English. In zh mode we render English at once, then swap in a translation from
+   /api/translate (cached on both client and server; same text -> one call ever).
+   en mode shows the English as-is and makes zero translation calls. */
+const TR_CACHE={};                                   // english -> zh (client-side cache)
+async function trFetch(texts){
+  const need=[...new Set(texts.filter(x=>x && TR_CACHE[x]===undefined))];
+  if(!need.length) return;
+  try{
+    const d=await (await fetch('/api/translate',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({texts:need})})).json();
+    const m=d.translations||{}; need.forEach(x=>{ TR_CACHE[x]=(m[x]!==undefined?m[x]:x); });
+  }catch(e){ need.forEach(x=>{ TR_CACHE[x]=x; }); }  // failure -> fall back to English
+}
+// Swap a batch of {el, en, pre?} to zh in place (zh only, non-blocking).
+function trSwap(pairs){
+  if(LANG!=='zh') return;
+  const list=pairs.filter(p=>p&&p.el&&p.en);
+  if(!list.length) return;
+  trFetch(list.map(p=>p.en)).then(()=>{
+    if(LANG!=='zh') return;                           // user switched language mid-flight
+    list.forEach(p=>{ const zh=TR_CACHE[p.en]; if(zh!==undefined) p.el.textContent=(p.pre||'')+zh; });
+  });
+}
+
 async function loadSocial(){
   let secrets, rumors;
   try{
@@ -1349,7 +1380,7 @@ async function loadSocial(){
 }
 
 function renderSocialSecrets(secrets, rumors){
-  const box=$('#soc-secrets'); box.innerHTML='';
+  const box=$('#soc-secrets'); box.innerHTML=''; const trP=[];
   if(!secrets.length){ box.innerHTML=`<div class="soc-empty">${t('god.noSecrets')}</div>`; return; }
   const leakedIds=new Set(rumors.filter(r=>r.from_secret_id).map(r=>r.from_secret_id));  // secrets now retold as rumors
   const sep=t('listSep');
@@ -1367,7 +1398,7 @@ function renderSocialSecrets(secrets, rumors){
       const card=document.createElement('div'); card.className='soc-card';
       card.innerHTML=`<div class="soc-text"></div><div class="soc-meta">`
         +`<span class="soc-lock"></span><span class="soc-chain"></span><span class="soc-badge"></span></div>`;
-      card.querySelector('.soc-text').textContent=s.text;                       // free text -> textContent
+      const stx=card.querySelector('.soc-text'); stx.textContent=s.text; trP.push({el:stx,en:s.text});  // free text
       const lock=card.querySelector('.soc-lock'); lock.textContent=lockIcons(s.sensitivity);
       lock.title=`sensitivity ${(+s.sensitivity).toFixed(2)}`;
       const chain=card.querySelector('.soc-chain');
@@ -1384,10 +1415,11 @@ function renderSocialSecrets(secrets, rumors){
       box.appendChild(card);
     });
   }
+  trSwap(trP);                                                                  // zh: swap secret texts to Chinese
 }
 
 function renderSocialRumors(rumors){
-  const box=$('#soc-rumors');
+  const box=$('#soc-rumors'); const trP=[];
   const openIds=new Set([...box.querySelectorAll('details[open]')].map(d=>d.dataset.rid));  // keep expansions across refresh
   box.innerHTML='';
   if(!rumors.length){ box.innerHTML=`<div class="soc-empty">${t('god.noRumors')}</div>`; return; }
@@ -1398,7 +1430,7 @@ function renderSocialRumors(rumors){
     d.innerHTML=`<summary><div class="soc-text"></div><div class="soc-rmeta">`
       +`<span class="soc-rknown"></span> · <span class="soc-rstat"></span>`
       +`<span class="soc-caret">▸</span></div></summary><div class="soc-chainlist"></div>`;
-    d.querySelector('.soc-text').textContent=latest;                            // free text -> textContent
+    const rtx=d.querySelector('.soc-text'); rtx.textContent=latest; trP.push({el:rtx,en:latest});  // free text
     d.querySelector('.soc-rknown').textContent=t('god.knownBy').replace('{n}',r.versions.length);
     d.querySelector('.soc-rstat').textContent=rumorStatus(r);
     const list=d.querySelector('.soc-chainlist');
@@ -1407,11 +1439,12 @@ function renderSocialRumors(rumors){
       hop.innerHTML=`<span class="soc-hop-who"></span><span class="soc-hop-text"></span>`;
       const who=v.heard_from_name ? `${v.heard_from_name} → ${v.agent_name}` : `${t('social.origin')}: ${v.agent_name}`;
       hop.querySelector('.soc-hop-who').textContent=`${who} · ${v.clock}`;
-      hop.querySelector('.soc-hop-text').textContent=v.text;                    // free text -> textContent
+      const htx=hop.querySelector('.soc-hop-text'); htx.textContent=v.text; trP.push({el:htx,en:v.text});  // free text
       list.appendChild(hop);
     });
     box.appendChild(d);
   });
+  trSwap(trP);                                                                  // zh: swap rumor chain to Chinese
 }
 
 async function pollUsage(){

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import time
 from pathlib import Path
 
@@ -93,7 +94,54 @@ class Sim:
         self._llm_warned: bool = False
         self.router.on_call_start = self._on_llm_start
         self.router.on_call_end = self._on_llm_end
+        # Display-layer translation (zh): cache English->zh by text, and a
+        # deterministic pinyin->zh name substitution applied to every result and
+        # fallback, so resident names are always right even if a translation slips.
+        self._translate_cache: dict[str, str] = {}
+        self._name_subs = [
+            (re.compile(rf"\b{re.escape(a.id.capitalize())}\b", re.IGNORECASE), a.name)
+            for a in self.world.agents.values()
+        ]
         self.engine.bootstrap(START_MINUTE)
+
+    def _apply_name_subs(self, text: str) -> str:
+        for pat, zh in self._name_subs:
+            text = pat.sub(zh, text)
+        return text
+
+    async def translate_text(self, text: str) -> str:
+        """English knowledge text -> Traditional Chinese for display. Cached by
+        text; on any failure falls back to the English original. Either way a
+        deterministic pinyin->zh name pass guarantees correct resident names."""
+        text = (text or "").strip()
+        if not text:
+            return text
+        hit = self._translate_cache.get(text)
+        if hit is not None:
+            return hit
+        # Already non-English (e.g. historical zh knowledge) -> nothing to translate;
+        # just normalize any resident names and return (no LLM call).
+        if not re.search(r"[A-Za-z]", text):
+            out = self._apply_name_subs(text)
+            self._translate_cache[text] = out
+            return out
+        # Pre-substitute pinyin -> zh names so the model can't phonetically drift
+        # them (Aisi -> 阿思); it then translates the English around the fixed names.
+        src = self._apply_name_subs(text)
+        zh = ""
+        try:
+            res = await self.router.generate(
+                task="translate", messages=builders.translate_prompt(src),
+                agent_id="-", sim_minute=self.engine.now,
+                schema={"type": "object"}, max_tokens=200,
+            )
+            if isinstance(res.parsed, dict):
+                zh = str(res.parsed.get("text") or "").strip()
+        except Exception:
+            zh = ""
+        out = self._apply_name_subs(zh or src)   # belt-and-suspenders + English fallback
+        self._translate_cache[text] = out
+        return out
 
     async def attach_persistence(self) -> None:
         """Optional: activates when AI_TOWN_DB_URL is set. Without it the
@@ -880,6 +928,20 @@ async def agent_detail(agent_id: str) -> JSONResponse:
             ][::-1],
         }
     )
+
+
+@app.post("/api/translate")
+async def translate(body: dict) -> JSONResponse:
+    """Display-layer translation of English knowledge text -> zh (secrets, beliefs,
+    reflection memories). Returns {english: zh} for each input; cached server-side,
+    so the same text is translated once. The zh frontend calls this; en never does."""
+    assert sim is not None
+    texts = body.get("texts") or []
+    out: dict[str, str] = {}
+    for t in texts:
+        if isinstance(t, str) and t.strip() and t not in out:
+            out[t] = await sim.translate_text(t)
+    return JSONResponse({"translations": out})
 
 
 @app.get("/api/usage")
