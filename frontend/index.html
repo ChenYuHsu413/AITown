@@ -46,13 +46,51 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 .ev.dialogue{border-left:3px solid var(--amber);padding-left:8px;background:var(--amber-soft)}
 .ev.reflection{border-left:3px solid var(--moss);padding-left:8px}
 
-/* aside tabs (feed | relationship graph) */
+/* aside tabs (feed | relationships | replay | secrets) */
 .tabs{display:flex;border-bottom:1px solid var(--line)}
-.tabs .tab{flex:1;font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint);
-  background:none;border:none;border-bottom:2px solid transparent;padding:11px 8px 9px;cursor:pointer}
+.tabs .tab{flex:1;min-width:0;font-family:var(--mono);font-size:9.5px;letter-spacing:.07em;color:var(--faint);
+  background:none;border:none;border-bottom:2px solid transparent;padding:11px 5px 9px;cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tabs .tab.active{color:var(--ink);border-bottom-color:var(--amber)}
 .tabs .tab:focus-visible{outline:2px solid var(--amber);outline-offset:-2px}
 [hidden]{display:none!important}
+
+/* social observatory (secrets + rumors) */
+#social{flex:1;min-height:0;overflow-y:auto;padding:0 0 12px}
+.soc-sec-head{position:sticky;top:0;z-index:1;background:var(--panel);font-family:var(--mono);font-size:10px;
+  letter-spacing:.16em;color:var(--faint);padding:11px 14px 7px;border-bottom:1px solid var(--line)}
+.soc-empty{font-size:12.5px;color:var(--faint);padding:12px 14px}
+/* secrets: grouped by owner */
+.soc-owner{display:flex;align-items:center;gap:7px;padding:9px 14px 3px}
+.soc-owner svg{width:20px;height:22px;flex:none;display:block}
+.soc-owner b{font-family:var(--body);font-size:13px;font-weight:600;color:var(--ink)}
+.soc-owner .soc-count{font-family:var(--mono);font-size:10px;color:var(--faint)}
+.soc-card{margin:0 14px 7px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--paper)}
+.soc-text{font-size:12.5px;line-height:1.4;color:var(--ink);word-break:break-word}
+.soc-meta{display:flex;flex-wrap:wrap;align-items:center;gap:5px 8px;margin-top:5px;
+  font-family:var(--mono);font-size:10px;color:var(--faint)}
+.soc-lock{letter-spacing:1px;filter:grayscale(.1)}
+.soc-chain{color:var(--ink)}
+.soc-badge{padding:1px 6px;border-radius:999px;border:1px solid var(--line);font-size:9.5px;letter-spacing:.04em}
+.soc-badge.intact{color:var(--moss);border-color:color-mix(in srgb,var(--moss) 45%,var(--line))}
+.soc-badge.leaked{color:#C0503A;border-color:#d8a99f;background:#fbeeea}
+.soc-rumorlink{margin-top:4px;font-family:var(--mono);font-size:10px;color:var(--amber)}
+/* rumors: card + expandable version chain */
+.soc-rumor{margin:8px 14px 0;border:1px solid var(--line);border-radius:6px;background:var(--paper);overflow:hidden}
+.soc-rumor>summary{list-style:none;cursor:pointer;padding:7px 9px}
+.soc-rumor>summary::-webkit-details-marker{display:none}
+.soc-rumor>summary:focus-visible{outline:2px solid var(--amber);outline-offset:-2px}
+.soc-rmeta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:4px;
+  font-family:var(--mono);font-size:10px;color:var(--faint)}
+.soc-rmeta .soc-rstat{color:var(--amber)}
+.soc-rmeta .soc-caret{margin-left:auto;transition:transform .15s}
+.soc-rumor[open] .soc-caret{transform:rotate(90deg)}
+.soc-chainlist{border-top:1px dashed var(--line);padding:6px 9px 8px;background:var(--panel);
+  display:flex;flex-direction:column;gap:5px}
+.soc-hop{font-size:11.5px;line-height:1.35}
+.soc-hop .soc-hop-who{font-family:var(--mono);font-size:9.5px;color:var(--faint);display:block}
+.soc-hop .soc-hop-text{color:var(--ink);word-break:break-word}
+@media (prefers-reduced-motion: reduce){ .soc-caret{transition:none} }
 
 /* replay panel */
 #replay{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
@@ -200,14 +238,6 @@ footer b{font-weight:500;font-size:14px}
   transition:opacity .5s}
 #god-feedback.err{color:#C0503A}
 #god-feedback.fade{opacity:0}
-#god-rumors{display:flex;flex-direction:column;gap:5px}
-.god-rumor{font-size:11px;line-height:1.35;padding:4px 4px;border:1px solid var(--line);border-radius:4px;background:var(--paper)}
-.god-rtext{color:var(--ink);word-break:break-word}
-.god-rmeta{font-family:var(--mono);font-size:9.5px;color:var(--faint);margin-top:2px}
-.god-rmeta .god-rstat{color:var(--amber)}
-.god-empty{font-size:11px;color:var(--faint);padding:2px}
-#god-secrets{display:flex;flex-direction:column;gap:5px}
-.god-sstat.leaked{color:#C0503A}
 @media (prefers-reduced-motion: reduce){ #raindrops{animation:none} }
 /* NB: #lights opacity is driven by the `opacity` ATTRIBUTE (set each tick in
    updateClock), NOT a CSS rule -- a CSS `opacity` here would override the
@@ -263,9 +293,6 @@ footer b{font-weight:500;font-size:14px}
 
     <div id="god-feedback" hidden></div>
 
-    <div class="god-sec" data-i18n="god.activeHead">ACTIVE RUMORS</div>
-    <div id="god-rumors"></div>
-
     <div class="god-sec" data-i18n="god.secretsHead">SECRETS</div>
     <button id="god-secret-toggle" class="god-toggle" data-i18n="god.secretToggle">Plant a secret…</button>
     <div id="god-secret-form" hidden>
@@ -275,7 +302,6 @@ footer b{font-weight:500;font-size:14px}
         <input type="range" id="god-secret-sens" min="0" max="1" step="0.1" value="0.6"></div>
       <button id="god-secret-plant" data-i18n="god.secretPlant">Plant secret</button>
     </div>
-    <div id="god-secrets"></div>
   </div>
 </header>
 
@@ -310,6 +336,7 @@ footer b{font-weight:500;font-size:14px}
       <button id="tab-feed" class="tab active" role="tab" data-i18n="feedTitle">EVENT FEED</button>
       <button id="tab-graph" class="tab" role="tab" data-i18n="graphTitle">RELATIONSHIPS</button>
       <button id="tab-replay" class="tab" role="tab" data-i18n="replayTitle">REPLAY</button>
+      <button id="tab-social" class="tab" role="tab" data-i18n="socialTitle">SECRETS</button>
     </div>
     <div id="feed"></div>
     <div id="replay" hidden>
@@ -334,6 +361,12 @@ footer b{font-weight:500;font-size:14px}
     <div id="graph" hidden>
       <svg id="relsvg" viewBox="0 0 300 300" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Relationship graph"></svg>
       <div id="reltip" hidden></div>
+    </div>
+    <div id="social" hidden>
+      <div class="soc-sec-head" data-i18n="social.secretsHead">SECRETS</div>
+      <div id="soc-secrets"></div>
+      <div class="soc-sec-head" data-i18n="social.rumorsHead">RUMORS</div>
+      <div id="soc-rumors"></div>
     </div>
   </aside>
 </main>
@@ -373,13 +406,16 @@ const I18N={
     'god.customToggle':'Custom rumor…','god.about':'About','god.noSubject':'(no subject)',
     'god.textPh':'Rumor text (English)','god.spread':'Spread rumor',
     'god.spreadOk':'Rumor spread','god.failed':'Failed: ',
-    'god.activeHead':'ACTIVE RUMORS','god.spreading':'spreading',
+    'god.spreading':'spreading',
     'god.stAdmitted':'✓ confronted · admitted','god.stDenied':'✓ confronted · denied',
     'god.knownBy':'known by {n}','god.noRumors':'No rumors yet.',
     'god.secretsHead':'SECRETS','god.secretToggle':'Plant a secret…','god.secretOwner':'Owner',
     'god.secretSens':'Sensitivity','god.secretPh':'Secret (English)','god.secretPlant':'Plant secret',
     'god.secretPlanted':'Secret planted','god.noSecrets':'No secrets yet.',
     'god.confidedTo':'confided to {n}','god.secretIntact':'intact','god.secretLeaked':'leaked by {who}',
+    socialTitle:'SECRETS','social.secretsHead':'SECRETS','social.rumorsHead':'RUMORS',
+    'social.knownToNoOne':'Known to no one','social.confidedTo':'Confided to','social.leaked':'⚠️ leaked · {who}',
+    'social.becameRumor':'→ now a rumor','social.origin':'origin','social.expandHint':'tap to trace the retelling',
   },
   zh:{
     subtitle:'田野觀測站 · 5 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', replayTitle:'回放', inspectorTitle:'智能體檢視器',
@@ -402,13 +438,16 @@ const I18N={
     'god.customToggle':'自訂謠言…','god.about':'主角','god.noSubject':'(無主角)',
     'god.textPh':'謠言內容（英文）','god.spread':'散播謠言',
     'god.spreadOk':'謠言已散播','god.failed':'失敗：',
-    'god.activeHead':'現存謠言','god.spreading':'傳播中',
+    'god.spreading':'傳播中',
     'god.stAdmitted':'✓ 已對質・承認','god.stDenied':'✓ 已對質・否認',
     'god.knownBy':'{n} 人知曉','god.noRumors':'尚無謠言。',
     'god.secretsHead':'秘密','god.secretToggle':'植入秘密…','god.secretOwner':'主人',
     'god.secretSens':'私密度','god.secretPh':'秘密內容(英文)','god.secretPlant':'植入秘密',
     'god.secretPlanted':'秘密已植入','god.noSecrets':'尚無秘密。',
     'god.confidedTo':'已託付 {n} 人','god.secretIntact':'未洩漏','god.secretLeaked':'已洩漏 · {who}',
+    socialTitle:'祕密','social.secretsHead':'祕密','social.rumorsHead':'謠言',
+    'social.knownToNoOne':'無人知曉','social.confidedTo':'已託付','social.leaked':'⚠️ 已洩漏 · {who}',
+    'social.becameRumor':'→ 已成謠言','social.origin':'起頭','social.expandHint':'點擊追溯傳話過程',
   },
 };
 const LOC_ZH={home_a:'河畔之家',home_b:'山丘公寓',cafe:'月光咖啡館',office:'湯森辦公室',park:'老橡樹公園'};  // keyed by location id
@@ -491,7 +530,7 @@ function applyLang(){
   if(LOC_LIST.length) buildMap(LOC_LIST);                          // relabel map
   document.querySelectorAll('#feed .ev,#replay-feed .ev').forEach(d=>{d.lastChild.textContent=evText(JSON.parse(d.dataset.ev));});
   if(selected && !$("#inspector").hidden) refreshInspector(selected,false);                  // else static placeholder already updated
-  if(!$('#godpanel').hidden){ loadRumorList(); loadSecretList(); }  // re-render social lists in the new language
+  if(!$('#social').hidden) loadSocial();               // re-render the secrets/rumors tab in the new language
   if(!$('#replay-body').hidden){ buildRunOptions(); updatePlayBtn(); }   // "events" word + play/pause title follow the language
 }
 function toggleLang(){ LANG=LANG==='en'?'zh':'en'; localStorage.setItem('lang',LANG); applyLang(); }
@@ -1006,7 +1045,7 @@ function renderEffects(effects){                        // driven by the state s
   const festG=$('#festival'); if(festG){ if(fest) renderFestival(fest.location); else festG.innerHTML=''; }
 }
 function worldEvent(body){ fetch('/api/world-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
-$('#btn-god').onclick=()=>{ const p=$('#godpanel'); p.hidden=!p.hidden; if(!p.hidden){ loadRumorList(); loadSecretList(); } };
+$('#btn-god').onclick=()=>{ $('#godpanel').hidden=!$('#godpanel').hidden; };   // God Mode is operations only now
 $('#god-rain').onclick=()=>{ worldEvent({type:'rain',duration_minutes:180}); $('#godpanel').hidden=true; };
 $('#god-festival').onclick=()=>{ worldEvent({type:'festival',location:'park',duration_minutes:240}); $('#godpanel').hidden=true; };
 
@@ -1053,7 +1092,7 @@ async function seedRumor(body){
     if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
     godFeedback(`🗣️ ${t('god.spreadOk')} (sentiment: ${(+d.sentiment).toFixed(2)})`,false);
     $('#god-text').value=''; updateSeedBtn();
-    loadRumorList();                                     // reflect the new rumor immediately
+    refreshSocialIfOpen();                               // reflect the new rumor in the observatory tab
   }catch(e){ godFeedback(`${t('god.failed')}${e.message}`,true); }
 }
 let godFbTimer=null;
@@ -1067,22 +1106,6 @@ function godFeedback(msg,isErr){
 function rumorStatus(r){
   if(r.resolved) return r.outcome==='admitted'?t('god.stAdmitted'):t('god.stDenied');
   return t('god.spreading');
-}
-async function loadRumorList(){
-  try{
-    const d=await (await fetch('/api/rumors')).json();
-    const box=$('#god-rumors'); box.innerHTML='';
-    if(!d.rumors||!d.rumors.length){ box.innerHTML=`<div class="god-empty">${t('god.noRumors')}</div>`; return; }
-    d.rumors.forEach(r=>{
-      const latest=r.versions.length?r.versions[r.versions.length-1].text:'';   // most-drifted wording
-      const row=document.createElement('div'); row.className='god-rumor';
-      row.innerHTML=`<div class="god-rtext"></div><div class="god-rmeta"><span></span> · <span class="god-rstat"></span></div>`;
-      row.querySelector('.god-rtext').textContent=latest;                        // free text -> textContent (no injection)
-      row.querySelector('.god-rmeta span').textContent=t('god.knownBy').replace('{n}',r.versions.length);
-      row.querySelector('.god-rstat').textContent=rumorStatus(r);
-    box.appendChild(row);
-    });
-  }catch(e){}
 }
 initGodRumor();
 
@@ -1099,29 +1122,102 @@ function initGodSecret(){
       const d=await r.json();
       if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
       godFeedback(`🤫 ${t('god.secretPlanted')} (${(+d.sensitivity).toFixed(1)})`,false);
-      $('#god-secret-text').value=''; loadSecretList();
+      $('#god-secret-text').value=''; refreshSocialIfOpen();
     }catch(e){ godFeedback(`${t('god.failed')}${e.message}`,true); }
   };
 }
-async function loadSecretList(){
-  try{
-    const d=await (await fetch('/api/secrets')).json();
-    const box=$('#god-secrets'); box.innerHTML='';
-    if(!d.secrets||!d.secrets.length){ box.innerHTML=`<div class="god-empty">${t('god.noSecrets')}</div>`; return; }
-    d.secrets.forEach(s=>{
-      const row=document.createElement('div'); row.className='god-rumor';
-      row.innerHTML=`<div class="god-rtext"></div><div class="god-rmeta"><span class="god-sowner"></span> · <span></span> · <span class="god-sstat"></span></div>`;
-      row.querySelector('.god-rtext').textContent=s.text;                     // free text -> textContent
-      row.querySelector('.god-sowner').textContent=s.owner_name;
-      row.querySelector('.god-rmeta span:nth-child(2)').textContent=t('god.confidedTo').replace('{n}',s.confided_to.length);
-      const stat=row.querySelector('.god-sstat');
-      if(s.leaked){ stat.textContent=t('god.secretLeaked').replace('{who}',s.leaked_by_name||'?'); stat.classList.add('leaked'); }
-      else stat.textContent=t('god.secretIntact');
-      box.appendChild(row);
-    });
-  }catch(e){}
-}
 initGodSecret();
+
+/* ---------- Social observatory tab: secrets (grouped) + rumors (version chains) ----------
+   Read-only view over /api/secrets + /api/rumors. Observation lives here; the
+   matching God Mode forms only *create* (plant secret / seed rumor). Fetched on
+   open, polled every 10s while visible, and re-rendered on a language switch. */
+function refreshSocialIfOpen(){ if(!$('#social').hidden) loadSocial(); }
+setInterval(refreshSocialIfOpen,10000);   // 10s refresh, but only paints while the tab is open
+
+function ownerSprite(id){
+  const sid=SPR_PAL[id]?id:FALLBACK_ID;   // same pixel villager as the map, head-and-shoulders crop
+  return `<svg viewBox="-12 -5 24 25" aria-hidden="true"><use href="#spr-${sid}-f1"/></svg>`;
+}
+function lockIcons(sens){ const n=sens<0.34?1:sens<0.67?2:3; return '🔒'.repeat(n); }
+
+async function loadSocial(){
+  let secrets, rumors;
+  try{
+    [secrets,rumors]=await Promise.all([
+      fetch('/api/secrets').then(r=>r.json()).then(d=>d.secrets||[]),
+      fetch('/api/rumors').then(r=>r.json()).then(d=>d.rumors||[]),
+    ]);
+  }catch(e){ return; }   // transient fetch error -> keep the last good render
+  renderSocialSecrets(secrets, rumors);
+  renderSocialRumors(rumors);
+}
+
+function renderSocialSecrets(secrets, rumors){
+  const box=$('#soc-secrets'); box.innerHTML='';
+  if(!secrets.length){ box.innerHTML=`<div class="soc-empty">${t('god.noSecrets')}</div>`; return; }
+  const leakedIds=new Set(rumors.filter(r=>r.from_secret_id).map(r=>r.from_secret_id));  // secrets now retold as rumors
+  const sep=t('listSep');
+  // group by owner (first-seen order), newest secret first within each group
+  const groups=new Map();
+  secrets.forEach(s=>{ if(!groups.has(s.owner)) groups.set(s.owner,{name:s.owner_name,items:[]}); groups.get(s.owner).items.push(s); });
+  for(const [oid,g] of groups){
+    g.items.sort((a,b)=>b.created_minute-a.created_minute);
+    const head=document.createElement('div'); head.className='soc-owner';
+    head.innerHTML=`${ownerSprite(oid)}<b></b><span class="soc-count"></span>`;
+    head.querySelector('b').textContent=g.name;
+    head.querySelector('.soc-count').textContent=`· ${g.items.length}`;
+    box.appendChild(head);
+    g.items.forEach(s=>{
+      const card=document.createElement('div'); card.className='soc-card';
+      card.innerHTML=`<div class="soc-text"></div><div class="soc-meta">`
+        +`<span class="soc-lock"></span><span class="soc-chain"></span><span class="soc-badge"></span></div>`;
+      card.querySelector('.soc-text').textContent=s.text;                       // free text -> textContent
+      const lock=card.querySelector('.soc-lock'); lock.textContent=lockIcons(s.sensitivity);
+      lock.title=`sensitivity ${(+s.sensitivity).toFixed(2)}`;
+      const chain=card.querySelector('.soc-chain');
+      chain.textContent=s.confided_to.length
+        ? '→ '+s.confided_to.map(c=>c.name).join(sep)
+        : t('social.knownToNoOne');
+      const badge=card.querySelector('.soc-badge');
+      if(s.leaked){ badge.textContent=t('social.leaked').replace('{who}',s.leaked_by_name||'?'); badge.classList.add('leaked'); }
+      else { badge.textContent=t('god.secretIntact'); badge.classList.add('intact'); }
+      if(s.leaked && leakedIds.has(s.id)){
+        const link=document.createElement('div'); link.className='soc-rumorlink';
+        link.textContent=t('social.becameRumor'); card.appendChild(link);
+      }
+      box.appendChild(card);
+    });
+  }
+}
+
+function renderSocialRumors(rumors){
+  const box=$('#soc-rumors');
+  const openIds=new Set([...box.querySelectorAll('details[open]')].map(d=>d.dataset.rid));  // keep expansions across refresh
+  box.innerHTML='';
+  if(!rumors.length){ box.innerHTML=`<div class="soc-empty">${t('god.noRumors')}</div>`; return; }
+  rumors.slice().sort((a,b)=>b.created_minute-a.created_minute).forEach(r=>{
+    const latest=r.versions.length?r.versions[r.versions.length-1].text:'';
+    const d=document.createElement('details'); d.className='soc-rumor'; d.dataset.rid=r.id;
+    if(openIds.has(r.id)) d.open=true;
+    d.innerHTML=`<summary><div class="soc-text"></div><div class="soc-rmeta">`
+      +`<span class="soc-rknown"></span> · <span class="soc-rstat"></span>`
+      +`<span class="soc-caret">▸</span></div></summary><div class="soc-chainlist"></div>`;
+    d.querySelector('.soc-text').textContent=latest;                            // free text -> textContent
+    d.querySelector('.soc-rknown').textContent=t('god.knownBy').replace('{n}',r.versions.length);
+    d.querySelector('.soc-rstat').textContent=rumorStatus(r);
+    const list=d.querySelector('.soc-chainlist');
+    r.versions.forEach(v=>{                                                     // full telephone-game chain
+      const hop=document.createElement('div'); hop.className='soc-hop';
+      hop.innerHTML=`<span class="soc-hop-who"></span><span class="soc-hop-text"></span>`;
+      const who=v.heard_from_name ? `${v.heard_from_name} → ${v.agent_name}` : `${t('social.origin')}: ${v.agent_name}`;
+      hop.querySelector('.soc-hop-who').textContent=`${who} · ${v.clock}`;
+      hop.querySelector('.soc-hop-text').textContent=v.text;                    // free text -> textContent
+      list.appendChild(hop);
+    });
+    box.appendChild(d);
+  });
+}
 
 async function pollUsage(){
   try{
@@ -1264,20 +1360,24 @@ function showTab(which){
   $('#feed').hidden=which!=='feed';
   $('#graph').hidden=which!=='graph';
   $('#replay').hidden=which!=='replay';
+  $('#social').hidden=which!=='social';
   $('#tab-feed').classList.toggle('active',which==='feed');
   $('#tab-graph').classList.toggle('active',which==='graph');
   $('#tab-replay').classList.toggle('active',which==='replay');
+  $('#tab-social').classList.toggle('active',which==='social');
   // graph physics only run while its tab is visible
   if(which==='graph'){
     if(!RG && REL_DATA) buildGraph(REL_DATA);
     else if(RG){ if(REDUCE_MOTION){ for(let i=0;i<120;i++) simStep(); renderPositions(); } else startRAF(); }
   }else{ stopRAF(); hideRelTip(); }
+  if(which==='social') loadSocial();                    // fetch on open; a 10s poll keeps it fresh
   // leaving the replay tab always exits replay (restores the live view)
   if(which==='replay') enterReplay(); else exitReplay();
 }
 $('#tab-feed').onclick=()=>showTab('feed');
 $('#tab-graph').onclick=()=>showTab('graph');
 $('#tab-replay').onclick=()=>showTab('replay');
+$('#tab-social').onclick=()=>showTab('social');
 async function pollRel(){
   try{ const d=await (await fetch('/api/relationships')).json();
     REL_DATA=d;

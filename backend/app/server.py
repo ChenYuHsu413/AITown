@@ -425,6 +425,7 @@ async def list_rumors() -> JSONResponse:
             "subject": r.subject,
             "subject_name": name_of(r.subject) if r.subject else "",
             "sentiment": r.sentiment,
+            "from_secret_id": r.from_secret_id,   # non-empty when this rumor was leaked from a secret
             "created_minute": r.created_minute,
             "created_clock": fmt_time(r.created_minute),
             "resolved": r.resolved,
@@ -463,6 +464,7 @@ async def secrets() -> JSONResponse:
             "id": s.id,
             "owner": s.owner, "owner_name": name_of(s.owner),
             "text": s.text, "sensitivity": round(s.sensitivity, 2),
+            "created_minute": s.created_minute,
             "created_clock": fmt_time(s.created_minute),
             "confided_to": [
                 {"id": aid, "name": name_of(aid), "clock": fmt_time(m)}
