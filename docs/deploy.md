@@ -61,6 +61,7 @@ to the repo.** With none set, the app runs on the mock provider with no DB.
 | `OPENAI_API_KEY` | OpenAI models (used when `AI_TOWN_LIVE=1`) | leave unset |
 | `GEMINI_API_KEY` | Gemini models (used when `AI_TOWN_LIVE=1`) | leave unset |
 | `AI_TOWN_DB_URL` | PostgreSQL+pgvector persistence; unset = in-memory | leave unset |
+| `AI_TOWN_RESUME` | `0` = ignore the last snapshot and start fresh at Day 1 (only relevant with a DB; default resumes) | leave unset |
 
 > Note: the live/mock split for the **server** is driven by `AI_TOWN_LIVE`; the
 > `run_day.py` script uses a `--live` flag instead. Either way, mock is the
@@ -169,18 +170,79 @@ and pgvector memory retrieval:
 3. Install the persistence deps if you slim them out later — they're already in
    `requirements.txt` (`sqlalchemy`, `asyncpg`, `pgvector`).
 4. Redeploy. On boot the server creates the `events`, `memories`, `llm_calls`,
-   `simulation_runs` tables and switches memory retrieval to pgvector cosine
-   search. Without `AI_TOWN_DB_URL` it stays fully in-memory, exactly as before.
+   `simulation_runs`, `world_snapshots` tables and switches memory retrieval to
+   pgvector cosine search. Without `AI_TOWN_DB_URL` it stays fully in-memory,
+   exactly as before.
 
 ---
 
-## Free-tier sleep behavior (known & acceptable)
+## Supabase (managed Postgres + pgvector)
 
-On free/hobby tiers the platform (and the app's own idle-suspend) will pause when
-no one is watching. Simulation state currently lives **in memory only**, so a
-**cold start restarts the town from Day 1 06:00**. This is expected for the
-stateless first deploy.
+[Supabase](https://supabase.com) is a hosted Postgres with pgvector built in — a
+zero-ops alternative to running your own database. It works with the same
+`AI_TOWN_DB_URL` env var; only two things need care.
 
-Proper state recovery (resuming mid-day after a restart) arrives once Postgres is
-attached — the event/memory tables are the foundation for replay and rehydration.
-Until then, treat each cold start as a fresh day.
+1. **Use the Session pooler connection string.** In the Supabase dashboard:
+   **Project → Connect** (or **Settings → Database**) → **Connection string** →
+   **Session pooler**. It looks like:
+
+   ```
+   postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+   ```
+
+   (The Session pooler on port `5432` is the right one for a single long-lived
+   process like this app. The Transaction pooler on `6543` is for serverless and
+   is *not* recommended here.)
+
+2. **Change the scheme to `postgresql+asyncpg://`** so SQLAlchemy uses the async
+   driver — otherwise it's identical to the string above:
+
+   ```
+   AI_TOWN_DB_URL=postgresql+asyncpg://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+   ```
+
+   The app detects the `pooler.supabase.com` host and automatically disables
+   asyncpg's prepared-statement cache (`statement_cache_size=0`), which sidesteps
+   the "prepared statement does not exist" error the pgbouncer-family pooler can
+   otherwise throw. No config needed on your side; direct (non-pooler) Postgres is
+   unaffected.
+
+pgvector needs no manual setup — the app runs `CREATE EXTENSION IF NOT EXISTS
+vector` on boot, and Supabase ships the extension. On first boot it creates all
+five tables and (if a prior snapshot exists) resumes the town from it.
+
+> **Free-tier caveats.** Supabase's free project **pauses after 7 days of
+> inactivity** (any query resets the clock; a paused project must be restored
+> from the dashboard before the app can connect) and the free tier has **no
+> automatic backups** — don't put anything you can't afford to lose on it. Both
+> are fine for a demo; move to a paid tier or a self-hosted Postgres for anything
+> you want to keep.
+
+---
+
+## Snapshot & resume (surviving a restart)
+
+Once `AI_TOWN_DB_URL` is set, the server persists a **full world snapshot**
+(the clock, every agent's state / relationships / memories, the rumor chains, each
+shop's takings, and the daily dialogue budget) to the `world_snapshots` table —
+one upserted row per run. Snapshots are written at each in-sim day settlement,
+about every 60 real seconds while the clock is advancing, and once more on a
+graceful shutdown. All writes go through the same async queue as events, so the
+simulation never blocks on the database.
+
+On the next boot the server loads the latest snapshot and **continues that run
+where it left off** (same `run_id`, so events and memories keep accumulating in
+one timeline) instead of restarting at Day 1 06:00. Startup logs one line —
+`[resume] restored from Day X HH:MM (run …)` or `[resume] fresh start`.
+
+- A **graceful shutdown** loses nothing; a **hard kill** loses at most the ~60 s
+  since the last periodic snapshot (it resumes from that one).
+- Set **`AI_TOWN_RESUME=0`** to ignore the snapshot and force a fresh Day-1 run.
+- Snapshots are **version-tolerant**: the payload carries a `schema_version`, and
+  a snapshot that's missing a field (an older version, say) loads with that
+  field's default rather than failing. A snapshot that can't be parsed at all is
+  logged and skipped — a bad snapshot never blocks startup, it just falls back to
+  a fresh start.
+
+Without `AI_TOWN_DB_URL` the town is in-memory only, so a cold start still
+restarts from Day 1 06:00 — expected for the stateless first deploy.

@@ -25,6 +25,7 @@ from .agents.core import MemoryItem
 from .agents.decision import DecisionEngine
 from .llm.factory import build_router
 from .llm.prompts import builders
+from .simulation import snapshot as snapshot_mod
 from .simulation.engine import DAY_MIN, Event, SimulationEngine, fmt_time
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +35,7 @@ TICK_REAL_SECONDS = 0.5
 START_MINUTE = 6 * 60  # Day 1, 06:00
 IDLE_GRACE_SECONDS = 10.0  # keep running this long after the last client leaves (survives a page refresh)
 MAX_LIVE_SPEED = 5.0       # in live mode, cap speed so LLM calls don't burst past free-tier rate limits
+SNAPSHOT_REAL_SECONDS = 60.0  # persist the world at most this often (only when the clock advanced)
 
 
 class Sim:
@@ -59,29 +61,68 @@ class Sim:
         self._empty_since: float | None = None  # monotonic time the client set became empty
         self._idle: bool = False                # auto-suspended because no clients are connected
         self.persistence = None          # set by lifespan when DB configured
+        self._snap_wall: float = 0.0     # monotonic time of the last periodic snapshot
+        self._snap_minute: int = -1      # sim minute at the last periodic snapshot
         self.engine.bootstrap(START_MINUTE)
 
     async def attach_persistence(self) -> None:
         """Optional: activates when AI_TOWN_DB_URL is set. Without it the
-        simulation runs fully in-memory, exactly as before."""
+        simulation runs fully in-memory, exactly as before.
+
+        With a DB and AI_TOWN_RESUME != 0 (the default), the latest snapshot is
+        rehydrated so the town continues where it left off instead of restarting
+        at Day 1; on a resume the same run_id is reused so events/memories keep
+        accumulating in one run."""
         db_url = os.environ.get("AI_TOWN_DB_URL", "")
         if not db_url:
             return
         from .db.persistence import Persistence
 
+        resume_enabled = os.environ.get("AI_TOWN_RESUME", "1") != "0"
         p = Persistence(db_url)
-        await p.start(note="server")
+
+        restored_minute: int | None = None
+
+        def _restore(minute: int, payload: dict) -> None:
+            nonlocal restored_minute
+            m = snapshot_mod.restore(payload, self.engine, self.world, self.engine.decisions)
+            self.engine.bootstrap(m)   # re-anchor the clock/scheduler onto restored state
+            restored_minute = m
+
+        resumed = await p.start(note="server", resume=resume_enabled, restore_cb=_restore)
         self.persistence = p
         self.engine.bus.subscribers.append(p.on_event)
         self.router.usage.on_record = p.on_llm_call
+        self.engine.on_snapshot = self._take_snapshot   # snapshot at each daily settlement
+        self._snap_wall = time.monotonic()
+        self._snap_minute = self.engine.now
         for agent in self.world.agents.values():
-            # Mirror future memories to DB; backfill the seed memories now.
+            # Mirror FUTURE memories to DB. On a fresh run also backfill the seed
+            # memories; on a resume they're already in the same run's `memories`
+            # table (and restored in-process from the snapshot), so re-mirroring
+            # them would double every row -- skip it.
             agent.memory.on_add = (lambda aid: lambda item: p.on_memory(aid, item))(agent.id)
-            for item in agent.memory.items:
-                p.on_memory(agent.id, item)
+            if not resumed:
+                for item in agent.memory.items:
+                    p.on_memory(agent.id, item)
             # Retrieval switches to pgvector cosine search.
             agent.memory.vector_search = p.vector_retriever(agent.id)
+        if resumed:
+            print(f"[resume] restored from {fmt_time(restored_minute or self.engine.now)} "
+                  f"(run {p.run_id})")
+        else:
+            print("[resume] fresh start")
         print(f"[persistence] enabled, run_id={p.run_id}")
+
+    def _take_snapshot(self) -> None:
+        """Serialize the whole world and queue it for an async upsert. Cheap and
+        non-blocking; a no-op without persistence."""
+        if self.persistence is None:
+            return
+        payload = snapshot_mod.capture(self.engine, self.world, self.engine.decisions)
+        self.persistence.on_snapshot(payload)
+        self._snap_minute = self.engine.now
+        self._snap_wall = time.monotonic()
 
     # ---- pacing loop ----------------------------------------------
 
@@ -124,6 +165,15 @@ class Sim:
             self.engine.now = max(self.engine.now, target)  # clock advances even in quiet periods
             self.engine.expire_world_effects()  # end rain/festival on time even with no pending decisions
             await self._broadcast_tick()
+            # Periodic snapshot: every SNAPSHOT_REAL_SECONDS, but only if the
+            # clock actually moved since the last one (a paused/idle town isn't
+            # re-persisted needlessly). Caps crash loss to ~one interval.
+            if (
+                self.persistence is not None
+                and self.engine.now != self._snap_minute
+                and (time.monotonic() - self._snap_wall) >= SNAPSHOT_REAL_SECONDS
+            ):
+                self._take_snapshot()
 
     # ---- snapshots ------------------------------------------------
 
@@ -227,7 +277,8 @@ async def lifespan(app: FastAPI):
     yield
     _loop_task.cancel()
     if sim.persistence is not None:
-        await sim.persistence.stop()
+        sim._take_snapshot()          # final graceful-shutdown snapshot...
+        await sim.persistence.stop()  # ...which stop() drains before disposing
 
 
 app = FastAPI(title="AI Town", lifespan=lifespan)

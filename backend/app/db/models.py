@@ -1,11 +1,12 @@
 """Database models (SQLAlchemy 2.0, async).
 
-Four tables for phase 2:
+Five tables:
 
     simulation_runs   one row per server boot / script run
     events            structured events (Event Contract v1, verbatim)
     memories          episodic memories + pgvector embedding
     llm_calls         the cost ledger (was in-memory UsageTracker only)
+    world_snapshots   latest serialized world state per run (resume foundation)
 
 The events table mirrors the Event Contract exactly -- that was the point
 of the structured-events refactor.
@@ -18,6 +19,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 EMBED_DIM = 64  # mock embedding dim; bump when switching to a real model
@@ -83,3 +85,18 @@ class LLMCallRow(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     estimated_cost: Mapped[float] = mapped_column(Float, default=0.0)
     cache_hit: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class WorldSnapshot(Base):
+    """One row per run holding the whole serialized world (clock, agents,
+    rumors, economy, dialogue budget) as a single JSON payload. Upserted on
+    ``run_id`` so only the latest snapshot survives -- the resume foundation.
+    Memories still live in ``memories`` for retrieval/history; the snapshot
+    carries its own full copy so rehydration is a single self-contained read."""
+
+    __tablename__ = "world_snapshots"
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("simulation_runs.id"), primary_key=True)
+    minute: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

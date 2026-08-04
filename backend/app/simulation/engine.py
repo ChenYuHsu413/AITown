@@ -140,10 +140,17 @@ class SimulationEngine:
         self.now = 0
         self._last_decision_at: dict[str, int] = {}
         self._last_day = 0
+        # Fired (zero-arg) after each daily settlement so the host can persist a
+        # snapshot; stays None -- and thus a no-op -- for headless/no-DB runs.
+        self.on_snapshot: Callable[[], None] | None = None
 
     def bootstrap(self, start_minute: int) -> None:
+        # Fresh scheduler each call so re-bootstrapping onto a restored world
+        # (resume) starts from a clean queue instead of stale START_MINUTE entries.
         self.now = start_minute
         self._last_day = start_minute // DAY_MIN
+        self.scheduler = Scheduler()
+        self._last_decision_at.clear()
         for agent in self.world.agents.values():
             self.scheduler.schedule(agent.id, start_minute)
             self._last_decision_at[agent.id] = start_minute - 1
@@ -214,6 +221,8 @@ class SimulationEngine:
         while self._last_day < self.now // DAY_MIN:
             self._last_day += 1
             self._daily_settlement()
+            if self.on_snapshot is not None:
+                self.on_snapshot()   # persist the freshly-closed day
 
     def _daily_settlement(self) -> None:
         """Close each shop's books (record + reset today's revenue, nudge the
