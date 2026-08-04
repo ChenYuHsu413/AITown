@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
-from sqlalchemy import select, text as sql_text
+from sqlalchemy import func, select, text as sql_text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
@@ -212,12 +212,18 @@ class Persistence:
 
         return retrieve
 
-    async def events_between(self, minute_from: int, minute_to: int, limit: int = 500) -> list[dict]:
+    async def events_between(
+        self, minute_from: int, minute_to: int, limit: int = 500, run_id: str | None = None
+    ) -> list[dict]:
+        """Structured events for one run in a minute window. ``run_id`` defaults
+        to the live run; replay passes an older run's id. Ordered by (minute, id)
+        so windowed paging over a long run stays contiguous."""
+        rid = run_id or self.run_id
         async with self.session() as s:
             rows = await s.execute(
                 select(EventRow)
                 .where(
-                    EventRow.run_id == self.run_id,
+                    EventRow.run_id == rid,
                     EventRow.minute >= minute_from,
                     EventRow.minute <= minute_to,
                 )
@@ -231,4 +237,29 @@ class Persistence:
                     "location": r.location, "speech": r.speech,
                 }
                 for (r,) in rows
+            ]
+
+    async def list_runs(self) -> list[dict]:
+        """Every run with its event count and minute span, newest first --
+        the catalogue the replay picker reads. Runs with no events report
+        count 0 and null bounds (an outer join keeps them in the list)."""
+        async with self.session() as s:
+            rows = await s.execute(
+                select(
+                    SimulationRun.id, SimulationRun.started_at, SimulationRun.note,
+                    func.count(EventRow.id), func.min(EventRow.minute), func.max(EventRow.minute),
+                )
+                .outerjoin(EventRow, EventRow.run_id == SimulationRun.id)
+                .group_by(SimulationRun.id, SimulationRun.started_at, SimulationRun.note)
+                .order_by(SimulationRun.started_at.desc())
+            )
+            return [
+                {
+                    "id": rid,
+                    "started_at": started.isoformat() if started else None,
+                    "note": note or "",
+                    "events": count or 0,
+                    "minute_min": mn, "minute_max": mx,
+                }
+                for rid, started, note, count, mn, mx in rows
             ]

@@ -285,16 +285,34 @@ app = FastAPI(title="AI Town", lifespan=lifespan)
 
 
 @app.get("/api/history")
-async def history(minute_from: int = 0, minute_to: int = 10**9, limit: int = 500) -> JSONResponse:
+async def history(
+    minute_from: int = 0, minute_to: int = 10**9, limit: int = 500, run_id: str = "",
+) -> JSONResponse:
     """Replay foundation: structured events straight from PostgreSQL.
-    Requires persistence (AI_TOWN_DB_URL); 501 otherwise."""
+    ``run_id`` selects the run (defaults to the live one); the frontend pages
+    over a long run via the minute window + limit. Requires persistence
+    (AI_TOWN_DB_URL); 501 otherwise."""
     assert sim is not None
     if sim.persistence is None:
         return JSONResponse({"error": "persistence not enabled"}, status_code=501)
-    events = await sim.persistence.events_between(minute_from, minute_to, limit)
+    rid = run_id or sim.persistence.run_id
+    events = await sim.persistence.events_between(minute_from, minute_to, limit, run_id=rid)
     for e in events:
         e["clock"] = fmt_time(e["minute"])
-    return JSONResponse({"run_id": sim.persistence.run_id, "events": events})
+    return JSONResponse({"run_id": rid, "events": events})
+
+
+@app.get("/api/runs")
+async def runs() -> JSONResponse:
+    """Catalogue of every simulation run (newest first) for the replay picker,
+    plus which one is currently live. Requires persistence; 501 otherwise."""
+    assert sim is not None
+    if sim.persistence is None:
+        return JSONResponse({"error": "persistence not enabled"}, status_code=501)
+    return JSONResponse({
+        "runs": await sim.persistence.list_runs(),
+        "current": sim.persistence.run_id,
+    })
 
 
 @app.get("/healthz")

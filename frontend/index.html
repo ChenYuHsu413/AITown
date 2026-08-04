@@ -54,6 +54,31 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 .tabs .tab:focus-visible{outline:2px solid var(--amber);outline-offset:-2px}
 [hidden]{display:none!important}
 
+/* replay panel */
+#replay{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+#replay-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.replay-msg{padding:16px 14px;font-size:13px;line-height:1.5;color:var(--faint)}
+.replay-ctl{padding:10px 14px 12px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:9px}
+.rc-row{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--faint)}
+.rc-row select{flex:1;min-width:0;font-family:var(--mono);font-size:11px;padding:5px 6px;background:var(--paper);
+  border:1px solid var(--line);border-radius:4px;color:var(--ink);text-transform:none;letter-spacing:0}
+.rc-time{font-family:var(--mono);font-size:15px;font-weight:500;text-align:center;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+#replay-slider{width:100%;accent-color:var(--amber);cursor:pointer;margin:0}
+#replay-slider:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.rc-transport{display:flex;align-items:center;gap:6px}
+.rc-transport button{font-family:var(--mono);font-size:12px;padding:6px 11px;background:var(--paper);
+  border:1px solid var(--line);border-radius:4px;color:var(--ink);cursor:pointer}
+.rc-transport button:hover{border-color:var(--amber)}
+.rc-transport button:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
+.rc-speeds{display:flex;gap:4px;margin-left:auto}
+.rspeed.active,#replay-play.playing{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+#replay-feed{flex:1;overflow-y:auto;padding:0 14px 10px;font-size:13px;line-height:1.45}
+#replay-badge{position:absolute;top:10px;left:10px;z-index:15;font-family:var(--mono);font-size:11px;
+  letter-spacing:.06em;background:var(--amber);color:#fff;padding:4px 10px;border-radius:4px;
+  box-shadow:0 2px 8px rgba(0,0,0,.2)}
+
 /* relationship graph */
 #graph{flex:1;min-height:0;position:relative;overflow:hidden}
 #relsvg{width:100%;height:100%;display:block}
@@ -219,6 +244,7 @@ footer b{font-weight:500;font-size:14px}
 
 <main>
   <div id="mapwrap">
+    <div id="replay-badge" hidden><span data-i18n="replay.badge">⏪ REPLAYING</span></div>
     <svg id="map" viewBox="0 0 800 520" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Town map">
       <defs id="sprite-defs"><!-- pixel-art villager sprites injected by initSprites() --></defs>
       <rect width="800" height="520" fill="var(--paper)"/>
@@ -237,8 +263,28 @@ footer b{font-weight:500;font-size:14px}
     <div class="tabs" role="tablist">
       <button id="tab-feed" class="tab active" role="tab" data-i18n="feedTitle">EVENT FEED</button>
       <button id="tab-graph" class="tab" role="tab" data-i18n="graphTitle">RELATIONSHIPS</button>
+      <button id="tab-replay" class="tab" role="tab" data-i18n="replayTitle">REPLAY</button>
     </div>
     <div id="feed"></div>
+    <div id="replay" hidden>
+      <div id="replay-nodb" class="replay-msg" hidden data-i18n="replay.noDB">Replay needs a database (set AI_TOWN_DB_URL).</div>
+      <div id="replay-body" hidden>
+        <div class="replay-ctl">
+          <label class="rc-row"><span data-i18n="replay.run">Run</span><select id="replay-run"></select></label>
+          <div class="rc-time" id="replay-time">Day 1 06:00</div>
+          <input type="range" id="replay-slider" min="0" max="0" value="0" aria-label="Replay time">
+          <div class="rc-transport">
+            <button id="replay-play" data-i18n-title="replay.play" title="Play">▶</button>
+            <div class="rc-speeds">
+              <button class="rspeed" data-sp="60">60×</button>
+              <button class="rspeed active" data-sp="300">300×</button>
+              <button class="rspeed" data-sp="1000">1000×</button>
+            </div>
+          </div>
+        </div>
+        <div id="replay-feed"></div>
+      </div>
+    </div>
     <div id="graph" hidden>
       <svg id="relsvg" viewBox="0 0 300 300" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Relationship graph"></svg>
       <div id="reltip" hidden></div>
@@ -265,7 +311,10 @@ let LOCS={}, AGENTS={}, selected=null, LOC_LIST=[], ECON=null;
 /* ---------- i18n ---------- */
 const I18N={
   en:{
-    subtitle:'FIELD STATION · 5 AGENTS', feedTitle:'EVENT FEED', graphTitle:'RELATIONSHIPS', inspectorTitle:'AGENT INSPECTOR',
+    subtitle:'FIELD STATION · 5 AGENTS', feedTitle:'EVENT FEED', graphTitle:'RELATIONSHIPS', replayTitle:'REPLAY', inspectorTitle:'AGENT INSPECTOR',
+    'replay.run':'Run', 'replay.play':'Play', 'replay.pause':'Pause', 'replay.badge':'⏪ REPLAYING',
+    'replay.noDB':'Replay needs a database. Set AI_TOWN_DB_URL to record history you can scrub through.',
+    'replay.empty':'This run has no events to replay yet.', 'replay.events':'events', 'replay.loading':'Loading history…',
     inspectorPlaceholder:'Select an agent on the map to inspect memories, relationships, and decision traces.',
     energy:'Energy', money:'Money', doing:'Doing', relationships:'RELATIONSHIPS', noRelationships:'No relationships yet.',
     relFriend:'friendship', relTrust:'trust',
@@ -286,7 +335,10 @@ const I18N={
     'god.knownBy':'known by {n}','god.noRumors':'No rumors yet.',
   },
   zh:{
-    subtitle:'田野觀測站 · 5 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', inspectorTitle:'智能體檢視器',
+    subtitle:'田野觀測站 · 5 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', replayTitle:'回放', inspectorTitle:'智能體檢視器',
+    'replay.run':'場次', 'replay.play':'播放', 'replay.pause':'暫停', 'replay.badge':'⏪ 回放中',
+    'replay.noDB':'回放需要資料庫。設定 AI_TOWN_DB_URL 後才會記錄可拖曳回放的歷史。',
+    'replay.empty':'這個場次還沒有可回放的事件。', 'replay.events':'事件', 'replay.loading':'載入歷史中…',
     inspectorPlaceholder:'點選地圖上的智能體，檢視其記憶、關係與決策軌跡。',
     energy:'精力', money:'金錢', doing:'狀態', relationships:'人際關係', noRelationships:'尚無人際關係。',
     relFriend:'友誼', relTrust:'信任',
@@ -375,9 +427,10 @@ function applyLang(){
   $('#btn-lang').title=t('title.lang');
   document.documentElement.lang=LANG==='zh'?'zh-Hant':'en';
   if(LOC_LIST.length) buildMap(LOC_LIST);                          // relabel map
-  $('#feed').querySelectorAll('.ev').forEach(d=>{d.lastChild.textContent=evText(JSON.parse(d.dataset.ev));});
+  document.querySelectorAll('#feed .ev,#replay-feed .ev').forEach(d=>{d.lastChild.textContent=evText(JSON.parse(d.dataset.ev));});
   if(selected) refreshInspector(selected,false);                  // else static placeholder already updated
   if(!$('#godpanel').hidden) loadRumorList();                     // re-render rumor list in the new language
+  if(!$('#replay-body').hidden){ buildRunOptions(); updatePlayBtn(); }   // "events" word + play/pause title follow the language
 }
 function toggleLang(){ LANG=LANG==='en'?'zh':'en'; localStorage.setItem('lang',LANG); applyLang(); }
 
@@ -385,7 +438,9 @@ function toggleLang(){ LANG=LANG==='en'?'zh':'en'; localStorage.setItem('lang',L
 const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
 ws.onmessage=e=>{
   const msg=JSON.parse(e.data);
-  if(msg.type==='snapshot'){ buildMap(msg.locations); msg.events.forEach(addEvent); }
+  if(msg.type==='snapshot') buildMap(msg.locations);   // locations are static -> always safe (sets LOCS)
+  if(REPLAY.on) return;                                // in replay: keep receiving, but don't paint over it
+  if(msg.type==='snapshot') msg.events.forEach(addEvent);
   updateClock(msg.minute,msg.clock,msg.paused,msg.speed);
   if(msg.agents) updateAgents(msg.agents);
   if(msg.effects) renderEffects(msg.effects);      // rain/festival visuals switch in real time
@@ -605,23 +660,30 @@ function updateAgents(list){
 }
 
 /* ---------- daylight ---------- */
-function updateClock(minute,clock,paused,speed){
-  $('#clock').textContent=clock;
-  const mod=minute%1440, frac=mod/1440;
+// Daylight (sun position + nightfall + window glow) is a pure function of the
+// minute, so replay can drive it with a past time without touching live controls.
+function applyDaylight(minute){
+  const mod=((minute%1440)+1440)%1440, frac=mod/1440;
   $('#sun').style.left=(frac*100)+'%';
   // opacity 0 at 13:00, up to .45 deep night
   const dist=Math.min(Math.abs(mod-780),1440-Math.abs(mod-780));
   const nf=Math.min(.45,Math.max(0,(dist-260)/700));
   $('#nightfall').setAttribute('opacity',nf);
   $('#lights').setAttribute('opacity',(nf/0.45).toFixed(3));   // windows glow as night deepens
-
+}
+function fmtMin(m){                                             // client-side "Day X HH:MM" (matches server)
+  const day=Math.floor(m/1440)+1, x=((m%1440)+1440)%1440;
+  return `Day ${day} ${String(Math.floor(x/60)).padStart(2,'0')}:${String(x%60).padStart(2,'0')}`;
+}
+function updateClock(minute,clock,paused,speed){
+  $('#clock').textContent=clock;
+  applyDaylight(minute);
   $('#btn-pause').classList.toggle('active',paused);
   ['1','5','20'].forEach(s=>$('#btn-'+s).classList.toggle('active',!paused&&speed==+s));
 }
 
 /* ---------- feed ---------- */
-function addEvent(ev){
-  const feed=$('#feed');
+function addEventTo(feed,ev){                        // shared by the live feed and the replay feed
   const d=document.createElement('div');
   d.className='ev '+ev.kind;
   d.dataset.ev=JSON.stringify(ev);                 // stash for re-render on language switch
@@ -631,6 +693,7 @@ function addEvent(ev){
   while(feed.children.length>120) feed.removeChild(feed.firstChild);
   feed.scrollTop=feed.scrollHeight;
 }
+function addEvent(ev){ addEventTo($('#feed'),ev); }
 
 /* ---------- speech bubbles (one per speaker, collision-stacked) ----------
    Multiple simultaneous conversations at one place used to pile bubbles into
@@ -978,16 +1041,23 @@ function showRelTip(e,ev){
 }
 function hideRelTip(){ $('#reltip').hidden=true; }
 function showTab(which){
-  const feed=which!=='graph';
-  $('#feed').hidden=!feed; $('#graph').hidden=feed;
-  $('#tab-feed').classList.toggle('active',feed);
-  $('#tab-graph').classList.toggle('active',!feed);
-  if(feed){ stopRAF(); hideRelTip(); return; }
-  if(!RG && REL_DATA) buildGraph(REL_DATA);
-  else if(RG){ if(REDUCE_MOTION){ for(let i=0;i<120;i++) simStep(); renderPositions(); } else startRAF(); }
+  $('#feed').hidden=which!=='feed';
+  $('#graph').hidden=which!=='graph';
+  $('#replay').hidden=which!=='replay';
+  $('#tab-feed').classList.toggle('active',which==='feed');
+  $('#tab-graph').classList.toggle('active',which==='graph');
+  $('#tab-replay').classList.toggle('active',which==='replay');
+  // graph physics only run while its tab is visible
+  if(which==='graph'){
+    if(!RG && REL_DATA) buildGraph(REL_DATA);
+    else if(RG){ if(REDUCE_MOTION){ for(let i=0;i<120;i++) simStep(); renderPositions(); } else startRAF(); }
+  }else{ stopRAF(); hideRelTip(); }
+  // leaving the replay tab always exits replay (restores the live view)
+  if(which==='replay') enterReplay(); else exitReplay();
 }
 $('#tab-feed').onclick=()=>showTab('feed');
 $('#tab-graph').onclick=()=>showTab('graph');
+$('#tab-replay').onclick=()=>showTab('replay');
 async function pollRel(){
   try{ const d=await (await fetch('/api/relationships')).json();
     REL_DATA=d;
@@ -1009,6 +1079,197 @@ async function pollEconomy(){
   try{ ECON=await (await fetch('/api/economy')).json(); renderShopRev(); }catch(e){}
 }
 setInterval(pollEconomy,4000); pollEconomy();
+
+/* ---------- replay: scrub through a run's recorded history ----------
+   Reads structured events from the DB (via /api/runs + /api/history) and
+   re-stages the past on the SAME map. Live keeps flowing server-side; its WS
+   updates are received but not painted (see ws.onmessage guard) so the live
+   sim is never disturbed. Positions are reconstructed from `arrive` events;
+   everything else (bubbles, effects, night, feed) replays through the existing
+   renderers. */
+const SEED_LOC={alice:'home_a',bob:'home_b',carol:'home_a',david:'home_b',emma:'home_a'};  // fallback = home
+const AGENT_NAME=Object.fromEntries(CAST);        // id -> display name (fixed cast; events store only ids)
+const ACTION_VERBS={sleep:1,eat:1,work:1,rest:1,idle:1,broke:1,talk_start:1};
+const REPLAY_WIN=720;                             // fetch history in 12-sim-hour windows (never one giant query)
+const REPLAY={on:false,runs:[],runId:'',current:'',minMin:0,maxMin:0,cur:0,idx:0,
+  events:[],fetchedTo:-1,fetching:null,gen:0,playing:false,speed:300,raf:0,last:0,pending:null,
+  loc:{},act:{},rain:false,fest:''};
+
+function enrichReplayEv(ev){                        // events carry only ids; fill names for the templates
+  ev.actor_name=ev.actor_name||AGENT_NAME[ev.actor]||ev.actor;
+  ev.target_name=ev.target_name||AGENT_NAME[ev.target]||ev.target;
+}
+function clearBubbles(){ BUBBLES.slice().forEach(removeBubble); }
+
+// ---- windowed fetch (single in-flight lock + generation guard for run switches) ----
+async function replayEnsure(upto){
+  const gen=REPLAY.gen;
+  upto=Math.min(upto,REPLAY.maxMin);
+  while(REPLAY.gen===gen && REPLAY.fetchedTo<upto){
+    if(!REPLAY.fetching){
+      REPLAY.fetching=(async()=>{
+        const from=REPLAY.fetchedTo+1, to=Math.min(from+REPLAY_WIN-1,REPLAY.maxMin);
+        try{
+          const d=await fetch(`/api/history?run_id=${encodeURIComponent(REPLAY.runId)}&minute_from=${from}&minute_to=${to}&limit=3000`).then(r=>r.json());
+          if(REPLAY.gen===gen){ (d.events||[]).forEach(enrichReplayEv); REPLAY.events.push(...(d.events||[])); }
+        }catch(e){}
+        if(REPLAY.gen===gen) REPLAY.fetchedTo=to;    // advance regardless so we never spin on an error
+      })().finally(()=>{ REPLAY.fetching=null; });
+    }
+    await REPLAY.fetching;
+  }
+}
+
+// ---- state reconstruction ----
+function applyEventState(ev){
+  if(ev.verb==='arrive'){ if(ev.location) REPLAY.loc[ev.actor]=ev.location; }
+  else if(ACTION_VERBS[ev.verb]) REPLAY.act[ev.actor]=(ev.verb==='talk_start'?'talk':ev.verb==='broke'?'rest':ev.verb);
+  if(ev.verb==='rain_start') REPLAY.rain=true;
+  else if(ev.verb==='rain_end') REPLAY.rain=false;
+  else if(ev.verb==='festival_start') REPLAY.fest=ev.location||'park';
+  else if(ev.verb==='festival_end') REPLAY.fest='';
+}
+function replayRenderAgents(){
+  const byLoc={};
+  CAST.forEach(([id])=>{ const l=REPLAY.loc[id]||SEED_LOC[id]||'home_a'; (byLoc[l]=byLoc[l]||[]).push(id); });
+  CAST.forEach(([id])=>{
+    const el=AGENTS[id]; if(!el) return;
+    const l=REPLAY.loc[id]||SEED_LOC[id]||'home_a', peers=byLoc[l], idx=peers.indexOf(id);
+    const loc=LOCS[l]||{kind:'home',x:400,y:260};
+    const [x,y]=standXY(loc,idx,peers.length);
+    el.setAttribute('transform',`translate(${x},${y})`);
+    const act=REPLAY.act[id];
+    el.classList.toggle('talking',act==='talk');
+    el.classList.toggle('sleeping',act==='sleep');
+    el.classList.remove('walking');
+  });
+}
+function replayRenderEffects(){
+  const eff=[];
+  if(REPLAY.rain) eff.push({type:'rain',location:''});
+  if(REPLAY.fest) eff.push({type:'festival',location:REPLAY.fest});
+  renderEffects(eff);
+}
+function replayShowTime(m){ const s=fmtMin(m); $('#replay-time').textContent=s; $('#clock').textContent=s; applyDaylight(m); }
+function syncSlider(){ const sl=$('#replay-slider'); if(sl) sl.value=REPLAY.cur; }
+
+// ---- seek (rebuild state from scratch to time T; no bubbles for the past) ----
+let seekBusy=false;
+function queueSeek(T){                              // serialize rapid slider drags; latest target wins
+  REPLAY.pending=T;
+  if(seekBusy) return;
+  seekBusy=true;
+  (async()=>{ try{ while(REPLAY.pending!=null){ const t=REPLAY.pending; REPLAY.pending=null; await replaySeek(t); } }
+    finally{ seekBusy=false; } })();
+}
+async function replaySeek(T){
+  T=Math.max(REPLAY.minMin,Math.min(Math.round(T),REPLAY.maxMin));
+  await replayEnsure(T);
+  REPLAY.loc=Object.assign({},SEED_LOC); REPLAY.act={}; REPLAY.rain=false; REPLAY.fest='';
+  const rf=$('#replay-feed'); rf.innerHTML=''; const shown=[];
+  let i=0;
+  while(i<REPLAY.events.length && REPLAY.events[i].minute<=T){ applyEventState(REPLAY.events[i]); shown.push(REPLAY.events[i]); i++; }
+  REPLAY.idx=i; REPLAY.cur=T;
+  shown.slice(-120).forEach(ev=>addEventTo(rf,ev));
+  clearBubbles();
+  replayRenderAgents(); replayRenderEffects(); replayShowTime(T); syncSlider();
+}
+
+// ---- play (advance the clock, fire new events forward) ----
+async function advanceTo(next){
+  await replayEnsure(next);
+  const pending=[];
+  while(REPLAY.idx<REPLAY.events.length && REPLAY.events[REPLAY.idx].minute<=next){
+    const ev=REPLAY.events[REPLAY.idx++];
+    applyEventState(ev); addEventTo($('#replay-feed'),ev); pending.push(ev);
+  }
+  REPLAY.cur=next;
+  replayRenderAgents(); replayRenderEffects(); replayShowTime(next); syncSlider();
+  for(const ev of pending) if(ev.kind==='dialogue') maybeBubble(ev);   // bubbles after reposition
+}
+async function replayLoop(){
+  if(!REPLAY.playing||!REPLAY.on){ REPLAY.raf=0; return; }
+  const now=performance.now(), dt=Math.min(0.25,(now-REPLAY.last)/1000); REPLAY.last=now;
+  let next=REPLAY.cur+dt*REPLAY.speed; const end=next>=REPLAY.maxMin; if(end) next=REPLAY.maxMin;
+  await advanceTo(next);
+  if(end){ REPLAY.playing=false; REPLAY.raf=0; updatePlayBtn(); return; }
+  if(REPLAY.playing&&REPLAY.on) REPLAY.raf=requestAnimationFrame(replayLoop); else REPLAY.raf=0;
+}
+function togglePlay(){
+  if(!REPLAY.on) return;
+  if(REPLAY.playing){ REPLAY.playing=false; updatePlayBtn(); return; }
+  if(REPLAY.cur>=REPLAY.maxMin) queueSeek(REPLAY.minMin);      // at the end -> restart from the top
+  REPLAY.playing=true; REPLAY.last=performance.now(); updatePlayBtn();
+  if(!REPLAY.raf) REPLAY.raf=requestAnimationFrame(replayLoop);
+}
+function updatePlayBtn(){
+  const b=$('#replay-play'); if(!b) return;
+  b.textContent=REPLAY.playing?'▮▮':'▶'; b.classList.toggle('playing',REPLAY.playing);
+  b.title=t(REPLAY.playing?'replay.pause':'replay.play');
+}
+
+// ---- run selection ----
+function buildRunOptions(){
+  const sel=$('#replay-run'); if(!sel) return;
+  const keep=sel.value;
+  sel.innerHTML=REPLAY.runs.map(r=>{
+    const when=(r.started_at||'').slice(0,16).replace('T',' ');
+    const lbl=`${when} · ${r.events} ${t('replay.events')}`+(r.note?` · ${r.note}`:'');
+    return `<option value="${r.id}">${lbl.replace(/</g,'&lt;')}</option>`;
+  }).join('');
+  if(keep) sel.value=keep;
+}
+function selectRun(r){
+  REPLAY.gen++;                                     // invalidate any in-flight fetch from the previous run
+  REPLAY.runId=r.id; REPLAY.minMin=r.minute_min; REPLAY.maxMin=r.minute_max;
+  REPLAY.events=[]; REPLAY.fetchedTo=(r.minute_min|0)-1; REPLAY.fetching=null;
+  REPLAY.playing=false; REPLAY.idx=0; REPLAY.cur=r.minute_min;
+  const sl=$('#replay-slider'); sl.min=r.minute_min; sl.max=r.minute_max; sl.step=1; sl.value=r.minute_min; sl.disabled=false;
+  updatePlayBtn();
+  replayEnsure(REPLAY.maxMin);                      // background-fill the whole run in windows (fire & forget)
+  queueSeek(r.minute_min);                          // initial view at the run's start
+}
+
+// ---- enter / exit ----
+function replayMsg(key){ const el=$('#replay-nodb'); el.setAttribute('data-i18n',key); el.textContent=t(key);
+  el.hidden=false; $('#replay-body').hidden=true; }
+async function enterReplay(){
+  if(REPLAY.on) return;
+  let data;
+  try{ const r=await fetch('/api/runs'); if(r.status===501){ replayMsg('replay.noDB'); return; } data=await r.json(); }
+  catch(e){ replayMsg('replay.noDB'); return; }
+  const runs=(data.runs||[]).filter(r=>r.events>0 && r.minute_min!=null);
+  if(!runs.length){ replayMsg('replay.empty'); return; }
+  $('#replay-nodb').hidden=true; $('#replay-body').hidden=false;
+  REPLAY.runs=runs; REPLAY.current=data.current;
+  buildRunOptions();
+  const def=runs.find(r=>r.id===data.current)||runs[0];
+  $('#replay-run').value=def.id;
+  REPLAY.on=true; $('#replay-badge').hidden=false;
+  selectRun(def);
+}
+function exitReplay(){
+  if(!REPLAY.on) return;
+  REPLAY.on=false; REPLAY.playing=false; REPLAY.gen++;          // gen++ aborts the background fill
+  if(REPLAY.raf){ cancelAnimationFrame(REPLAY.raf); REPLAY.raf=0; }
+  $('#replay-badge').hidden=true;
+  clearBubbles();
+  restoreLive();                                                // repaint the current live frame at once
+}
+async function restoreLive(){
+  try{ const s=await (await fetch('/api/state')).json();
+    updateAgents(s.agents||[]); renderEffects(s.effects||[]); updateClock(s.minute,s.clock,s.paused,s.speed);
+  }catch(e){}
+}
+
+// ---- wiring ----
+$('#replay-run').onchange=e=>{ const r=REPLAY.runs.find(x=>x.id===e.target.value); if(r) selectRun(r); };
+$('#replay-slider').oninput=e=>{ REPLAY.playing=false; updatePlayBtn(); queueSeek(+e.target.value); };
+$('#replay-play').onclick=togglePlay;
+document.querySelectorAll('.rspeed').forEach(b=>b.onclick=()=>{
+  REPLAY.speed=+b.dataset.sp;
+  document.querySelectorAll('.rspeed').forEach(x=>x.classList.toggle('active',x===b));
+});
 </script>
 </body>
 </html>
