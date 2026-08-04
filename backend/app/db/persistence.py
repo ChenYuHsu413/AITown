@@ -28,7 +28,9 @@ from ..agents.core import MemoryItem
 from ..llm.embeddings import EmbeddingProvider, MockEmbedding
 from ..llm.usage import LLMCall
 from ..simulation.engine import Event
-from .models import Base, EventRow, LLMCallRow, MemoryRow, SimulationRun, WorldSnapshot
+from .models import (
+    Base, EventRow, LLMCallRow, MemoryRow, SimulationRun, SnapshotArchive, WorldSnapshot,
+)
 
 
 @dataclass
@@ -194,6 +196,34 @@ class Persistence:
             if row is None:
                 return None
             return {"run_id": row.run_id, "minute": row.minute, "payload": row.payload}
+
+    # ---- archive (pre-destructive-op backups) ----------------------
+
+    async def archive_snapshot(self, payload: dict, reason: str) -> int:
+        """Durably store a full world payload BEFORE a destructive admin op, so the
+        pre-operation state is always recoverable. Committed synchronously (not
+        queued) -- the caller must be able to rely on it before deleting anything.
+        Returns the new archive row id."""
+        async with self.session() as s:
+            row = SnapshotArchive(
+                run_id=self.run_id, minute=int(payload.get("minute", 0)),
+                reason=reason, payload=payload,
+            )
+            s.add(row)
+            await s.commit()
+            return row.id
+
+    async def list_archives(self, limit: int = 20) -> list[dict]:
+        """Recent pre-operation backups (newest first), without the heavy payloads
+        -- for discoverability + the recovery path in docs/admin.md."""
+        async with self.session() as s:
+            rows = (await s.execute(
+                select(SnapshotArchive.id, SnapshotArchive.run_id, SnapshotArchive.minute,
+                       SnapshotArchive.reason, SnapshotArchive.created_at)
+                .order_by(SnapshotArchive.created_at.desc()).limit(limit)
+            )).all()
+            return [{"id": r.id, "run_id": r.run_id, "minute": r.minute,
+                     "reason": r.reason, "created_at": r.created_at.isoformat()} for r in rows]
 
     def vector_retriever(self, agent_id: str):
         """Returns an async (query, k) -> list[str] bound to one agent,

@@ -1,12 +1,13 @@
 """Database models (SQLAlchemy 2.0, async).
 
-Five tables:
+Six tables:
 
     simulation_runs   one row per server boot / script run
     events            structured events (Event Contract v1, verbatim)
     memories          episodic memories + pgvector embedding
     llm_calls         the cost ledger (was in-memory UsageTracker only)
     world_snapshots   latest serialized world state per run (resume foundation)
+    snapshot_archive  pre-operation backups saved before destructive admin ops
 
 The events table mirrors the Event Contract exactly -- that was the point
 of the structured-events refactor.
@@ -98,5 +99,21 @@ class WorldSnapshot(Base):
 
     run_id: Mapped[str] = mapped_column(ForeignKey("simulation_runs.id"), primary_key=True)
     minute: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SnapshotArchive(Base):
+    """Append-only safety net: a full world payload saved *before* any destructive
+    admin operation (unlike world_snapshots, which is upsert/single-row). Every row
+    is the exact pre-operation state, so a mistaken prune can always be recovered
+    (see docs/admin.md). No FK -- the archive outlives everything."""
+
+    __tablename__ = "snapshot_archive"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(32), index=True, default="")
+    minute: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[str] = mapped_column(String(200), default="")
     payload: Mapped[dict] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

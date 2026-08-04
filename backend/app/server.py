@@ -19,7 +19,7 @@ import re
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
 from .agents.core import MemoryItem
@@ -907,24 +907,65 @@ async def agent_detail(agent_id: str) -> JSONResponse:
 
 
 @app.post("/api/admin/prune-beliefs")
-async def prune_beliefs() -> JSONResponse:
-    """One-off cleanup: drop existing low-quality beliefs/secrets (the old 'ok'
-    filler) that predate the quality gate. A snapshot is taken so the cleaned
-    state persists. Reports how many were removed."""
+async def prune_beliefs(body: dict = Body(default={})) -> JSONResponse:
+    """Drop low-quality beliefs/secrets (the old 'ok' filler) that predate the
+    quality gate.
+
+    SAFE BY DEFAULT: a dry run -- it only REPORTS what it would remove (with full
+    text) and changes nothing. Send {"dry_run": false} to actually delete; that
+    path first writes a pre-operation backup to snapshot_archive (recoverable --
+    see docs/admin.md), then removes and snapshots."""
     assert sim is not None
+    dry_run = bool(body.get("dry_run", True)) if isinstance(body, dict) else True
     world = sim.world
-    removed_beliefs = 0
+
+    doomed_beliefs = [
+        {"agent": a.id, "agent_name": a.name, "text": b.text}
+        for a in world.agents.values() for b in a.semantic.beliefs
+        if not belief_text_ok(b.text, world)
+    ]
+    doomed_secrets = [
+        {"id": sid, "owner": s.owner, "text": s.text}
+        for sid, s in sim.engine.decisions.secrets.secrets.items()
+        if not belief_text_ok(s.text, world)
+    ]
+
+    if dry_run:
+        return JSONResponse({
+            "dry_run": True,
+            "counts": {"beliefs": len(doomed_beliefs), "secrets": len(doomed_secrets)},
+            "would_remove_beliefs": doomed_beliefs,
+            "would_remove_secrets": doomed_secrets,
+            "hint": 'nothing changed -- re-send with {"dry_run": false} to apply',
+        })
+
+    # Real delete: back up the exact pre-operation state first, so a mistake is
+    # always recoverable (world_snapshots is upsert/single-row; the archive is not).
+    archive_id = None
+    if sim.persistence is not None:
+        payload = snapshot_mod.capture(sim.engine, sim.world, sim.engine.decisions)
+        archive_id = await sim.persistence.archive_snapshot(payload, reason="prune-beliefs")
+    doomed_ids = {d["id"] for d in doomed_secrets}
     for a in world.agents.values():
-        before = len(a.semantic.beliefs)
         a.semantic.beliefs = [b for b in a.semantic.beliefs if belief_text_ok(b.text, world)]
-        removed_beliefs += before - len(a.semantic.beliefs)
-    secrets = sim.engine.decisions.secrets
-    bad = [sid for sid, s in secrets.secrets.items() if not belief_text_ok(s.text, world)]
-    for sid in bad:
-        del secrets.secrets[sid]
+    for sid in doomed_ids:
+        del sim.engine.decisions.secrets.secrets[sid]
     if sim.persistence is not None:
         sim._take_snapshot()
-    return JSONResponse({"removed_beliefs": removed_beliefs, "removed_secrets": len(bad)})
+    return JSONResponse({
+        "dry_run": False, "archive_id": archive_id,
+        "removed_beliefs": len(doomed_beliefs), "removed_secrets": len(doomed_secrets),
+    })
+
+
+@app.get("/api/admin/archives")
+async def admin_archives() -> JSONResponse:
+    """List recent pre-operation backups (newest first) so a mistaken admin op can
+    be traced and recovered (see docs/admin.md). Requires persistence."""
+    assert sim is not None
+    if sim.persistence is None:
+        return JSONResponse({"error": "persistence not enabled"}, status_code=501)
+    return JSONResponse({"archives": await sim.persistence.list_archives()})
 
 
 @app.get("/api/chronicle")
