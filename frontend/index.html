@@ -93,8 +93,26 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 #reltip b{font-weight:600;font-family:var(--body)}
 @media (prefers-reduced-motion: reduce){ .rnode{transition:none!important} }
 
-/* inspector */
-#inspector{border-top:1px solid var(--line);max-height:52%;overflow-y:auto;padding-bottom:12px}
+/* inspector -- floating draggable card over the map (see #inspector in #mapwrap) */
+#inspector{position:absolute;left:12px;top:12px;z-index:30;width:312px;max-width:calc(100% - 24px);
+  max-height:70%;display:flex;flex-direction:column;background:var(--panel);
+  border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.22);overflow:hidden}
+#insp-head{flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:7px 6px 7px 14px;border-bottom:1px solid var(--line);background:var(--panel);
+  cursor:grab;user-select:none;touch-action:none}
+#inspector.dragging #insp-head{cursor:grabbing}
+#insp-title{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint)}
+#insp-close{border:none;background:none;color:var(--faint);font-size:13px;line-height:1;
+  padding:4px 8px;cursor:pointer;border-radius:4px}
+#insp-close:hover{color:var(--ink);background:var(--paper)}
+#insp-close:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
+#insp-body{flex:1;min-height:0;overflow-y:auto;padding-bottom:12px}
+/* narrow screens: dragging a floating card is poor UX -> dock it as a bottom sheet */
+@media (max-width:900px){
+  #inspector{left:0!important;right:0!important;top:auto!important;bottom:0!important;
+    width:100%!important;max-width:100%!important;max-height:52%!important;border-radius:12px 12px 0 0}
+  #insp-head{cursor:default}
+}
 #inspector .placeholder{padding:14px;font-size:13px;color:var(--faint)}
 #inspector h2{font-family:var(--disp);font-size:18px;padding:2px 14px 0}
 #inspector .sub{font-size:12px;color:var(--faint);padding:0 14px 8px}
@@ -277,6 +295,14 @@ footer b{font-weight:500;font-size:14px}
       <g id="lights" opacity="0" pointer-events="none"></g>
       <g id="bubbles"></g>   <!-- topmost: speech stays readable over nightfall / rain / festival -->
     </svg>
+    <!-- Agent inspector: a floating, draggable card over the map (bottom-docked on narrow screens) -->
+    <div id="inspector" hidden>
+      <div id="insp-head">
+        <span id="insp-title" data-i18n="inspectorTitle">AGENT INSPECTOR</span>
+        <button id="insp-close" aria-label="Close inspector" title="Close">✕</button>
+      </div>
+      <div id="insp-body"></div>
+    </div>
   </div>
   <aside>
     <div class="tabs" role="tablist">
@@ -307,10 +333,6 @@ footer b{font-weight:500;font-size:14px}
     <div id="graph" hidden>
       <svg id="relsvg" viewBox="0 0 300 300" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Relationship graph"></svg>
       <div id="reltip" hidden></div>
-    </div>
-    <div id="inspector">
-      <div class="eyebrow" data-i18n="inspectorTitle">AGENT INSPECTOR</div>
-      <div class="placeholder" data-i18n="inspectorPlaceholder">Select an agent on the map to inspect memories, relationships, and decision traces.</div>
     </div>
   </aside>
 </main>
@@ -463,7 +485,7 @@ function applyLang(){
   document.documentElement.lang=LANG==='zh'?'zh-Hant':'en';
   if(LOC_LIST.length) buildMap(LOC_LIST);                          // relabel map
   document.querySelectorAll('#feed .ev,#replay-feed .ev').forEach(d=>{d.lastChild.textContent=evText(JSON.parse(d.dataset.ev));});
-  if(selected) refreshInspector(selected,false);                  // else static placeholder already updated
+  if(selected && !$("#inspector").hidden) refreshInspector(selected,false);                  // else static placeholder already updated
   if(!$('#godpanel').hidden){ loadRumorList(); loadSecretList(); }  // re-render social lists in the new language
   if(!$('#replay-body').hidden){ buildRunOptions(); updatePlayBtn(); }   // "events" word + play/pause title follow the language
 }
@@ -691,7 +713,7 @@ function updateAgents(list){
     el.classList.toggle('sleeping',a.action==='sleep');
     if(a.action==='sleep') el.classList.remove('walking');
   });
-  if(selected) refreshInspector(selected,false);
+  if(selected && !$("#inspector").hidden) refreshInspector(selected,false);
 }
 
 /* ---------- daylight ---------- */
@@ -833,13 +855,24 @@ function maybeBubble(ev){
   while(here.length>BUB_MAX_PER_LOC) removeBubble(here.shift());
 }
 
-/* ---------- inspector ---------- */
-async function inspect(id){ selected=id; refreshInspector(id,true); }
+/* ---------- inspector (floating, draggable) ---------- */
+let inspPos=null;                                   // {left,top} remembered for this session (no localStorage)
+function openInspector(){
+  const card=$('#inspector'); card.hidden=false;
+  if(window.innerWidth<900) return;                 // docked bottom-sheet mode: CSS positions it
+  const wrap=$('#mapwrap');
+  let L=inspPos?inspPos.left:12, T=inspPos?inspPos.top:12;
+  L=Math.max(0,Math.min(L, wrap.clientWidth-card.offsetWidth));   // clamp inside the map area
+  T=Math.max(0,Math.min(T, wrap.clientHeight-card.offsetHeight));
+  card.style.left=L+'px'; card.style.top=T+'px'; card.style.right='auto';
+}
+function closeInspector(){ $('#inspector').hidden=true; }   // keep `selected`; re-clicking reopens
+async function inspect(id){ selected=id; openInspector(); refreshInspector(id,true); }
 async function refreshInspector(id,scroll){
   const r=await fetch('/api/agents/'+id); if(!r.ok) return;
   const a=await r.json();
-  const box=$('#inspector');
-  box.innerHTML=`<div class="eyebrow">${t('inspectorTitle')}</div>
+  const box=$('#insp-body');
+  box.innerHTML=`
     <h2>${moodEmoji(a.state.mood)}${a.name}</h2>
     <div class="sub">${a.age} · ${occName(a.occupation)} · ${a.traits.map(traitName).join(t('listSep'))}</div>
     <div class="kv"><b>${t('energy')}</b><div class="bar"><i style="width:${a.state.energy}%"></i></div><span>${a.state.energy}</span></div>
@@ -877,6 +910,30 @@ async function refreshInspector(id,scroll){
   });
   if(scroll) box.scrollTop=0;
 }
+$('#insp-close').onclick=closeInspector;
+// Drag the card by its header (wide screens only); clamp inside the map; remember the spot.
+(function(){
+  const card=$('#inspector'), head=$('#insp-head');
+  let dragging=false, sx=0, sy=0, ox=0, oy=0;
+  head.addEventListener('pointerdown',e=>{
+    if(e.target.closest('#insp-close') || window.innerWidth<900) return;
+    dragging=true; try{ head.setPointerCapture(e.pointerId); }catch(_){}
+    const r=card.getBoundingClientRect(), w=$('#mapwrap').getBoundingClientRect();
+    ox=r.left-w.left; oy=r.top-w.top; sx=e.clientX; sy=e.clientY;
+    card.classList.add('dragging');
+  });
+  head.addEventListener('pointermove',e=>{
+    if(!dragging) return;
+    const w=$('#mapwrap');
+    let nx=ox+(e.clientX-sx), ny=oy+(e.clientY-sy);
+    nx=Math.max(0,Math.min(nx, w.clientWidth-card.offsetWidth));
+    ny=Math.max(0,Math.min(ny, w.clientHeight-card.offsetHeight));
+    card.style.left=nx+'px'; card.style.top=ny+'px'; card.style.right='auto';
+    inspPos={left:nx, top:ny};
+  });
+  const end=()=>{ dragging=false; card.classList.remove('dragging'); };
+  head.addEventListener('pointerup',end); head.addEventListener('pointercancel',end);
+})();
 
 /* ---------- controls & usage ---------- */
 function ctl(body){ fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
