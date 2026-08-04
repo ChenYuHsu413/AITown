@@ -168,6 +168,30 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
     width:100%!important;max-width:100%!important;max-height:52%!important;border-radius:12px 12px 0 0}
   #insp-head{cursor:default}
 }
+/* "while you were away" card -- unattended-mode recap shown on reconnect */
+#away-card{position:absolute;left:50%;top:14px;transform:translateX(-50%);z-index:40;
+  width:360px;max-width:calc(100% - 24px);max-height:78%;display:flex;flex-direction:column;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  box-shadow:0 10px 32px rgba(0,0,0,.26);overflow:hidden}
+#away-head{flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:9px 6px 9px 14px;background:var(--amber);color:#fff}
+#away-title{font-family:var(--body);font-size:13px;font-weight:600;letter-spacing:.02em}
+#away-close{border:none;background:none;color:#fff;font-size:14px;line-height:1;padding:4px 9px;cursor:pointer;border-radius:4px}
+#away-close:hover{background:rgba(255,255,255,.2)}
+#away-close:focus-visible{outline:2px solid #fff;outline-offset:1px}
+#away-body{overflow-y:auto;padding:12px 14px}
+#away-sub{font-family:var(--mono);font-size:11px;color:var(--faint);margin-bottom:10px}
+#away-stats{display:flex;flex-wrap:wrap;gap:6px 16px;margin-bottom:11px}
+.away-stat{font-size:12.5px;color:var(--ink)}
+.away-stat b{font-size:15px;font-weight:700}
+.away-hl{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--faint);margin:2px 0 3px}
+.away-ev{display:flex;gap:8px;width:100%;text-align:left;padding:6px 0;border:0;border-top:1px dashed var(--line);
+  background:none;font-family:inherit;font-size:12.5px;line-height:1.4;color:var(--ink);cursor:pointer}
+.away-ev:hover{color:var(--amber)}
+.away-ev:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
+.away-ev time{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;padding-top:1px}
+.away-empty{font-size:12.5px;color:var(--faint);padding:4px 0}
+@media (max-width:900px){ #away-card{left:0;right:0;top:0;transform:none;width:100%;max-width:100%;border-radius:0 0 12px 12px} }
 #inspector .placeholder{padding:14px;font-size:13px;color:var(--faint)}
 #inspector h2{font-family:var(--disp);font-size:18px;padding:2px 14px 0}
 #inspector .sub{font-size:12px;color:var(--faint);padding:0 14px 8px}
@@ -353,6 +377,18 @@ footer b{font-weight:500;font-size:14px}
       </div>
       <div id="insp-body"></div>
     </div>
+    <!-- Unattended-mode recap: what the town got up to while nobody was watching -->
+    <div id="away-card" hidden>
+      <div id="away-head">
+        <span id="away-title" data-i18n="away.title">While you were away…</span>
+        <button id="away-close" aria-label="Close" title="Close">✕</button>
+      </div>
+      <div id="away-body">
+        <div id="away-sub"></div>
+        <div id="away-stats"></div>
+        <div id="away-events"></div>
+      </div>
+    </div>
   </div>
   <aside>
     <div class="tabs" role="tablist">
@@ -404,7 +440,7 @@ footer b{font-weight:500;font-size:14px}
 
 <script>
 const $=s=>document.querySelector(s);
-let LOCS={}, AGENTS={}, selected=null, LOC_LIST=[], ECON=null;
+let LOCS={}, AGENTS={}, selected=null, LOC_LIST=[], ECON=null, AWAY=null;
 
 /* ---------- i18n ---------- */
 const I18N={
@@ -440,6 +476,13 @@ const I18N={
     socialTitle:'SECRETS','social.secretsHead':'SECRETS','social.rumorsHead':'RUMORS',
     'social.knownToNoOne':'Known to no one','social.confidedTo':'Confided to','social.leaked':'⚠️ leaked · {who}',
     'social.becameRumor':'→ now a rumor','social.origin':'origin','social.expandHint':'tap to trace the retelling',
+    'away.title':'While you were away…',
+    'away.gap':'Away {mins} · {from} → {to}',
+    'away.days':'sim-days','away.dialogues':'conversations','away.rumors':'new rumors',
+    'away.secrets':'new secrets','away.beliefs':'new impressions',
+    'away.highlights':'HIGHLIGHTS','away.none':'Nothing major happened.',
+    'away.leak':"🕳️ {who}'s secret leaked into a rumor",'away.week':'📅 Weekly books settled',
+    'away.jump':'Jump to this moment in replay',
   },
   zh:{
     subtitle:'田野觀測站 · 10 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', replayTitle:'回放', inspectorTitle:'智能體檢視器',
@@ -473,6 +516,13 @@ const I18N={
     socialTitle:'祕密','social.secretsHead':'祕密','social.rumorsHead':'謠言',
     'social.knownToNoOne':'無人知曉','social.confidedTo':'已託付','social.leaked':'⚠️ 已洩漏 · {who}',
     'social.becameRumor':'→ 已成謠言','social.origin':'起頭','social.expandHint':'點擊追溯傳話過程',
+    'away.title':'你不在的時候…',
+    'away.gap':'離開 {mins} · {from} → {to}',
+    'away.days':'模擬日','away.dialogues':'場對話','away.rumors':'則新謠言',
+    'away.secrets':'個新秘密','away.beliefs':'個新印象',
+    'away.highlights':'重點事件','away.none':'沒有發生什麼大事。',
+    'away.leak':'🕳️ {who} 的秘密外洩成了謠言','away.week':'📅 完成本週結算',
+    'away.jump':'在回放中跳到此刻',
   },
 };
 const LOC_ZH={home_a:'河畔之家',home_b:'山丘公寓',cafe:'月光咖啡館',office:'湯森辦公室',park:'老橡樹公園',
@@ -593,6 +643,7 @@ function applyLang(){
   if(selected && !$("#inspector").hidden) refreshInspector(selected,false);                  // else static placeholder already updated
   if(!$('#social').hidden) loadSocial();               // re-render the secrets/rumors tab in the new language
   if(!$('#replay-body').hidden){ buildRunOptions(); updatePlayBtn(); }   // "events" word + play/pause title follow the language
+  if(!$('#away-card').hidden) renderAwayCard();        // "while you were away" card follows the language
 }
 function toggleLang(){ LANG=LANG==='en'?'zh':'en'; localStorage.setItem('lang',LANG); applyLang(); }
 
@@ -601,6 +652,7 @@ const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.
 ws.onmessage=e=>{
   const msg=JSON.parse(e.data);
   if(msg.type==='snapshot') buildMap(msg.locations);   // locations are static -> always safe (sets LOCS)
+  if(msg.type==='snapshot' && msg.away_summary) showAwaySummary(msg.away_summary);  // unattended recap on reconnect
   if(REPLAY.on) return;                                // in replay: keep receiving, but don't paint over it
   if(msg.type==='snapshot') msg.events.forEach(addEvent);
   updateClock(msg.minute,msg.clock,msg.paused,msg.speed);
@@ -1505,7 +1557,7 @@ function showRelTip(e,ev){
   tip.style.left=Math.max(4,x)+'px'; tip.style.top=Math.max(4,y)+'px';
 }
 function hideRelTip(){ $('#reltip').hidden=true; }
-function showTab(which){
+async function showTab(which){
   $('#feed').hidden=which!=='feed';
   $('#graph').hidden=which!=='graph';
   $('#replay').hidden=which!=='replay';
@@ -1521,7 +1573,7 @@ function showTab(which){
   }else{ stopRAF(); hideRelTip(); }
   if(which==='social') loadSocial();                    // fetch on open; a 10s poll keeps it fresh
   // leaving the replay tab always exits replay (restores the live view)
-  if(which==='replay') enterReplay(); else exitReplay();
+  if(which==='replay') await enterReplay(); else exitReplay();
 }
 $('#tab-feed').onclick=()=>showTab('feed');
 $('#tab-graph').onclick=()=>showTab('graph');
@@ -1733,6 +1785,51 @@ async function restoreLive(){
     updateAgents(s.agents||[]); updateLandmarks(s.landmarks||[]); renderEffects(s.effects||[]); updateClock(s.minute,s.clock,s.paused,s.speed); updateBusy(s);
   }catch(e){}
 }
+
+// ---- jump: open replay on the live run at a given minute (used by the away card) ----
+async function jumpToReplay(minute){
+  $('#away-card').hidden=true;                                  // clear the recap so replay is unobstructed
+  await showTab('replay');
+  if(!REPLAY.on) return;                                        // no DB / no runs -> nothing to jump into
+  const cur=REPLAY.runs.find(r=>r.id===REPLAY.current);         // the away summary is from the live run
+  if(cur && REPLAY.runId!==cur.id){ $('#replay-run').value=cur.id; selectRun(cur); }
+  REPLAY.playing=false; updatePlayBtn();
+  queueSeek(minute);
+}
+
+/* ---------- "while you were away" recap (unattended mode) ---------- */
+function fmtDur(sec){
+  const m=Math.max(0,Math.round(sec/60)), h=Math.floor(m/60), mm=m%60;
+  if(LANG==='zh') return h?`${h} 小時 ${mm} 分`:`${mm} 分`;
+  return h?`${h}h ${mm}m`:`${mm}m`;
+}
+function awayShort(m){ m=Math.floor(m); const day=Math.floor(m/1440)+1, x=((m%1440)+1440)%1440;
+  return `D${day} ${String(Math.floor(x/60)).padStart(2,'0')}:${String(x%60).padStart(2,'0')}`; }
+function awayEvLabel(e){
+  if(e.verb==='leak') return t('away.leak').replace('{who}',agentName(e.actor,e.actor_name));
+  if(e.verb==='week_close') return t('away.week');
+  return evText(e);                                             // confide / confronted / landmark_done templates
+}
+function showAwaySummary(s){ AWAY=s; renderAwayCard(); $('#away-card').hidden=false; }
+function renderAwayCard(){
+  const s=AWAY; if(!s) return;
+  $('#away-title').textContent=t('away.title');
+  $('#away-sub').textContent=t('away.gap')
+    .replace('{mins}',fmtDur(s.away_seconds)).replace('{from}',fmtMinute(s.from_minute)).replace('{to}',fmtMinute(s.to_minute));
+  const stats=[[s.sim_days,'away.days'],[s.dialogues,'away.dialogues'],[s.rumors,'away.rumors'],
+    [s.secrets,'away.secrets'],[s.beliefs,'away.beliefs']];
+  $('#away-stats').innerHTML=stats.map(([n,k])=>`<span class="away-stat"><b>${n}</b> ${t(k)}</span>`).join('');
+  const box=$('#away-events'); box.innerHTML='';
+  if(!s.events||!s.events.length){ box.innerHTML=`<div class="away-empty">${t('away.none')}</div>`; return; }
+  const h=document.createElement('div'); h.className='away-hl'; h.textContent=t('away.highlights'); box.appendChild(h);
+  s.events.forEach(e=>{                                         // DOM (not innerHTML) -> free text needs no escaping
+    const b=document.createElement('button'); b.className='away-ev'; b.title=t('away.jump');
+    const tm=document.createElement('time'); tm.textContent=awayShort(e.minute);
+    const sp=document.createElement('span'); sp.textContent=awayEvLabel(e);
+    b.appendChild(tm); b.appendChild(sp); b.onclick=()=>jumpToReplay(e.minute); box.appendChild(b);
+  });
+}
+$('#away-close').onclick=()=>{ $('#away-card').hidden=true; AWAY=null; };
 
 // ---- wiring ----
 $('#replay-run').onchange=e=>{ const r=REPLAY.runs.find(x=>x.id===e.target.value); if(r) selectRun(r); };

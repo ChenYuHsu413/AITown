@@ -37,6 +37,17 @@ IDLE_GRACE_SECONDS = 10.0  # keep running this long after the last client leaves
 MAX_LIVE_SPEED = 5.0       # in live mode, cap speed so LLM calls don't burst past free-tier rate limits
 SNAPSHOT_REAL_SECONDS = 60.0  # persist the world at most this often (only when the clock advanced)
 
+# Unattended mode: keep the town running with nobody watching, so a user can
+# leave it recording history overnight and replay it later. When on, the idle
+# auto-pause is skipped and -- once the last viewer leaves -- the clock cruises
+# at a slower, quota-friendly speed until someone reconnects.
+UNATTENDED = os.environ.get("AI_TOWN_UNATTENDED", "0") != "0"
+try:
+    UNATTENDED_SPEED = float(os.environ.get("AI_TOWN_UNATTENDED_SPEED", "2") or "2")
+except ValueError:
+    UNATTENDED_SPEED = 2.0
+AWAY_SUMMARY_MIN_SECONDS = 30 * 60.0  # only summarize an absence longer than this real-time gap
+
 
 class Sim:
     """Owns the engine + real-time pacing + fan-out to websockets."""
@@ -61,6 +72,14 @@ class Sim:
         self.clients: set[WebSocket] = set()
         self._empty_since: float | None = None  # monotonic time the client set became empty
         self._idle: bool = False                # auto-suspended because no clients are connected
+        # Unattended mode: the town keeps running with no viewers; when empty it
+        # auto-slows to a quota-friendly cruise speed, restored on reconnect.
+        self.unattended: bool = UNATTENDED
+        self._user_speed: float = self.speed    # the viewer's chosen live speed, restored on reconnect
+        self.unattended_speed: float = min(UNATTENDED_SPEED, MAX_LIVE_SPEED) if self.live else UNATTENDED_SPEED
+        self._cruising: bool = False            # currently auto-slowed because nobody's watching
+        self._away_since: float | None = None   # monotonic when the last viewer left (None = someone's here)
+        self._away_mark: dict | None = None     # {minute, event_idx} captured when the last viewer left
         self.persistence = None          # set by lifespan when DB configured
         self._snap_wall: float = 0.0     # monotonic time of the last periodic snapshot
         self._snap_minute: int = -1      # sim minute at the last periodic snapshot
@@ -192,6 +211,8 @@ class Sim:
             "paused": self.paused,
             "idle": self._idle,
             "speed": self.speed,
+            "unattended": self.unattended,
+            "cruising": self._cruising,
             "llm_busy": self._llm_depth > 0,
             "busy_ms": self._llm_busy_ms(),
         })
@@ -210,7 +231,10 @@ class Sim:
 
     def _is_idle(self) -> bool:
         """No clients (past the grace period) -> freeze the clock. Logs each
-        suspend/resume transition exactly once. Independent of ``paused``."""
+        suspend/resume transition exactly once. Independent of ``paused``.
+
+        Unattended mode never suspends: the town keeps running with nobody
+        watching (it cruises slower instead -- see ``_apply_unattended_speed``)."""
         if self.clients:
             self._empty_since = None
             if self._idle:
@@ -224,11 +248,120 @@ class Sim:
             return False
         if self._empty_since is None:
             self._empty_since = time.monotonic()
+        if self.unattended:
+            return False  # keep advancing with no viewers; cruise speed handles pacing
         idle = (time.monotonic() - self._empty_since) >= IDLE_GRACE_SECONDS
         if idle and not self._idle:
             self._idle = True
             print("[idle] simulation suspended (no clients)")
         return idle
+
+    def _apply_unattended_speed(self) -> None:
+        """Unattended: once the client set has been empty past the grace window,
+        drop to the cruise speed to conserve quota; reconnecting restores the
+        viewer's speed (handled synchronously in ``register_client`` so the first
+        snapshot already reads correctly). Logs each transition once."""
+        if not self.unattended:
+            return
+        empty_past_grace = (
+            not self.clients
+            and self._empty_since is not None
+            and (time.monotonic() - self._empty_since) >= IDLE_GRACE_SECONDS
+        )
+        if empty_past_grace and not self._cruising:
+            self._cruising = True
+            self.speed = self.unattended_speed
+            print(f"[unattended] no viewers, cruising at {self.speed:g}x", flush=True)
+
+    # ---- client registration + away summary -----------------------
+
+    def register_client(self, ws: WebSocket) -> dict | None:
+        """Add a websocket and, if this is the first viewer back after a long
+        unattended stretch, return a summary of what they missed (else None).
+        Also ends cruise immediately so the first snapshot reads the live speed."""
+        first_viewer = not self.clients
+        self.clients.add(ws)
+        summary: dict | None = None
+        if first_viewer:
+            if (
+                self._away_since is not None
+                and self._away_mark is not None
+                and (time.monotonic() - self._away_since) >= AWAY_SUMMARY_MIN_SECONDS
+            ):
+                summary = self._build_away_summary(self._away_mark)
+            if self._cruising:
+                self._cruising = False
+                self.speed = self._user_speed
+                print(f"[unattended] viewer connected, back to {self.speed:g}x", flush=True)
+        self._away_since = None
+        self._away_mark = None
+        return summary
+
+    def unregister_client(self, ws: WebSocket) -> None:
+        """Drop a websocket; when the last viewer leaves, mark the moment so a
+        long absence can be summarized on reconnect."""
+        self.clients.discard(ws)
+        if not self.clients:
+            self._away_since = time.monotonic()
+            self._away_mark = {"minute": self.engine.now, "event_idx": len(self.engine.bus.events)}
+
+    def _build_away_summary(self, mark: dict) -> dict:
+        """Summarize everything that happened while nobody was watching: elapsed
+        sim time, activity tallies, and up to 10 dated highlights (confide /
+        confront / secret-leaked-to-rumor / landmark finished / weekly books)."""
+        start = int(mark.get("minute", self.engine.now))
+        now = self.engine.now
+        idx = int(mark.get("event_idx", 0))
+        window = self.engine.bus.events[idx:]
+        agents = self.world.agents
+
+        def name_of(aid: str) -> str:
+            return agents[aid].name if aid in agents else aid
+
+        dialogues = sum(1 for e in window if e.verb == "talk_start")
+        beliefs = sum(1 for e in window if e.verb == "belief")
+        new_rumors = [r for r in self.engine.decisions.rumors.rumors.values()
+                      if r.created_minute >= start]
+        new_secrets = sum(1 for s in self.engine.decisions.secrets.secrets.values()
+                          if s.created_minute >= start)
+
+        major: list[dict] = []
+        for e in window:
+            if e.verb in ("confide", "confronted", "landmark_done"):
+                major.append(self._event_json(e))
+        for r in new_rumors:  # a secret that leaked into a rumor while away
+            if r.from_secret_id:
+                major.append({
+                    "minute": r.created_minute, "clock": fmt_time(r.created_minute),
+                    "kind": "system", "verb": "leak",
+                    "actor": r.origin, "actor_name": name_of(r.origin),
+                    "target": "", "target_name": "", "location": "", "location_name": "",
+                    "speech": "", "text": "",
+                })
+        first_day = start // DAY_MIN + 1
+        for day in range(first_day, now // DAY_MIN + 1):  # weekly settlement (Sunday close)
+            m = day * DAY_MIN
+            if start < m <= now and (day - 1) % 7 == 6:
+                major.append({
+                    "minute": m, "clock": fmt_time(m), "kind": "system", "verb": "week_close",
+                    "actor": "", "actor_name": "", "target": "", "target_name": "",
+                    "location": "", "location_name": "", "speech": "", "text": "",
+                })
+        major.sort(key=lambda e: e["minute"])
+        if len(major) > 10:
+            major = major[-10:]  # keep the most recent highlights
+
+        return {
+            "away_seconds": int(time.monotonic() - self._away_since) if self._away_since else 0,
+            "from_minute": start, "to_minute": now,
+            "from_clock": fmt_time(start), "to_clock": fmt_time(now),
+            "sim_days": round((now - start) / DAY_MIN, 1),
+            "dialogues": dialogues,
+            "rumors": len(new_rumors),
+            "secrets": new_secrets,
+            "beliefs": beliefs,
+            "events": major,
+        }
 
     async def loop(self) -> None:
         while True:
@@ -237,6 +370,7 @@ class Sim:
                 continue
             if self._is_idle():
                 continue  # no clients: don't advance the clock or accumulate _frac
+            self._apply_unattended_speed()  # unattended: cruise slower while unwatched
             self._frac += self.speed * TICK_REAL_SECONDS
             step = int(self._frac)
             if step <= 0:
@@ -307,6 +441,8 @@ class Sim:
             "paused": self.paused,
             "idle": self._idle,
             "speed": self.speed,
+            "unattended": self.unattended,
+            "cruising": self._cruising,
             "locations": [
                 {"id": l.id, "name": l.name, "kind": l.kind, "x": l.x, "y": l.y,
                  "owner": l.owner, "landmarks": l.landmarks, "closed_days": l.closed_days}
@@ -345,6 +481,8 @@ class Sim:
             "paused": self.paused,
             "idle": self._idle,
             "speed": self.speed,
+            "unattended": self.unattended,
+            "cruising": self._cruising,
             "agents": self.agent_states(),
             "effects": self.effects_json(),
             "landmarks": self.landmarks_json(),
@@ -366,6 +504,9 @@ async def lifespan(app: FastAPI):
     global sim, _loop_task, _status_task
     sim = Sim()
     await sim.attach_persistence()
+    if sim.unattended:
+        print(f"[unattended] enabled -- town keeps running with no viewers; "
+              f"cruises at {sim.unattended_speed:g}x while unwatched", flush=True)
     _loop_task = asyncio.create_task(sim.loop())
     _status_task = asyncio.create_task(sim.status_loop())   # in-flight heartbeat
     yield
@@ -427,13 +568,16 @@ async def index() -> FileResponse:
 async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     assert sim is not None
-    sim.clients.add(ws)
-    await ws.send_json(sim.snapshot())
+    away_summary = sim.register_client(ws)
+    snap = sim.snapshot()
+    if away_summary is not None:
+        snap["away_summary"] = away_summary   # "while you were away" card on reconnect
+    await ws.send_json(snap)
     try:
         while True:
             await ws.receive_text()  # client pings; content ignored
     except WebSocketDisconnect:
-        sim.clients.discard(ws)
+        sim.unregister_client(ws)
 
 
 @app.get("/api/state")
@@ -452,7 +596,10 @@ async def control(body: dict) -> JSONResponse:
         sim.paused = False
     elif cmd == "speed":
         want = float(body.get("speed", 5))
-        sim.speed = min(want, MAX_LIVE_SPEED) if sim.live else want   # live: don't burst rate limits
+        want = min(want, MAX_LIVE_SPEED) if sim.live else want   # live: don't burst rate limits
+        sim._user_speed = want                                   # remember it across unattended cruise
+        if not sim._cruising:                                    # while cruising, keep the slow speed
+            sim.speed = want
         sim.paused = False
     return JSONResponse({"paused": sim.paused, "speed": sim.speed})
 
