@@ -288,6 +288,7 @@ footer b{font-weight:500;font-size:14px}
       <g id="terrain"></g>
       <g id="roads"></g>
       <g id="locs"></g>
+      <g id="landmarks"></g>   <!-- world objects (the mural); above buildings, below villagers -->
       <g id="agents"></g>
       <g id="festival" pointer-events="none"></g>
       <g id="rain" opacity="0" pointer-events="none"><rect width="800" height="520" fill="#4a6a90" opacity="0.12"/><g id="raindrops"></g></g>
@@ -419,6 +420,8 @@ const TRAITS={curious:'好奇',friendly:'友善',gossipy:'八卦',quiet:'安靜'
   creative:'有創意',dreamy:'愛幻想','night-owl':'夜貓子'};
 // Confrontation verdicts are a small closed vocabulary (unlike free speech) → map to zh; unknown falls through verbatim.
 const SPEECH_ZH={'admitted it':'承認了','denied it':'否認了'};
+// Landmark names are internal English; map the small set for the zh event feed.
+const LANDMARK_ZH={'the mural':'壁畫'};
 // Event Contract v1 templates, keyed by ev.verb. (a)ctor, (l)ocation, (tg)target, (sp)eech.
 // speech is model-generated free text — inserted verbatim, never translated.
 const EV_TMPL={
@@ -429,6 +432,7 @@ const EV_TMPL={
     talk_start:(a,l,tg)=>`${a} started talking with ${tg} at ${l}`,
     share_rumor:(a,l,tg,sp)=>`${a} shared a rumor with ${tg}: ${sp}`,
     seek_out:(a,l,tg)=>`${a} went looking for ${tg}`,
+    landmark_done:(a,l,tg,sp)=>`🎨 ${a} finished ${sp} at ${l}`,
     confronted:(a,l,tg,sp)=>`${a} confronted ${tg} about the rumor — they ${sp}`,
     confide:(a,l,tg)=>`🤫 ${a} confided something personal to ${tg}`,
     belief:(a,l,tg,sp)=>`💭 ${a} formed an impression of ${tg}: ${sp}`,
@@ -443,6 +447,7 @@ const EV_TMPL={
     talk_start:(a,l,tg)=>`${a} 在 ${l} 開始與 ${tg} 交談`,
     share_rumor:(a,l,tg,sp)=>`${a} 向 ${tg} 傳了個八卦：${sp}`,
     seek_out:(a,l,tg)=>`${a} 去找 ${tg} 了`,
+    landmark_done:(a,l,tg,sp)=>`🎨 ${a} 完成了 ${l} 的${LANDMARK_ZH[sp]||sp}`,
     confronted:(a,l,tg,sp)=>`${a} 當面質問了 ${tg}——對方${SPEECH_ZH[sp]||sp}`,
     confide:(a,l,tg)=>`🤫 ${a} 向 ${tg} 說了體己話`,
     belief:(a,l,tg,sp)=>`💭 ${a} 對 ${tg} 有了長期印象:${sp}`,
@@ -500,6 +505,7 @@ ws.onmessage=e=>{
   if(msg.type==='snapshot') msg.events.forEach(addEvent);
   updateClock(msg.minute,msg.clock,msg.paused,msg.speed);
   if(msg.agents) updateAgents(msg.agents);
+  if(msg.landmarks) updateLandmarks(msg.landmarks);  // mural fill climbs as Emma paints
   if(msg.effects) renderEffects(msg.effects);      // rain/festival visuals switch in real time
   if(msg.type==='tick') msg.events.forEach(ev=>{addEvent(ev); maybeBubble(ev);});
 };
@@ -654,6 +660,37 @@ function buildMap(locations){
     if(b.light){ const lg=document.createElementNS(SVGNS,'g'); lg.innerHTML=`<g shape-rendering="crispEdges" transform="${tf}">${b.light}</g>`; lights.appendChild(lg); }
   });
   renderShopRev();   // refill takings after a rebuild (e.g. language switch)
+}
+// ---- world objects: the park mural (progress fills the wall bottom-up) ----
+// Data-driven from /ws landmarks: buildMap draws the buildings, updateLandmarks
+// paints the mural over the park at its live progress. A 12x16 pixel wall on the
+// same 2px grid; the painted picture is revealed from the bottom as it fills.
+let LANDMARKS=[];
+function muralPixels(p,done){
+  const W=12,H=16;
+  const cut=H-Math.round(H*Math.max(0,Math.min(1,done?1:p)));  // rows above cut = bare wall
+  const band=y=> y<5?'#8fc7e8': y<10?'#e5a35e':'#5f8f52';       // sky / warm hill / grass
+  let s=P(0,0,W,H,'#d8d0be');                                   // bare plaster wall
+  for(let y=cut;y<H;y++) s+=P(0,y,W,1,band(y));                 // painted bands (bottom-up)
+  if(cut<=1) s+=P(8,1,3,3,'#ffd867')+P(8,1,1,3,'#f0b93f');     // sun (top rows revealed)
+  if(cut<=11) s+=P(2,12,2,3,'#7bb06a')+P(6,11,2,4,'#4b7742')+P(9,12,2,3,'#7bb06a'); // grass tufts
+  const fr=done?'#7a5c3a':'#9a927f';                            // finished piece gets a wood frame
+  s+=P(0,0,W,1,fr)+P(0,H-1,W,1,fr)+P(0,0,1,H,fr)+P(W-1,0,1,H,fr);
+  if(done) s+=P(1,1,1,1,'#fff')+P(W-2,2,1,1,'#fff')+P(3,4,1,1,'#ffe9a8'); // little sparkles
+  return s;
+}
+function renderMural(lm){
+  const loc=LOCS[lm.location]; if(!loc) return '';
+  const done=lm.state==='completed', W=12,H=16,sc=2;
+  const bx=loc.x-58, by=loc.y+14-H*sc;                          // stand just left of the park trees
+  return `<g class="mural" shape-rendering="crispEdges" transform="translate(${bx},${by}) scale(${sc})">`
+    +muralPixels(lm.progress,done)
+    +`<rect x="4" y="16" width="4" height="4" fill="#8a6239"/></g>`;  // short easel post
+}
+function updateLandmarks(list){
+  LANDMARKS=list||[];
+  const g=$('#landmarks'); if(!g) return;
+  g.innerHTML=LANDMARKS.map(renderMural).join('');
 }
 // Slot spacing between co-located villagers. Must exceed the widest nametag so
 // adjacent name plates don't overlap and clip each other (e.g. "Alice"->"Alic").
@@ -1443,7 +1480,7 @@ function exitReplay(){
 }
 async function restoreLive(){
   try{ const s=await (await fetch('/api/state')).json();
-    updateAgents(s.agents||[]); renderEffects(s.effects||[]); updateClock(s.minute,s.clock,s.paused,s.speed);
+    updateAgents(s.agents||[]); updateLandmarks(s.landmarks||[]); renderEffects(s.effects||[]); updateClock(s.minute,s.clock,s.paused,s.speed);
   }catch(e){}
 }
 

@@ -67,6 +67,7 @@ _EN_TEMPLATES = {
     "talk_start": "{actor} started talking with {target} at {loc}",
     "share_rumor": "{actor} shared a rumor with {target}: {text}",
     "seek_out": "{actor} went looking for {target}",
+    "landmark_done": "{actor} finished {text} at {loc}",
     "confronted": "{actor} confronted {target} about the rumor — they {text}",
     "confide": "{actor} confided something personal to {target}",
     "belief": "{actor} formed an impression of {target}: {text}",
@@ -295,6 +296,15 @@ class SimulationEngine:
                 self._publish(
                     "action", result["verb"], actor=agent, location_id=result["location"]
                 )
+            # Working the creator's own landmark nudges it along (pure rules); a
+            # completion rings out as its own event beat.
+            if decision.action == "work":
+                done = self.world.advance_landmark(agent, decision.duration, self.now)
+                if done:
+                    self._publish(
+                        "action", "landmark_done", actor=agent,
+                        location_id=done["location"], text=done["text"],
+                    )
             if decision.action == "move":
                 self._interrupt_colocated(agent)
 

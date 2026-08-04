@@ -99,8 +99,11 @@ def dialogue_prompt(
     is_confrontation: bool = False, time_hint: str = "",
     a_impression: str | None = None, b_impression: str | None = None,
     a_confide: str | None = None, b_confide: str | None = None,
+    nearby_landmark: str | None = None,
 ) -> list[dict]:
     scene = f"Scene: {time_hint + ' ' if time_hint else ''}at {a.state.location}.\n"
+    if nearby_landmark:
+        scene += f"Nearby: {nearby_landmark}.\n"
     user = (
         f"Simulate a conversation between {a.profile.name} and {b.profile.name}. "
         f"Maximum {max_turns} turns.\n{scene}"

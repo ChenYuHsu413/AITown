@@ -26,6 +26,17 @@ ENERGY_PER_HOUR = {
 # becomes real pathfinding when the map exists.
 TRAVEL_MINUTES = 10
 
+# A landmark's creator advancing it through one work decision: progress climbs by
+# duration / this. At 1200 a full unit is ~20 work-hours, so finishing the seeded
+# half-mural takes ~10 hours of Emma's brush.
+LANDMARK_WORK_DIVISOR = 1200
+
+# How the pure-rules observation layer narrates a neighbour's current action.
+_ACTIVITY_VERB = {
+    "work": "working", "rest": "resting", "eat": "eating",
+    "talk": "talking", "idle": "idling", "move": "heading out",
+}
+
 
 @dataclass
 class Location:
@@ -38,6 +49,10 @@ class Location:
     price: float = 0.0       # cost of one meal here (0 = free, e.g. eating at home)
     revenue: float = 0.0     # lifetime takings
     revenue_today: float = 0.0  # takings since the last day boundary (reset in settlement)
+    # World objects that live here. Each: {"id", "name", "state": in_progress|completed,
+    # "progress": 0.0-1.0, "created_by": agent_id}. Pure Level-0 state; the creator's
+    # `work` here nudges progress (see advance_landmark).
+    landmarks: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -45,6 +60,7 @@ class Observation:
     location: str
     nearby_agents: list[str]          # agent ids at the same location
     arrivals: list[str]               # ids that arrived since agent's last decision
+    activities: list[str] = field(default_factory=list)  # short English lines: what others here are doing
 
     def describe(self, world: "World") -> str:
         if not self.nearby_agents:
@@ -111,7 +127,57 @@ class World:
             for (minute, aid) in self._recent_arrivals.get(loc, [])
             if minute > since_minute and aid != agent.id and aid in nearby
         ]
-        return Observation(location=loc, nearby_agents=nearby, arrivals=arrivals)
+        landmarks = self.locations[loc].landmarks if loc in self.locations else []
+        activities = [self._describe_activity(self.agents[aid], landmarks) for aid in nearby]
+        return Observation(location=loc, nearby_agents=nearby, arrivals=arrivals, activities=activities)
+
+    def _describe_activity(self, other: Agent, landmarks: list[dict]) -> str:
+        """One short English line for what ``other`` is doing right here -- and, if
+        they're the creator working on a landmark, how far along it is."""
+        act = other.state.current_action
+        lm = next(
+            (l for l in landmarks
+             if l.get("created_by") == other.id and l.get("state") == "in_progress"),
+            None,
+        )
+        if act == "work" and lm is not None:
+            return f"{other.name} is working on {lm['name']} ({int(lm['progress'] * 100)}% done)"
+        return f"{other.name} is {_ACTIVITY_VERB.get(act, act)}"
+
+    # ---- landmarks (Level 0, pure rules) ----------------------------
+
+    def advance_landmark(self, agent: Agent, duration: int, now: int) -> dict | None:
+        """The creator worked here: nudge their in-progress landmark's progress.
+        On completion, flip its state, reward the creator with a high-importance
+        memory, and ripple a memory out to everyone who ever saw it under way.
+        Returns a ``landmark_done`` event descriptor on completion, else None."""
+        loc = self.locations.get(agent.state.location)
+        if loc is None:
+            return None
+        lm = next(
+            (l for l in loc.landmarks
+             if l.get("created_by") == agent.id and l.get("state") == "in_progress"),
+            None,
+        )
+        if lm is None:
+            return None
+        lm["progress"] = min(1.0, lm["progress"] + duration / LANDMARK_WORK_DIVISOR)
+        if lm["progress"] < 1.0:
+            return None
+        lm["state"] = "completed"
+        bare = lm["name"][4:] if lm["name"].startswith("the ") else lm["name"]
+        agent.memory.add(MemoryItem(
+            minute=now, importance=8,
+            text=f"I finished {lm['name']} at {loc.name}. It's done at last.",
+        ))
+        # The ripple: everyone who watched it grow shares the moment it's complete.
+        for other in self.agents.values():
+            if other.id != agent.id and lm["id"] in other.state.seen_landmark_progress:
+                other.memory.add(MemoryItem(
+                    minute=now, importance=4,
+                    text=f"{agent.name}'s {bare} at {loc.name} is finished. It looks wonderful.",
+                ))
+        return {"verb": "landmark_done", "location": loc.id, "text": lm["name"]}
 
     # ---- execution (Level 0, pure rules) ----------------------------
 

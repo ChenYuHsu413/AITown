@@ -197,6 +197,15 @@ class Sim:
             )
         return out
 
+    def landmarks_json(self) -> list[dict]:
+        """Flat list of every world object with its home location -- the map
+        renders the mural's fill from ``progress``/``state``."""
+        out = []
+        for lid, loc in self.world.locations.items():
+            for lm in loc.landmarks:
+                out.append({"location": lid, **lm})
+        return out
+
     def effects_json(self) -> list[dict]:
         out = []
         for e in self.world.active_effects:
@@ -217,11 +226,13 @@ class Sim:
             "idle": self._idle,
             "speed": self.speed,
             "locations": [
-                {"id": l.id, "name": l.name, "kind": l.kind, "x": l.x, "y": l.y, "owner": l.owner}
+                {"id": l.id, "name": l.name, "kind": l.kind, "x": l.x, "y": l.y,
+                 "owner": l.owner, "landmarks": l.landmarks}
                 for l in self.world.locations.values()
             ],
             "agents": self.agent_states(),
             "effects": self.effects_json(),
+            "landmarks": self.landmarks_json(),
             "events": [self._event_json(e) for e in self.engine.bus.events[-40:]],
         }
 
@@ -252,6 +263,7 @@ class Sim:
             "speed": self.speed,
             "agents": self.agent_states(),
             "effects": self.effects_json(),
+            "landmarks": self.landmarks_json(),
             "events": [self._event_json(e) for e in self._new_events],
         }
         self._new_events.clear()

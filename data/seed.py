@@ -14,7 +14,12 @@ def build_locations() -> list[Location]:
         Location("home_b", "Hillside Apartment", "home", x=660, y=110),
         Location("cafe", "Moonlight Cafe", "cafe", x=395, y=250, owner="alice", price=5.0),
         Location("office", "Townsend Office", "office", x=620, y=370),
-        Location("park", "Old Oak Park", "park", x=175, y=400),
+        Location("park", "Old Oak Park", "park", x=175, y=400, landmarks=[
+            # Emma's mural, seeded half-done -- it echoes her memory of it being
+            # "half finished" and becomes real once she paints it to completion.
+            {"id": "mural", "name": "the mural", "state": "in_progress",
+             "progress": 0.5, "created_by": "emma"},
+        ]),
     ]
 
 

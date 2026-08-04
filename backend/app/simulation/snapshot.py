@@ -31,7 +31,8 @@ if TYPE_CHECKING:
 # field just needs a sensible dataclass default -- old snapshots keep loading.
 #   v1 -> v2: added per-agent semantic memory (beliefs).
 #   v2 -> v3: added the secret registry (secrets & confiding).
-SCHEMA_VERSION = 3
+#   v3 -> v4: added per-location landmarks (world objects & their progress).
+SCHEMA_VERSION = 4
 
 
 # ---- capture -------------------------------------------------------------
@@ -46,7 +47,11 @@ def capture(engine: "SimulationEngine", world: "World", decisions: "DecisionEngi
         "rumors": {rid: dataclasses.asdict(r) for rid, r in decisions.rumors.rumors.items()},
         "secrets": {sid: dataclasses.asdict(s) for sid, s in decisions.secrets.secrets.items()},
         "locations": {
-            lid: {"revenue": loc.revenue, "revenue_today": loc.revenue_today}
+            lid: {
+                "revenue": loc.revenue,
+                "revenue_today": loc.revenue_today,
+                "landmarks": [dict(lm) for lm in loc.landmarks],
+            }
             for lid, loc in world.locations.items()
         },
         "active_effects": [dict(e) for e in world.active_effects],
@@ -97,6 +102,8 @@ def restore(payload: dict, engine: "SimulationEngine", world: "World",
                 loc.revenue = float(ldata["revenue"])
             if "revenue_today" in ldata:
                 loc.revenue_today = float(ldata["revenue_today"])
+            if "landmarks" in ldata:     # v4+; older snapshots keep the seed landmarks
+                loc.landmarks = [dict(lm) for lm in (ldata.get("landmarks") or []) if isinstance(lm, dict)]
 
     if "active_effects" in payload:
         world.active_effects = [dict(e) for e in (payload.get("active_effects") or [])]

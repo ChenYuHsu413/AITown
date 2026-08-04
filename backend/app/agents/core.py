@@ -44,6 +44,7 @@ class AgentState:
     avoid_location: str = ""                # a shop to shun after hearing a bad rumor about its owner
     meals_bought: int = 0                   # lifetime paid meals (throttles the "had a meal" memory)
     last_meal_slot: int = -1                # (day, eat-slot) already paid for -- stops double-charging
+    seen_landmark_progress: dict[str, float] = field(default_factory=dict)  # landmark_id -> progress last noticed
 
 
 @dataclass

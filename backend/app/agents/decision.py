@@ -180,6 +180,7 @@ class DecisionEngine:
         minute_of_day = now % (24 * 60)
         entry = agent.routine.current(minute_of_day)
         obs_text = obs.describe(world)
+        self._record_observations(agent, world, now)
         memories: list[str] = []
         model_used = "rules"
 
@@ -344,6 +345,47 @@ class DecisionEngine:
         )
         self.traces.append(trace)
         return decision
+
+    def _record_observations(self, agent: Agent, world: World, now: int) -> None:
+        """Pure-rules observable-activity memory. Noticing a neighbour at work on a
+        landmark, or a landmark that has visibly advanced since you last looked
+        (>= 0.25), leaves a light (importance 2) memory; ordinary rest/eat around
+        you never does. Throttled per agent via ``seen_landmark_progress`` so a
+        long stint beside the mural doesn't spam the same sighting."""
+        if agent.state.current_action == "sleep":
+            return
+        loc = world.locations.get(agent.state.location)
+        if loc is None or not loc.landmarks:
+            return
+        seen = agent.state.seen_landmark_progress
+        for lm in loc.landmarks:
+            cb = lm.get("created_by")
+            if cb == agent.id:
+                continue  # your own work earns the completion memory, not sightings
+            lid, cur = lm["id"], lm["progress"]
+            prev = seen.get(lid)
+            worker = None
+            if cb:
+                o = world.agents.get(cb)
+                if o is not None and o.state.location == agent.state.location \
+                        and o.state.current_action == "work":
+                    worker = o
+            jumped = prev is not None and (cur - prev) >= 0.25
+            if worker is not None and (prev is None or jumped):
+                agent.memory.add(MemoryItem(
+                    minute=now, importance=2,
+                    text=f"Saw {worker.name} working on {lm['name']} at {loc.name}.",
+                ))
+                seen[lid] = cur
+            elif jumped:
+                bare = lm["name"][4:] if lm["name"].startswith("the ") else lm["name"]
+                agent.memory.add(MemoryItem(
+                    minute=now, importance=2,
+                    text=f"The {bare} at {loc.name} has come along since I last saw it.",
+                ))
+                seen[lid] = cur
+            elif prev is None:
+                seen[lid] = cur  # first sight -> baseline it, no memory yet
 
     def _resume_seek(self, agent: Agent, world: World) -> Decision | None:
         """Continue a confrontation-in-progress. Returns a talk (reached them),
@@ -582,6 +624,7 @@ class DecisionEngine:
                 a_impression=a_imp, b_impression=b_imp,
                 a_confide=confide_fwd["text"] if confide_fwd else None,
                 b_confide=confide_rev["text"] if confide_rev else None,
+                nearby_landmark=self._nearby_landmark(world, a.state.location),
             ),
             agent_id=a.id,
             sim_minute=now,
@@ -691,6 +734,19 @@ class DecisionEngine:
         return {"rumor_id": rumor_id, "outcome": outcome, "admitted": admitted, "betrayal": is_betrayal}
 
     # ---- semantic memory (beliefs) -----------------------------------
+
+    @staticmethod
+    def _nearby_landmark(world: World, location_id: str) -> str | None:
+        """A one-line environment note for a conversation happening where a landmark
+        stands (e.g. ``"the mural, 70% complete"``) -- real models weave the setting
+        into the talk on their own."""
+        loc = world.locations.get(location_id)
+        if loc is None or not loc.landmarks:
+            return None
+        lm = loc.landmarks[0]
+        if lm.get("state") == "completed":
+            return f"{lm['name']}, now complete"
+        return f"{lm['name']}, {int(lm['progress'] * 100)}% complete"
 
     @staticmethod
     def _impression_of(agent: Agent, other_id: str) -> str | None:
