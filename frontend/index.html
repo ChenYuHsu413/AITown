@@ -627,7 +627,8 @@ function evText(ev){
 function memText(raw){
   let s=String(raw);
   // zh: reword the conversation template (placeholders stay intact) before resolving.
-  if(LANG==='zh'){ const m=s.match(/^Talked with (.+?) at (.+?)\.$/); if(m) s=`與 ${m[1]} 在 ${m[2]} 交談。`; }
+  if(LANG==='zh'){ let m=s.match(/^Talked with (.+?) at (.+?)\.$/); if(m) s=`與 ${m[1]} 在 ${m[2]} 交談。`;
+    m=s.match(/^(.+?) was closed today, went to (.+?) instead\.$/); if(m) s=`${m[1]}今天公休，改去了 ${m[2]}。`; }
   return resolvePlaceholders(s);   // {agent:id}/{loc:id}/{landmark:id} -> names; plain old text passes through
 }
 function applyLang(){

@@ -350,21 +350,33 @@ class DecisionEngine:
                 else:
                     opts = ["park", "market", agent.home]
                     dest = opts[(minute_of_day // 160) % len(opts)]   # drift around town
-            # Economy: if the routine sends us to eat at a shop we're shunning
-            # (a bad rumor about its owner) OR at a shop that's closed today (weekly
-            # day off), take our custom to a rival shop that's open -- so a rumor
-            # that hurts one shop, or a closing day, feeds the other. Home is the
-            # last resort.
+            # Don't loiter at a shuttered door. If the routine points us at a shop
+            # that's shunned (a bad rumor about its owner) or closed for the owner's
+            # weekly day off, redirect -- whatever the action was. The owner is the
+            # only one who may enter their own shop while it's closed (stock/clean).
             dest_loc = world.locations.get(dest)
             shunned = agent.state.avoid_location and dest == agent.state.avoid_location
-            closed = dest_loc is not None and dow in dest_loc.closed_days
+            is_owned_shop = dest_loc is not None and dest_loc.owner and dest_loc.price > 0
+            closed = is_owned_shop and dow in dest_loc.closed_days and dest_loc.owner != agent.id
             if entry.action == "eat" and (shunned or closed):
+                # Take our custom to a rival shop that's open and affordable
+                # (bakery <-> cafe); if none, eat at home -- so a closing day feeds
+                # the other shop's takings.
                 rival = next(
                     (lid for lid, loc in world.locations.items()
-                     if loc.price > 0 and loc.owner and lid != dest and dow not in loc.closed_days),
+                     if loc.price > 0 and loc.owner and lid != dest and dow not in loc.closed_days
+                     and agent.state.money >= loc.price),
                     None,
                 )
+                if closed:
+                    self._note_closed(agent, dest, rival or agent.home, now)
                 dest = rival or agent.home
+            elif closed:
+                # A non-meal routine (rest/idle) aimed at a closed shop: drift to a
+                # public space instead of standing at the door.
+                alt = next((p for p in ("market", "park") if p in world.locations), agent.home)
+                self._note_closed(agent, dest, alt, now)
+                dest = alt
 
             # ---- world events (pure Level 0, no LLM) ------------------
             rain = world.effect_active("rain")
@@ -410,6 +422,19 @@ class DecisionEngine:
         )
         self.traces.append(trace)
         return decision
+
+    def _note_closed(self, agent: Agent, shop: str, went_to: str, now: int) -> None:
+        """Leave a light 'found it closed' memory when a routine gets rerouted around
+        a shop's day off -- at most once per shop per sim-day (no water-treading).
+        Fuels gossip ("the cafe wasn't even open, wasted a trip")."""
+        day = now // (24 * 60)
+        if agent.state.closed_reroute_notes.get(shop) == day:
+            return
+        agent.state.closed_reroute_notes[shop] = day
+        agent.memory.add(MemoryItem(
+            minute=now, importance=1,
+            text=f"{{loc:{shop}}} was closed today, went to {{loc:{went_to}}} instead.",
+        ))
 
     def _social_gate(self, agent: Agent, partner_id: str, now: int) -> bool:
         """Tiered pre-check before the cheap should_talk call. Returns True to let
