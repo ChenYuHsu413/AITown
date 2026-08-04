@@ -137,10 +137,14 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 /* relationship graph */
 #graph{flex:1;min-height:0;position:relative;overflow:hidden}
 #relsvg{width:100%;height:100%;display:block}
-.rnode{cursor:pointer}
+.rnode{cursor:grab}
+.rnode.dragging{cursor:grabbing}
 .rnode-sh{fill:#000;opacity:.10}
 .rnode-hit{fill:transparent}
+.rnode-namebg{fill:var(--panel);opacity:.74;pointer-events:none}
 .rnode-name{font-family:var(--mono);font-size:9px;fill:var(--ink);text-anchor:middle;pointer-events:none}
+.rnode-pin{fill:var(--amber);stroke:var(--paper);stroke-width:1;display:none}
+.rnode.pinned .rnode-pin{display:block}
 .redge{stroke-linecap:round}
 .redge-hit{stroke:transparent;stroke-width:12;fill:none;cursor:pointer}
 #reltip{position:absolute;pointer-events:none;background:var(--ink);color:var(--paper);font-family:var(--mono);
@@ -1422,48 +1426,106 @@ async function pollUsage(){
 setInterval(pollUsage,4000); pollUsage();
 
 /* ---------- relationship graph (self-written mini force-directed, no deps) ----------
-   Model lives in RG {nodes, edges, idx}; physics runs on rAF only while the graph
-   tab is visible, and stops (rgRAF=0) once motion settles -> idle CPU stays low.
-   Data is re-fetched every 5s: values update in place (no relayout); a genuinely
-   new edge adds a line and re-heats the layout for a few frames. */
+   Model lives in RG {nodes, edges, idx, W, H}; physics runs on rAF only while the
+   graph tab is visible, and stops (rgRAF=0) once motion settles -> idle CPU stays
+   low. The layout works in the panel's own pixel space (viewBox = W x H) so it
+   fills the whole panel; after settling it is scaled to ~80% of the area. Nodes
+   carry an AABB collision box (sprite + label) enforced as a hard per-frame
+   constraint. Data is re-fetched every 5s: values update in place (no relayout);
+   a genuinely new edge adds a line and re-heats the layout for a few frames.
+   Pinned nodes (dragged into place) are fixed: they push others but never move. */
 const REDUCE_MOTION=matchMedia('(prefers-reduced-motion: reduce)').matches;
-const RG_CX=150, RG_CY=150;
-const K_REP=1600, K_SPRING=0.02, K_CENTER=0.02, DAMP=0.86;
-const RLEN_MAX=108, RLEN_MIN=42;   // spring rest length at friendship 0 / 100 (better friends sit closer)
-                                   // kept small so the 5-node layout settles inside the box, not on its walls
-let REL_DATA=null, rgRAF=0, rgCool=0, rgFrames=0;   // RG is declared earlier (near LANG)
+// Fruchterman-Reingold style: an ideal distance k derived from the panel area
+// makes the layout fill the space (repulsion k^2/d spreads, edge attraction d^2/k
+// pulls) and a cooling "temperature" caps per-frame motion so it stays stable and
+// never collapses -- even for a densely connected 10-node town.
+const RG_CENTER=0.022;              // gentle pull to centre (keeps the cloud centred, not tight)
+const RG_COLL_HX=21, RG_COLL_HY=19; // half-extents of the sprite+label collision box (~42x38, hard constraint)
+const RG_EDGE_R=15;                 // pull each edge endpoint back to the node body so lines don't cover sprites
+const RG_FILL=0.84;                 // target: settled node cloud fills this fraction of the panel (per axis)
+let REL_DATA=null, rgRAF=0, rgCool=0, rgFrames=0, rgDrag=null;   // RG is declared earlier (near LANG)
+const RG_PINS={};                   // id -> {nx,ny} normalized pin positions; session memory, reset on reload
 const favg=e=>(e.friendship_ab+e.friendship_ba)/2;
 const ekey=e=>e.a+'|'+e.b;
+function rgDims(){ const el=$('#graph'); return {w:el.clientWidth||320, h:el.clientHeight||480}; }
+function rgIdeal(W,N){ return Math.max(58, Math.min(180, 0.85*W/Math.sqrt(Math.max(2,N)))); }  // FR ideal distance (normalized W x W space)
 
+// Hard constraint: no two collision boxes may overlap. A couple of passes of
+// least-penetration separation per frame is enough (fixed nodes don't move).
+function resolveCollisions(){
+  const N=RG.nodes, BW=2*RG_COLL_HX, BH=2*RG_COLL_HY; let moved=0;
+  for(let it=0; it<3; it++){
+    for(let i=0;i<N.length;i++)for(let j=i+1;j<N.length;j++){
+      const a=N[i],b=N[j], dx=b.x-a.x, dy=b.y-a.y;
+      const ox=BW-Math.abs(dx), oy=BH-Math.abs(dy);
+      if(ox<=0||oy<=0) continue;                       // boxes clear on at least one axis
+      if(a.fixed&&b.fixed) continue;
+      if(ox<oy){ const dir=dx<0?-1:1; moved+=ox;       // separate on x (least penetration)
+        if(a.fixed) b.x+=dir*ox; else if(b.fixed) a.x-=dir*ox; else { a.x-=dir*ox/2; b.x+=dir*ox/2; }
+      }else{ const dir=dy<0?-1:1; moved+=oy;            // separate on y
+        if(a.fixed) b.y+=dir*oy; else if(b.fixed) a.y-=dir*oy; else { a.y-=dir*oy/2; b.y+=dir*oy/2; }
+      }
+    }
+  }
+  return moved;
+}
 function simStep(){
-  const N=RG.nodes;
-  for(const n of N){ n.fx=0; n.fy=0; }
-  for(let i=0;i<N.length;i++)for(let j=i+1;j<N.length;j++){       // repulsion (all pairs)
-    const a=N[i],b=N[j]; let dx=a.x-b.x, dy=a.y-b.y, d2=dx*dx+dy*dy||0.01, d=Math.sqrt(d2);
-    const f=(RG.krep||K_REP)/d2, ux=dx/d, uy=dy/d; a.fx+=ux*f; a.fy+=uy*f; b.fx-=ux*f; b.fy-=uy*f;
+  // Forces run in aspect-normalized space (y compressed by asp) so the natural
+  // equilibrium is stretched to the panel shape and fills BOTH axes -- a tall
+  // panel no longer settles into a small central blob. Collisions stay in real px.
+  const N=RG.nodes, k=RG.k, asp=RG.H/RG.W, CX=RG.W/2, CYn=(RG.H/2)/asp;
+  for(const n of N){ n.dx=0; n.dy=0; }
+  for(let i=0;i<N.length;i++)for(let j=i+1;j<N.length;j++){       // repulsion (all pairs): k^2/d
+    const a=N[i],b=N[j]; let dx=a.x-b.x, dy=(a.y-b.y)/asp, d=Math.hypot(dx,dy); if(d<0.5) d=0.5;
+    const f=k*k/d, ux=dx/d, uy=dy/d; a.dx+=ux*f; a.dy+=uy*f; b.dx-=ux*f; b.dy-=uy*f;
   }
-  const lmax=RG.rlenMax||RLEN_MAX, lmin=RG.rlenMin||RLEN_MIN;
-  for(const e of RG.edges){                                       // springs (edges)
-    const a=N[e.ai],b=N[e.bi]; let dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy)||0.01;
-    const L=lmax-(favg(e.data)/100)*(lmax-lmin), f=K_SPRING*(d-L), ux=dx/d, uy=dy/d;
-    a.fx+=ux*f; a.fy+=uy*f; b.fx-=ux*f; b.fy-=uy*f;
+  for(const e of RG.edges){                                       // edge attraction: d^2/k, friends pull harder
+    const a=N[e.ai],b=N[e.bi]; let dx=b.x-a.x, dy=(b.y-a.y)/asp, d=Math.hypot(dx,dy)||0.01;
+    const w=0.5+0.9*(favg(e.data)/100), f=d*d/k*w, ux=dx/d, uy=dy/d;
+    a.dx+=ux*f; a.dy+=uy*f; b.dx-=ux*f; b.dy-=uy*f;
   }
-  let move=0;
+  let move=0; const temp=RG.temp, mx=RG.mx, my=RG.my;
   for(const n of N){
-    n.fx+=(RG_CX-n.x)*K_CENTER; n.fy+=(RG_CY-n.y)*K_CENTER;       // centering
-    n.vx=(n.vx+n.fx)*DAMP; n.vy=(n.vy+n.fy)*DAMP;
-    n.x=Math.max(30,Math.min(270,n.x+n.vx)); n.y=Math.max(30,Math.min(260,n.y+n.vy));
-    move+=Math.abs(n.vx)+Math.abs(n.vy);
+    if(n.fixed) continue;                                         // pinned/dragged: exert force, receive none
+    n.dx+=(CX-n.x)*RG_CENTER*k; n.dy+=(CYn-n.y/asp)*RG_CENTER*k;  // gentle centering (in normalized space)
+    const dl=Math.hypot(n.dx,n.dy)||1e-6, step=Math.min(dl,temp);
+    n.x+=n.dx/dl*step; n.y+=n.dy/dl*step*asp; move+=step;         // map the y step back to real px
   }
+  move+=resolveCollisions();                                      // hard constraint; residual counts as motion
+  for(const n of N){ if(n.fixed) continue;                        // keep everyone inside the panel
+    n.x=Math.max(mx,Math.min(RG.W-mx,n.x)); n.y=Math.max(my,Math.min(RG.H-my,n.y)); }
+  RG.temp=Math.max(0.4, temp*0.96);                              // cool toward rest
   return move;
 }
+// Scale the cloud's bounding box to fill ~RG_FILL of the panel on BOTH axes
+// (anisotropic, so a portrait panel fills top-to-bottom instead of letterboxing),
+// capped so it never stretches into a thin line. Only used when nothing is pinned
+// (a manual layout is left as the user arranged it).
+const RG_STRETCH=2.6;              // cap on horizontal:vertical scale ratio
+function fitToViewport(){
+  const N=RG.nodes; if(N.length<2) return;
+  let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+  for(const n of N){ minx=Math.min(minx,n.x); maxx=Math.max(maxx,n.x); miny=Math.min(miny,n.y); maxy=Math.max(maxy,n.y); }
+  const bw=Math.max(1,maxx-minx), bh=Math.max(1,maxy-miny);
+  let sx=(RG.W-2*RG.mx)/bw, sy=(RG.H-2*RG.my)/bh;
+  if(sx>sy*RG_STRETCH) sx=sy*RG_STRETCH;                          // keep the aspect within reason
+  if(sy>sx*RG_STRETCH) sy=sx*RG_STRETCH;
+  sx*=RG_FILL; sy*=RG_FILL;
+  const cx=(minx+maxx)/2, cy=(miny+maxy)/2, CX=RG.W/2, CY=RG.H/2;
+  for(const n of N){ n.x=CX+(n.x-cx)*sx; n.y=CY+(n.y-cy)*sy; }
+  for(let i=0;i<6;i++) resolveCollisions();                       // scaling can re-touch boxes -> nudge apart
+}
+function settleFit(){ if(rgDrag) return; if(RG.nodes.some(n=>n.pinned)) return; fitToViewport(); renderPositions(); }
 function renderPositions(){
   if(!RG) return;
   for(const n of RG.nodes) n.el.setAttribute('transform',`translate(${n.x.toFixed(1)},${n.y.toFixed(1)})`);
   for(const e of RG.edges){ const a=RG.nodes[e.ai], b=RG.nodes[e.bi];
+    let dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy)||1, ux=dx/d, uy=dy/d;
+    const r=Math.max(0,Math.min(RG_EDGE_R, d/2-1));               // retract endpoints to the node body
+    const x1=a.x+ux*r, y1=a.y+uy*r, x2=b.x-ux*r, y2=b.y-uy*r;
     for(const ln of [e.line,e.hit]){
-      ln.setAttribute('x1',a.x.toFixed(1)); ln.setAttribute('y1',a.y.toFixed(1));
-      ln.setAttribute('x2',b.x.toFixed(1)); ln.setAttribute('y2',b.y.toFixed(1));
+      ln.setAttribute('x1',x1.toFixed(1)); ln.setAttribute('y1',y1.toFixed(1));
+      ln.setAttribute('x2',x2.toFixed(1)); ln.setAttribute('y2',y2.toFixed(1));
     }
   }
 }
@@ -1489,40 +1551,85 @@ function newEdgeEl(ed){
   e.hit.addEventListener('mouseleave',hideRelTip);
   $('#redges').appendChild(g); return e;
 }
+function setNodeLabel(n){                                          // label text + translucent bg sized to it
+  const s=agentName(n.id,n.name); n.label.textContent=s;
+  const w=Math.max(20, s.length*(LANG==='zh'?9.5:5.6)+8);
+  n.labelbg.setAttribute('x',(-w/2).toFixed(1)); n.labelbg.setAttribute('width',w.toFixed(1));
+}
+function applyPins(){                                              // restore session pins (survive rebuild/resize)
+  for(const n of RG.nodes){ const p=RG_PINS[n.id];
+    if(p){ n.x=p.nx*RG.W; n.y=p.ny*RG.H; n.pinned=true; n.fixed=true; n.el.classList.add('pinned'); }
+  }
+}
+function svgPoint(ev){ const r=$('#relsvg').getBoundingClientRect();
+  return {x:(ev.clientX-r.left)*RG.W/(r.width||1), y:(ev.clientY-r.top)*RG.H/(r.height||1)}; }
+function beginDrag(n){ rgDrag=n; n.fixed=true; n.el.classList.add('dragging'); rgCool=0;
+  RG.temp=Math.max(RG.temp, Math.min(RG.W,RG.H)/12); if(!REDUCE_MOTION) startRAF(); }
+function endDrag(n){ rgDrag=null; n.el.classList.remove('dragging');
+  n.pinned=true; n.fixed=true; n.el.classList.add('pinned'); RG_PINS[n.id]={nx:n.x/RG.W, ny:n.y/RG.H};
+  reheat(); }
+function unpin(n){ n.pinned=false; n.fixed=false; n.el.classList.remove('pinned'); delete RG_PINS[n.id]; reheat(); }
+function reheat(){ rgCool=0; RG.temp=Math.min(RG.W,RG.H)/9;
+  if(REDUCE_MOTION){ for(let i=0;i<160;i++) simStep(); settleFit(); renderPositions(); } else startRAF(); }
+function attachNodePointer(n){
+  const g=n.el;
+  g.addEventListener('pointerdown',ev=>{
+    if(ev.button && ev.button!==0) return;
+    ev.preventDefault();
+    const start=svgPoint(ev), id=ev.pointerId; let moved=false;
+    try{ g.setPointerCapture(id); }catch(e){}
+    const onMove=e=>{ const p=svgPoint(e);
+      if(!moved && Math.hypot(p.x-start.x,p.y-start.y)>4){ moved=true; beginDrag(n); }   // >4px => drag
+      if(moved){ n.x=p.x; n.y=p.y; RG.temp=Math.max(RG.temp,10);                          // keep others responsive
+        if(REDUCE_MOTION){ for(let i=0;i<24;i++) simStep(); renderPositions(); } }        // reduced motion: jump others
+    };
+    const onUp=()=>{
+      try{ g.releasePointerCapture(id); }catch(e){}
+      g.removeEventListener('pointermove',onMove); g.removeEventListener('pointerup',onUp); g.removeEventListener('pointercancel',onUp);
+      if(moved){ endDrag(n); return; }
+      if(n.pinned){                                               // defer so a double-click (unpin) can cancel it
+        if(n._ct){ clearTimeout(n._ct); n._ct=0; } else { n._ct=setTimeout(()=>{ n._ct=0; inspect(n.id); },220); }
+      } else inspect(n.id);                                       // plain click opens the inspector
+    };
+    g.addEventListener('pointermove',onMove); g.addEventListener('pointerup',onUp); g.addEventListener('pointercancel',onUp);
+  });
+  g.addEventListener('dblclick',ev=>{ ev.preventDefault(); if(n._ct){ clearTimeout(n._ct); n._ct=0; } if(n.pinned) unpin(n); });
+}
 function buildGraph(data){
   const svg=$('#relsvg'); svg.innerHTML='';
-  // Layout scales with node count: a 10-node town needs shorter springs + a wider
-  // start ring so it fills the 300px box instead of knotting up (or hitting walls).
+  const {w:W,h:H}=rgDims();
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
   const N=Math.max(1,data.nodes.length);
-  const tight=Math.min(1, 6/N);                                    // 5-6 nodes: 1.0 (unchanged); 10: 0.6
-  const radius=Math.min(96, 60+N*4);
+  const R0=0.34*Math.min(W,H);                                    // start ring already near the target size
   const nodes=data.nodes.map((n,i)=>{ const ang=-Math.PI/2+i*2*Math.PI/data.nodes.length;
-    return {id:n.id,name:n.name,x:RG_CX+Math.cos(ang)*radius,y:RG_CY+Math.sin(ang)*radius,vx:0,vy:0}; });
+    return {id:n.id,name:n.name,x:W/2+Math.cos(ang)*R0,y:H/2+Math.sin(ang)*R0,dx:0,dy:0,pinned:false,fixed:false}; });
   const idx={}; nodes.forEach((n,i)=>idx[n.id]=i);
   const eg=document.createElementNS(SVGNS,'g'); eg.id='redges';           // edges under nodes
   const ng=document.createElementNS(SVGNS,'g'); ng.id='rnodes';
   svg.appendChild(eg); svg.appendChild(ng);
-  RG={nodes,edges:[],idx,
-      krep:K_REP*(0.65+0.35*tight), rlenMax:RLEN_MAX*tight, rlenMin:RLEN_MIN*tight};
+  RG={nodes,edges:[],idx,W,H,mx:RG_COLL_HX+3,my:RG_COLL_HY+3,
+      k:rgIdeal(W,N), temp:Math.min(W,H)/6};
   RG.edges=data.edges.map(newEdgeEl);
   nodes.forEach(n=>{ const sid=spriteId(n.id);
     const g=document.createElementNS(SVGNS,'g'); g.setAttribute('class','rnode');
-    g.innerHTML=`<ellipse class="rnode-sh" cx="0" cy="17" rx="8" ry="2.5"/>
-      <g transform="translate(0,-2) scale(0.8)"><use href="#spr-${sid}-f1"/></g>
-      <circle class="rnode-hit" r="17"/><text class="rnode-name" y="30"></text>`;
-    g.querySelector('.rnode-name').textContent=agentName(n.id,n.name);
-    g.addEventListener('click',()=>inspect(n.id));
-    ng.appendChild(g); n.el=g;
+    g.innerHTML=`<ellipse class="rnode-sh" cx="0" cy="15" rx="8" ry="2.5"/>
+      <g transform="translate(0,-4) scale(0.8)"><use href="#spr-${sid}-f1"/></g>
+      <rect class="rnode-namebg" rx="3" x="-18" y="19" width="36" height="12"/>
+      <text class="rnode-name" y="28"></text>
+      <circle class="rnode-pin" cx="12" cy="-12" r="3"/>
+      <rect class="rnode-hit" x="-20" y="-20" width="40" height="52"/>`;
+    n.el=g; n.label=g.querySelector('.rnode-name'); n.labelbg=g.querySelector('.rnode-namebg');
+    setNodeLabel(n); attachNodePointer(n);
+    ng.appendChild(g);
   });
   renderEdgeStyles();
-  for(let i=0;i<240;i++) simStep();                                        // warm up to a settled layout
+  for(let i=0;i<400;i++) simStep();                                        // warm up to a settled layout (temp cools)
+  fitToViewport();                                                         // fresh build -> fill the panel
+  applyPins();                                                             // restore any session pins on top
   renderPositions(); rgCool=0;
   if(!$('#graph').hidden && !REDUCE_MOTION) startRAF();
 }
-function relabelGraph(){   // refresh node labels after a language switch
-  if(!RG) return;
-  for(const n of RG.nodes){ const tx=n.el&&n.el.querySelector('.rnode-name'); if(tx) tx.textContent=agentName(n.id,n.name); }
-}
+function relabelGraph(){ if(!RG) return; for(const n of RG.nodes) if(n.label) setNodeLabel(n); }  // language switch
 function applyData(data){
   data.nodes.forEach(n=>{ if(RG.idx[n.id]==null){ buildGraph(data); } });  // node set changed -> rebuild
   if(!RG) return;
@@ -1531,17 +1638,30 @@ function applyData(data){
     if(seen.has(ekey(ed))){ RG.edges.find(e=>ekey(e.data)===ekey(ed)).data=ed; }
     else{ RG.edges.push(newEdgeEl(ed)); added=true; }                      // brand-new relationship
   });
-  data.nodes.forEach(n=>{ const i=RG.idx[n.id]; if(i!=null) RG.nodes[i].name=n.name; });
+  data.nodes.forEach(n=>{ const i=RG.idx[n.id]; if(i!=null){ RG.nodes[i].name=n.name; setNodeLabel(RG.nodes[i]); } });
   renderEdgeStyles();
-  if(added) kick();                                                        // only new edges re-heat the layout
+  if(added) kick();                                                        // only new edges re-heat the layout (pins stay put)
 }
+function rgResize(){
+  if(!RG) return;
+  const {w:W,h:H}=rgDims(); if(W<2||H<2) return;                           // hidden/collapsed -> skip
+  const sx=W/RG.W, sy=H/RG.H;
+  if(Math.abs(sx-1)<0.001 && Math.abs(sy-1)<0.001) return;
+  for(const n of RG.nodes){ n.x*=sx; n.y*=sy; }                            // scale everyone (incl. pins) to the new box
+  RG.W=W; RG.H=H; RG.k=rgIdeal(W,RG.nodes.length); RG.temp=Math.min(W,H)/10;
+  $('#relsvg').setAttribute('viewBox',`0 0 ${W} ${H}`);
+  if($('#graph').hidden){ renderPositions(); return; }
+  if(REDUCE_MOTION){ for(let i=0;i<120;i++) simStep(); settleFit(); renderPositions(); } else { rgCool=0; startRAF(); }
+}
+try{ new ResizeObserver(()=>rgResize()).observe($('#graph')); }catch(e){}
+addEventListener('resize',()=>rgResize());   // fallback for environments where ResizeObserver is unreliable
 function rgTick(){ const move=simStep(); renderPositions(); rgFrames++;
-  if(move<0.5){ if(++rgCool>15){ rgRAF=0; return; } } else rgCool=0;
-  if(rgFrames>500){ rgRAF=0; return; }        // hard cap: guarantee the loop always goes idle
+  if(move<RG.nodes.length*0.6){ if(++rgCool>15){ settleFit(); rgRAF=0; return; } } else rgCool=0;
+  if(rgFrames>600){ settleFit(); rgRAF=0; return; }   // hard cap: guarantee the loop always goes idle
   rgRAF=requestAnimationFrame(rgTick);
 }
 function startRAF(){
-  if(REDUCE_MOTION){ for(let i=0;i<200;i++) simStep(); renderPositions(); rgRAF=0; return; }
+  if(REDUCE_MOTION){ for(let i=0;i<220;i++) simStep(); settleFit(); renderPositions(); rgRAF=0; return; }
   if(!rgRAF){ rgCool=0; rgFrames=0; rgRAF=requestAnimationFrame(rgTick); }
 }
 function stopRAF(){ if(rgRAF){ cancelAnimationFrame(rgRAF); rgRAF=0; } }
@@ -1569,7 +1689,7 @@ async function showTab(which){
   // graph physics only run while its tab is visible
   if(which==='graph'){
     if(!RG && REL_DATA) buildGraph(REL_DATA);
-    else if(RG){ if(REDUCE_MOTION){ for(let i=0;i<120;i++) simStep(); renderPositions(); } else startRAF(); }
+    else if(RG){ rgResize(); if(REDUCE_MOTION){ for(let i=0;i<120;i++) simStep(); settleFit(); renderPositions(); } else startRAF(); }
   }else{ stopRAF(); hideRelTip(); }
   if(which==='social') loadSocial();                    // fetch on open; a 10s poll keeps it fresh
   // leaving the replay tab always exits replay (restores the live view)
