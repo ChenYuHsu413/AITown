@@ -23,7 +23,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
 from .agents.core import MemoryItem
-from .agents.decision import DecisionEngine
+from .agents.decision import DecisionEngine, belief_text_ok
 from .llm.factory import build_router
 from .llm.prompts import builders
 from .simulation import snapshot as snapshot_mod
@@ -904,6 +904,27 @@ async def agent_detail(agent_id: str) -> JSONResponse:
             ][::-1],
         }
     )
+
+
+@app.post("/api/admin/prune-beliefs")
+async def prune_beliefs() -> JSONResponse:
+    """One-off cleanup: drop existing low-quality beliefs/secrets (the old 'ok'
+    filler) that predate the quality gate. A snapshot is taken so the cleaned
+    state persists. Reports how many were removed."""
+    assert sim is not None
+    world = sim.world
+    removed_beliefs = 0
+    for a in world.agents.values():
+        before = len(a.semantic.beliefs)
+        a.semantic.beliefs = [b for b in a.semantic.beliefs if belief_text_ok(b.text, world)]
+        removed_beliefs += before - len(a.semantic.beliefs)
+    secrets = sim.engine.decisions.secrets
+    bad = [sid for sid, s in secrets.secrets.items() if not belief_text_ok(s.text, world)]
+    for sid in bad:
+        del secrets.secrets[sid]
+    if sim.persistence is not None:
+        sim._take_snapshot()
+    return JSONResponse({"removed_beliefs": removed_beliefs, "removed_secrets": len(bad)})
 
 
 @app.get("/api/chronicle")

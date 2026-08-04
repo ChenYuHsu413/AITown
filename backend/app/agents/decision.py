@@ -68,6 +68,38 @@ def _has_cjk(text: str) -> bool:
     return bool(_CJK_RE.search(text or ""))
 
 
+_BELIEF_JUNK = {
+    "ok", "okay", "none", "n/a", "na", "good", "fine", "bad", "nothing", "idk",
+    "unknown", "yes", "no", "true", "false", "null", "nil", "...", "…", "n a",
+}
+
+
+def belief_text_ok(text: str, world: "World") -> bool:
+    """Quality gate for reflection free text (lasting impressions + new secrets):
+    reject the model's throwaway filler so 'ok' never lands in memory. Rejects
+    generic non-answers; otherwise a CJK sentence (dense script) needs only a few
+    characters, while a Latin sentence needs >=15 chars and either >=4 words or an
+    explicit reference to a known resident/place. CJK-aware so historical Chinese
+    knowledge is never mistaken for filler."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if t.lower().strip(" .!?\"'…").replace("/", " ").strip() in _BELIEF_JUNK:
+        return False
+    if _CJK_RE.search(t):                 # zh: a handful of characters is already a real sentence
+        return len(t) >= 6
+    if len(t) < 15:
+        return False
+    words = t.split()
+    if len(words) >= 4:
+        return True
+    names = ({a.name.lower() for a in world.agents.values()}
+             | {a.id for a in world.agents.values()}
+             | {loc.name.lower() for loc in world.locations.values()}
+             | set(world.locations))
+    return any(w.lower().strip(".,;:!?'\"") in names for w in words)
+
+
 def _zh_text_ok(text: str) -> bool:
     """Gibberish gate for a single zh dialogue turn (the precondition for putting
     a new model on the zh chain). Rejects character-soup weak models emit:
@@ -898,7 +930,9 @@ class DecisionEngine:
             if not isinstance(rb, dict):
                 continue
             text = str(rb.get("text", "")).strip()
-            if not text:
+            if not belief_text_ok(text, world):           # quality gate: no "ok"/filler impressions
+                if text:
+                    print(f'[belief] rejected low-quality: "{text}"', flush=True)
                 continue
             resolved = self._resolve_subject(agent, world, rb.get("subject", ""))
             if resolved is None:                          # unmatched subject -> drop
@@ -954,20 +988,24 @@ class DecisionEngine:
         if isinstance(res.parsed, dict):
             insights = [str(x) for x in res.parsed.get("insights", [])]
             belief_events = self._form_beliefs(agent, world, res.parsed.get("beliefs", []), now)
-            secret_born = self._maybe_new_secret(agent, res.parsed.get("new_secret"), now)
+            secret_born = self._maybe_new_secret(agent, world, res.parsed.get("new_secret"), now)
         for ins in insights:
             agent.memory.add(MemoryItem(minute=now, text=ins, importance=5, kind="reflection"))
         agent.memory.importance_since_reflection = 0
         return insights, belief_events, secret_born
 
-    def _maybe_new_secret(self, agent: Agent, raw: object, now: int) -> bool:
+    def _maybe_new_secret(self, agent: Agent, world: World, raw: object, now: int) -> bool:
         """Add a private matter surfaced by reflection (owner = the reflecting
         agent). Capped at 4 per agent so it can't run away. Returns True if one was
         born (the engine then publishes a content-free ``secret_born`` beat)."""
         if not isinstance(raw, dict):
             return False
         text = str(raw.get("text", "")).strip()
-        if not text or len(self.secrets.secrets_of(agent.id)) >= 4:
+        if not belief_text_ok(text, world):               # same quality gate as beliefs
+            if text:
+                print(f'[secret] rejected low-quality: "{text}"', flush=True)
+            return False
+        if len(self.secrets.secrets_of(agent.id)) >= 4:
             return False
         try:
             sensitivity = float(raw.get("sensitivity", 0.5))

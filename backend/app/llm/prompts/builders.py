@@ -262,7 +262,10 @@ def reflection_prompt(agent: "Agent", day_events: list[str]) -> list[dict]:
                 '"beliefs" are 0-2 LASTING impressions about a specific person or place -- formed ONLY when '
                 "today's experience repeats or confirms something you already sensed; a single event is NOT "
                 "enough, so prefer an empty list (be sparing). \"subject\" is the exact name of an agent or "
-                'place; "text" is one sentence; "sentiment" is how positive(+1)/negative(-1) the impression is. '
+                'place; "text" is one COMPLETE descriptive English sentence; "sentiment" is how '
+                "positive(+1)/negative(-1) the impression is. "
+                'GOOD text: "Xue seems increasingly determined to leave her job". BAD text: "ok". '
+                "Return an empty list rather than a vague or filler impression. "
                 '"new_secret" is a private matter this character is quietly keeping from others -- return one '
                 "ONLY if today surfaced a clear unspoken worry or hidden truth of their own; otherwise null "
                 '(be sparing). "sensitivity" is how private it is. '
