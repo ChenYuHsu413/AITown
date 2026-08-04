@@ -51,8 +51,9 @@ class MemoryItem:
     minute: int
     text: str
     importance: int = 1                     # 1..10
-    kind: str = "observation"               # observation | conversation | reflection | rumor
+    kind: str = "observation"               # observation | conversation | reflection | rumor | secret
     rumor_id: str = ""                      # set when this memory records a rumor
+    secret_id: str = ""                     # set when this memory records a confided secret
 
 
 @dataclass

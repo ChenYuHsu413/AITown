@@ -98,6 +98,7 @@ def dialogue_prompt(
     a_wants_to_mention: str | None = None, b_wants_to_mention: str | None = None,
     is_confrontation: bool = False, time_hint: str = "",
     a_impression: str | None = None, b_impression: str | None = None,
+    a_confide: str | None = None, b_confide: str | None = None,
 ) -> list[dict]:
     scene = f"Scene: {time_hint + ' ' if time_hint else ''}at {a.state.location}.\n"
     user = (
@@ -115,6 +116,12 @@ def dialogue_prompt(
         user += f"\n{a.profile.name} wants to bring up: {a_wants_to_mention}"
     if b_wants_to_mention:
         user += f"\n{b.profile.name} wants to bring up: {b_wants_to_mention}"
+    # Confiding is private and vulnerable, not gossip -- the model should play the
+    # trust in the moment, not just state the fact.
+    if a_confide:
+        user += f"\n{a.profile.name} trusts {b.profile.name} enough to quietly confide something personal: {a_confide}"
+    if b_confide:
+        user += f"\n{b.profile.name} trusts {a.profile.name} enough to quietly confide something personal: {b_confide}"
     system = (
         "You write short, natural conversations for a life simulation. "
         "Ground it in the time of day, the place, each character's current mood and "
@@ -173,6 +180,22 @@ def distort_prompt(text: str) -> list[dict]:
     ]
 
 
+def leak_prompt(owner_name: str, secret_text: str) -> list[dict]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You turn someone's private secret into a piece of third-person gossip about them, as it "
+                "would first be whispered to another person. One sentence, same substance, named in the third "
+                'person. Respond ONLY with JSON: {"text": "...", "sentiment": -1..1} where sentiment is how '
+                "damaging/negative it is for that person. Task: leak."
+                + _lang_directive()
+            ),
+        },
+        {"role": "user", "content": f"{owner_name}'s secret: {secret_text}"},
+    ]
+
+
 def decision_prompt(agent: "Agent", observation: str, memories: list[str], actions: list[str]) -> list[dict]:
     return [
         {
@@ -200,12 +223,16 @@ def reflection_prompt(agent: "Agent", day_events: list[str]) -> list[dict]:
             "content": (
                 "You produce end-of-day reflection for a life-sim character. Respond ONLY with JSON: "
                 '{"insights": ["...", "..."], '
-                '"beliefs": [{"subject": "<name>", "text": "...", "confidence": 0.0-1.0, "sentiment": -1.0-1.0}]}. '
+                '"beliefs": [{"subject": "<name>", "text": "...", "confidence": 0.0-1.0, "sentiment": -1.0-1.0}], '
+                '"new_secret": {"text": "...", "sensitivity": 0.0-1.0} | null}. '
                 '"insights" are 1-2 short takeaways from today. '
                 '"beliefs" are 0-2 LASTING impressions about a specific person or place -- formed ONLY when '
                 "today's experience repeats or confirms something you already sensed; a single event is NOT "
                 "enough, so prefer an empty list (be sparing). \"subject\" is the exact name of an agent or "
                 'place; "text" is one sentence; "sentiment" is how positive(+1)/negative(-1) the impression is. '
+                '"new_secret" is a private matter this character is quietly keeping from others -- return one '
+                "ONLY if today surfaced a clear unspoken worry or hidden truth of their own; otherwise null "
+                '(be sparing). "sensitivity" is how private it is. '
                 "Task: reflection."
                 + _lang_directive()
             ),

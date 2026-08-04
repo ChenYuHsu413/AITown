@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from ..agents.agent import Relationship
 from ..agents.core import AgentState, Belief, MemoryItem
 from ..social.rumors import Rumor, RumorVersion
+from ..social.secrets import Secret
 
 if TYPE_CHECKING:
     from ..agents.decision import DecisionEngine
@@ -29,7 +30,8 @@ if TYPE_CHECKING:
 # Bump when the payload shape changes. Restore is additive/defensive, so a new
 # field just needs a sensible dataclass default -- old snapshots keep loading.
 #   v1 -> v2: added per-agent semantic memory (beliefs).
-SCHEMA_VERSION = 2
+#   v2 -> v3: added the secret registry (secrets & confiding).
+SCHEMA_VERSION = 3
 
 
 # ---- capture -------------------------------------------------------------
@@ -42,6 +44,7 @@ def capture(engine: "SimulationEngine", world: "World", decisions: "DecisionEngi
         "minute": engine.now,
         "agents": {aid: _capture_agent(a) for aid, a in world.agents.items()},
         "rumors": {rid: dataclasses.asdict(r) for rid, r in decisions.rumors.rumors.items()},
+        "secrets": {sid: dataclasses.asdict(s) for sid, s in decisions.secrets.secrets.items()},
         "locations": {
             lid: {"revenue": loc.revenue, "revenue_today": loc.revenue_today}
             for lid, loc in world.locations.items()
@@ -83,6 +86,9 @@ def restore(payload: dict, engine: "SimulationEngine", world: "World",
 
     if "rumors" in payload:
         decisions.rumors.rumors = _restore_rumors(payload.get("rumors") or {})
+
+    if "secrets" in payload:                     # v3+; older snapshots keep the empty registry
+        decisions.secrets.secrets = _restore_secrets(payload.get("secrets") or {})
 
     for lid, ldata in (payload.get("locations") or {}).items():
         loc = world.locations.get(lid)
@@ -158,7 +164,7 @@ def _restore_rumors(rdata: dict) -> dict:
             origin=data.get("origin", ""),
             created_minute=data.get("created_minute", 0),
         )
-        for key in ("subject", "sentiment", "resolved", "resolved_minute", "outcome"):
+        for key in ("subject", "sentiment", "resolved", "resolved_minute", "outcome", "from_secret_id"):
             if key in data:
                 setattr(rumor, key, data[key])
         rumor.versions = [
@@ -169,4 +175,20 @@ def _restore_rumors(rdata: dict) -> dict:
             for v in data.get("versions", []) if isinstance(v, dict)
         ]
         out[rid] = rumor
+    return out
+
+
+def _restore_secrets(sdata: dict) -> dict:
+    out: dict[str, Secret] = {}
+    for sid, data in sdata.items():
+        if not isinstance(data, dict):
+            continue
+        secret = Secret(id=data.get("id", sid), owner=data.get("owner", ""), text=data.get("text", ""))
+        for key in ("sensitivity", "created_minute", "leaked", "leaked_by"):
+            if key in data:
+                setattr(secret, key, data[key])
+        confided = data.get("confided_to")
+        if isinstance(confided, dict):
+            secret.confided_to = {str(k): int(v) for k, v in confided.items()}
+        out[sid] = secret
     return out

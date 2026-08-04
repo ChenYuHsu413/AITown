@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from ..llm.prompts import builders
 from ..llm.router import LLMRouter
 from ..social.rumors import RumorRegistry
+from ..social.secrets import SecretRegistry
 from ..world.world import Observation, World
 from .agent import Agent
 from .core import Belief, MemoryItem
@@ -36,6 +37,10 @@ from .core import Belief, MemoryItem
 BELIEF_CONTEXT_MIN = 0.3      # a belief this confident (or more) colours dialogue + trust math
 
 RUMOR_DISTORT_CHANCE = 0.35   # probability a shared rumor mutates in the retelling
+
+CONFIDE_TRUST_BASE = 55       # base trust needed to confide; the bar rises with the secret's sensitivity
+CONFIDE_MAX_P = 0.5           # cap on the per-conversation confide probability
+LEAK_MAX_P = 0.35            # cap on the per-conversation leak probability
 
 TALK_COOLDOWN_MIN = 90        # don't re-approach the same person within 90 sim-minutes
 TALK_DURATION_MIN = 10
@@ -140,6 +145,7 @@ class DecisionEngine:
     router: LLMRouter
     traces: list[DecisionTrace] = field(default_factory=list)
     rumors: RumorRegistry = field(default_factory=RumorRegistry)
+    secrets: SecretRegistry = field(default_factory=SecretRegistry)
     # Per-sim-day dialogue budget (live only) -- keeps free-tier token spend
     # bounded. 0 = unlimited (mock / headless), so run_day is untouched.
     dialogue_cap: int = 0
@@ -258,6 +264,14 @@ class DecisionEngine:
             # to the messenger only if the origin is unknown (or is the messenger).
             origin = world.agents.get(rumor.origin) if rumor else None
             target = origin or told_by
+            # Betrayal: if this rumor was leaked from a secret, the owner knows only
+            # someone they confided in could have known -- so they confront the LEAKER,
+            # not the rumor's chain origin.
+            if rumor and rumor.from_secret_id:
+                secret = self.secrets.secrets.get(rumor.from_secret_id)
+                leaker = world.agents.get(secret.leaked_by) if secret and secret.leaked_by else None
+                if leaker is not None:
+                    target = leaker
             if action == "seek_out" and target is not None:
                 confront_text = f"I heard people are saying: {heard}. Did this come from you?"
                 if target.state.location == agent.state.location and target.state.current_action != "sleep":
@@ -439,6 +453,92 @@ class DecisionEngine:
         self.rumors.record_spread(rumor.id, a.id, b.id, text, now)
         return {"rumor_id": rumor.id, "text": text, "from": a.id, "to": b.id}
 
+    # ---- secrets: confiding & leaking --------------------------------
+
+    def _maybe_confide(self, a: Agent, b: Agent, now: int) -> dict | None:
+        """Decide whether ``a`` confides one of their OWN secrets in ``b`` -- pure
+        Python, no LLM. Gated on trust vs. the secret's sensitivity (more private ->
+        higher bar); each secret is confided to a person at most once; a low mood
+        makes confiding likelier. Returns a descriptor (for the prompt + a confide
+        event) or None (the common case)."""
+        rel = a.rel(b.id)
+        eligible = [
+            s for s in self.secrets.secrets_of(a.id)
+            if not self.secrets.knows(s.id, b.id)                      # b isn't owner and hasn't been told
+            and rel.trust >= CONFIDE_TRUST_BASE + s.sensitivity * 30
+        ]
+        if not eligible:
+            return None
+        secret = max(eligible, key=lambda s: s.sensitivity)            # the weightiest one they can share
+        p = min(CONFIDE_MAX_P,
+                0.15 + rel.trust / 200 + (0.1 if a.state.mood in ("worried", "upset") else 0.0))
+        seed = int(hashlib.sha256(f"confide|{a.id}|{b.id}|{secret.id}|{now}".encode()).hexdigest()[:8], 16)
+        if random.Random(seed).random() >= p:
+            return None
+        b.memory.add(MemoryItem(
+            minute=now, text=f"{a.name} confided in me: {secret.text}",
+            importance=int(4 + secret.sensitivity * 4), kind="secret", secret_id=secret.id,
+        ))
+        self.secrets.record_confide(secret.id, b.id, now)
+        rel.trust += 3; rel.clamp()                                    # confiding deepens the confider's trust
+        br = b.rel(a.id); br.friendship += 4; br.clamp()              # being trusted feels good
+        return {"secret_id": secret.id, "text": secret.text, "from": a.id, "to": b.id}
+
+    async def _maybe_leak(self, b: Agent, c: Agent, world: World, now: int) -> dict | None:
+        """Decide whether ``b`` leaks a secret they were confided (owner != b) to
+        ``c``, turning it into a rumor. Rare: high-trust confidants almost never
+        leak, a low-trust gossip is the danger. On a leak the secret becomes a
+        rumor (leak_prompt gives third-person wording + sentiment) and enters the
+        ordinary rumor lifecycle; returns a share-rumor descriptor (published as
+        share_rumor -- the world only sees a rumor appear, never the leak itself)."""
+        candidates = [
+            s for s in self.secrets.secrets.values()
+            if not s.leaked and s.owner != b.id and b.id in s.confided_to
+            and s.owner != c.id and not self.secrets.knows(s.id, c.id)
+        ]
+        if not candidates:
+            return None
+        secret = candidates[0]
+        trust_to_owner = b.rel(secret.owner).trust
+        p = (1 - trust_to_owner / 100) * 0.3 * (1.2 - secret.sensitivity)
+        if "gossipy" in b.profile.traits or "talkative" in b.profile.traits:
+            p *= 1.5
+        p = min(LEAK_MAX_P, p)
+        seed = int(hashlib.sha256(f"leak|{b.id}|{c.id}|{secret.id}|{now}".encode()).hexdigest()[:8], 16)
+        if random.Random(seed).random() >= p:
+            return None
+
+        owner = world.agents.get(secret.owner)
+        owner_name = owner.name if owner else secret.owner
+        res = await self.router.generate(       # rephrase to a 3rd-person rumor + appraise, in one call
+            task="leak", messages=builders.leak_prompt(owner_name, secret.text),
+            agent_id=b.id, sim_minute=now, schema={"type": "object"}, max_tokens=80,
+        )
+        parsed = res.parsed if isinstance(res.parsed, dict) else {}
+        text = str(parsed.get("text") or "").strip() or f"{owner_name} has been hiding something."
+        try:
+            sentiment = max(-1.0, min(1.0, float(parsed.get("sentiment", -0.3))))
+        except (TypeError, ValueError):
+            sentiment = -0.3
+
+        rumor = self.rumors.seed(
+            agent_id=c.id, text=text, minute=now, subject=secret.owner,
+            sentiment=sentiment, from_secret_id=secret.id,
+        )
+        self.secrets.mark_leaked(secret.id, leaked_by=b.id)
+        # c now holds the leaked rumor: record it + apply the recipient relationship math.
+        c.memory.add(MemoryItem(
+            minute=now, text=f"Heard from {b.name}: {text}", importance=5, kind="rumor", rumor_id=rumor.id))
+        rel = c.rel(secret.owner)
+        rel.trust += sentiment * 5; rel.friendship += sentiment * 2; rel.clamp()
+        if sentiment <= -0.4:
+            shop = next((lid for lid, loc in world.locations.items()
+                         if loc.owner == secret.owner and loc.price > 0), "")
+            if shop:
+                c.state.avoid_location = shop
+        gossip_bond = c.rel(b.id); gossip_bond.friendship += 1; gossip_bond.clamp()
+        return {"rumor_id": rumor.id, "text": text, "from": b.id, "to": c.id}
+
     async def run_conversation(
         self, a: Agent, b: Agent, world: World, now: int, confront_text: str | None = None,
         confront_rumor_id: str = "",
@@ -451,11 +551,20 @@ class DecisionEngine:
         with (a rumor confrontation) and takes priority over any forward share;
         with ``confront_rumor_id`` also set the exchange is a confrontation that
         settles that rumor. The 4th return value is a confrontation descriptor
-        (``{"rumor_id", "outcome", "admitted"}``) or ``None`` for normal chats."""
+        (``{"rumor_id", "outcome", "admitted"}``) or ``None`` for normal chats; the
+        5th is ``confided`` (0-2 descriptors, one per direction someone opened up)
+        for the engine to publish as content-free ``confide`` events."""
         is_confront = bool(confront_text and confront_rumor_id)
         fwd = await self._maybe_share_rumor(a, b, world, now)   # a -> b
         rev = await self._maybe_share_rumor(b, a, world, now)   # b -> a (lets a stationary initiator hear too)
-        shared_rumors = [sr for sr in (fwd, rev) if sr]
+        # Leaking a confided secret surfaces AS a rumor share (same descriptor shape).
+        leak_fwd = await self._maybe_leak(a, b, world, now)     # a leaks a secret confided to a, to b
+        leak_rev = await self._maybe_leak(b, a, world, now)
+        shared_rumors = [sr for sr in (fwd, rev, leak_fwd, leak_rev) if sr]
+        # Confiding is separate from gossip: a shares one of their OWN secrets with b.
+        confide_fwd = self._maybe_confide(a, b, now)
+        confide_rev = self._maybe_confide(b, a, now)
+        confided = [c for c in (confide_fwd, confide_rev) if c]
         a_mem = await a.memory.retrieve_async(b.name, k=3)
         b_mem = await b.memory.retrieve_async(a.name, k=3)
         # A held impression of the other person rides into the dialogue context, so
@@ -466,11 +575,13 @@ class DecisionEngine:
             task="dialogue",
             messages=builders.dialogue_prompt(
                 a, b, a_mem, b_mem,
-                a_wants_to_mention=confront_text or (fwd["text"] if fwd else None),
-                b_wants_to_mention=rev["text"] if rev else None,
+                a_wants_to_mention=confront_text or (fwd or leak_fwd or {}).get("text"),
+                b_wants_to_mention=(rev or leak_rev or {}).get("text"),
                 is_confrontation=is_confront,
                 time_hint=builders.time_of_day(now),
                 a_impression=a_imp, b_impression=b_imp,
+                a_confide=confide_fwd["text"] if confide_fwd else None,
+                b_confide=confide_rev["text"] if confide_rev else None,
             ),
             agent_id=a.id,
             sim_minute=now,
@@ -511,7 +622,7 @@ class DecisionEngine:
         confrontation = None
         if is_confront:
             confrontation = self._settle_confrontation(a, b, world, confront_rumor_id, parsed, now)
-        return turns, signals, shared_rumors, confrontation
+        return turns, signals, shared_rumors, confrontation, confided
 
     def _settle_confrontation(
         self, a: Agent, b: Agent, world: World, rumor_id: str, parsed: dict, now: int
@@ -532,8 +643,20 @@ class DecisionEngine:
                 if ag.state.avoid_location in shops:
                     ag.state.avoid_location = ""
 
+        # Betrayal: this rumor came from a secret ``a`` confided in ``b``. That is far
+        # worse than idle gossip -- the owner is certain and the trust math bites hard.
+        secret = self.secrets.secrets.get(rumor.from_secret_id) if rumor else None
+        is_betrayal = bool(secret and secret.leaked_by == b.id)
+
         rel_ab = a.rel(b.id)
-        if admitted:
+        if is_betrayal:
+            rel_ab.trust -= 20
+            rel_ab.friendship -= 12
+            rel_ab.conflict += 15
+            rel_ba = b.rel(a.id)
+            rel_ba.conflict += 6          # the shame of being caught betraying a confidence
+            rel_ba.clamp()
+        elif admitted:
             rel_ab.trust -= 12
             rel_ab.conflict += 10
             rel_ab.friendship -= 6
@@ -546,16 +669,26 @@ class DecisionEngine:
         rel_ab.clamp()
         a.state.mood = "neutral"          # matter settled, whatever the outcome -- mood lands
 
-        a.memory.add(MemoryItem(
-            minute=now, importance=6, kind="conversation",
-            text=f"Confronted {b.name} about the rumor. They {'admitted it' if admitted else 'denied it'}.",
-        ))
-        b.memory.add(MemoryItem(
-            minute=now, importance=6, kind="conversation",
-            text=f"{a.name} confronted me about the rumor I "
-                 f"{'started' if admitted else 'was accused of starting'}.",
-        ))
-        return {"rumor_id": rumor_id, "outcome": outcome, "admitted": admitted}
+        if is_betrayal:
+            a.memory.add(MemoryItem(
+                minute=now, importance=9, kind="conversation",
+                text=f"Confronted {b.name} for leaking the secret I trusted them with. Betrayed.",
+            ))
+            b.memory.add(MemoryItem(
+                minute=now, importance=8, kind="conversation",
+                text=f"{a.name} confronted me for leaking their secret.",
+            ))
+        else:
+            a.memory.add(MemoryItem(
+                minute=now, importance=6, kind="conversation",
+                text=f"Confronted {b.name} about the rumor. They {'admitted it' if admitted else 'denied it'}.",
+            ))
+            b.memory.add(MemoryItem(
+                minute=now, importance=6, kind="conversation",
+                text=f"{a.name} confronted me about the rumor I "
+                     f"{'started' if admitted else 'was accused of starting'}.",
+            ))
+        return {"rumor_id": rumor_id, "outcome": outcome, "admitted": admitted, "betrayal": is_betrayal}
 
     # ---- semantic memory (beliefs) -----------------------------------
 
@@ -648,7 +781,23 @@ class DecisionEngine:
         if isinstance(res.parsed, dict):
             insights = [str(x) for x in res.parsed.get("insights", [])]
             belief_events = self._form_beliefs(agent, world, res.parsed.get("beliefs", []), now)
+            self._maybe_new_secret(agent, res.parsed.get("new_secret"), now)
         for ins in insights:
             agent.memory.add(MemoryItem(minute=now, text=ins, importance=5, kind="reflection"))
         agent.memory.importance_since_reflection = 0
         return insights, belief_events
+
+    def _maybe_new_secret(self, agent: Agent, raw: object, now: int) -> None:
+        """Add a private matter surfaced by reflection (owner = the reflecting
+        agent). Capped at 4 per agent so it can't run away; secrets carry no
+        event -- they live only in the registry until confided or leaked."""
+        if not isinstance(raw, dict):
+            return
+        text = str(raw.get("text", "")).strip()
+        if not text or len(self.secrets.secrets_of(agent.id)) >= 4:
+            return
+        try:
+            sensitivity = float(raw.get("sensitivity", 0.5))
+        except (TypeError, ValueError):
+            sensitivity = 0.5
+        self.secrets.add(agent.id, text, sensitivity, now)

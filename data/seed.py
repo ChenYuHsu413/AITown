@@ -128,3 +128,20 @@ def build_agents() -> list[Agent]:
     emma.memory.add(MemoryItem(0, "The mural near the park is half finished.", importance=5))
 
     return [alice, bob, carol, david, emma]
+
+
+# Initial private matters, tied to the existing personalities. Seeded into the
+# SecretRegistry at boot; they only ever surface if an agent trusts someone
+# enough to confide (see decision._maybe_confide). Kept in English (internal rule).
+SEED_SECRETS = [
+    ("bob", "I've secretly been interviewing at a company in another city.", 0.8),
+    ("emma", "I haven't told my parents I switched my major to art.", 0.6),
+    ("alice", "The cafe is quietly losing money and I'm scared it won't last the year.", 0.7),
+]
+
+
+def seed_secrets(registry, minute: int = 0) -> None:
+    """Plant the initial secrets into a SecretRegistry (fresh start only; a
+    resumed run restores its own from the snapshot)."""
+    for owner, text, sensitivity in SEED_SECRETS:
+        registry.add(owner, text, sensitivity, minute)

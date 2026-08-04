@@ -85,6 +85,8 @@ class MockProvider(LLMProvider):
                 lambda s: "Word is, " + head,                 # rumor framing
             ]
             parsed = {"text": rng.choice(transforms)(src)}
+        elif "task: leak" in prompt:
+            parsed = {"text": "someone has been quietly keeping something from everyone", "sentiment": -0.4}
         elif "should_talk" in prompt:
             parsed = {"talk": rng.random() < 0.6, "reason": "mock heuristic"}
         elif "importance" in prompt:

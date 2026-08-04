@@ -37,6 +37,7 @@ class Rumor:
     resolved: bool = False
     resolved_minute: int = -1
     outcome: str = ""    # "admitted" | "denied" ("" while unresolved)
+    from_secret_id: str = ""  # set when this rumor was born from a leaked secret (drives betrayal confront)
 
 
 class RumorRegistry:
@@ -46,8 +47,9 @@ class RumorRegistry:
         self.rumors: dict[str, Rumor] = {}
 
     def seed(self, agent_id: str, text: str, minute: int,
-             subject: str = "", sentiment: float = 0.0) -> Rumor:
-        """Create a rumor and its first (origin) version."""
+             subject: str = "", sentiment: float = 0.0, from_secret_id: str = "") -> Rumor:
+        """Create a rumor and its first (origin) version. ``from_secret_id`` is set
+        when the rumor was born from a leaked secret (the betrayal path)."""
         rid = uuid.uuid4().hex[:8]
         rumor = Rumor(
             id=rid,
@@ -55,6 +57,7 @@ class RumorRegistry:
             created_minute=minute,
             subject=subject,
             sentiment=sentiment,
+            from_secret_id=from_secret_id,
             versions=[RumorVersion(agent_id=agent_id, text=text, heard_from="", minute=minute)],
         )
         self.rumors[rid] = rumor

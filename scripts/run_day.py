@@ -20,7 +20,7 @@ from backend.app.agents.decision import DecisionEngine
 from backend.app.llm.factory import build_router  # shared: .env, Groq+Gemini, lang, budget
 from backend.app.simulation.engine import DAY_MIN, Event, SimulationEngine, fmt_time
 from backend.app.world.world import World
-from data.seed import build_agents, build_locations
+from data.seed import build_agents, build_locations, seed_secrets
 
 
 async def main() -> None:
@@ -33,6 +33,7 @@ async def main() -> None:
     router = build_router(live=True if args.live else None)
     world = World(build_locations(), build_agents())
     engine = SimulationEngine(world, DecisionEngine(router))
+    seed_secrets(engine.decisions.secrets)
 
     # Live event feed to stdout.
     engine.bus.subscribers.append(lambda e: print(e.render()))

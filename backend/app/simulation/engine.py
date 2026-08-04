@@ -68,6 +68,7 @@ _EN_TEMPLATES = {
     "share_rumor": "{actor} shared a rumor with {target}: {text}",
     "seek_out": "{actor} went looking for {target}",
     "confronted": "{actor} confronted {target} about the rumor — they {text}",
+    "confide": "{actor} confided something personal to {target}",
     "belief": "{actor} formed an impression of {target}: {text}",
     "day_summary": "{actor}'s day closed — {text}",
     "broke": "{actor} couldn't afford a meal at {loc}",
@@ -323,7 +324,7 @@ class SimulationEngine:
             # Partner got occupied since the decision; retry shortly.
             self.scheduler.schedule(a.id, self.now + 5)
             return
-        turns, signals, shared_rumors, confrontation = await self.decisions.run_conversation(
+        turns, signals, shared_rumors, confrontation, confided = await self.decisions.run_conversation(
             a, b, self.world, self.now,
             confront_text=confront_text or None, confront_rumor_id=confront_rumor_id,
         )
@@ -341,6 +342,13 @@ class SimulationEngine:
                 actor=self.world.agents.get(sr["from"]),
                 target=self.world.agents.get(sr["to"]),
                 location_id=a.state.location, text=sr["text"],
+            )
+        for cf in confided:  # content-free: the world sees they opened up, not what about
+            self._publish(
+                "action", "confide",
+                actor=self.world.agents.get(cf["from"]),
+                target=self.world.agents.get(cf["to"]),
+                location_id=a.state.location,
             )
         by_name = {a.name.lower(): a, b.name.lower(): b}
         for i, turn in enumerate(turns):

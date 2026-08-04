@@ -45,13 +45,14 @@ class Sim:
         import sys
 
         sys.path.insert(0, str(ROOT))
-        from data.seed import build_agents, build_locations
+        from data.seed import build_agents, build_locations, seed_secrets
         from backend.app.world.world import World
 
         self.router = build_router()
         self.live = any(p.name != "mock" for chain in self.router.tiers.values() for p in chain)
         self.world = World(build_locations(), build_agents())
         self.engine = SimulationEngine(self.world, DecisionEngine(self.router))
+        seed_secrets(self.engine.decisions.secrets)   # fresh start; a resume overwrites from the snapshot
         self.speed: float = 5.0          # sim minutes per real second
         self.paused: bool = False
         self._frac: float = 0.0
@@ -432,6 +433,50 @@ async def list_rumors() -> JSONResponse:
             ],
         })
     return JSONResponse({"rumors": out})
+
+
+@app.get("/api/secrets")
+async def secrets() -> JSONResponse:
+    """God's-eye view of every secret: who owns it, who's been trusted with it,
+    and whether it's been leaked (and by whom). The world itself never sees this."""
+    assert sim is not None
+    agents = sim.world.agents
+
+    def name_of(aid: str) -> str:
+        return agents[aid].name if aid in agents else aid
+
+    out = []
+    for s in sim.engine.decisions.secrets.secrets.values():
+        out.append({
+            "id": s.id,
+            "owner": s.owner, "owner_name": name_of(s.owner),
+            "text": s.text, "sensitivity": round(s.sensitivity, 2),
+            "created_clock": fmt_time(s.created_minute),
+            "confided_to": [
+                {"id": aid, "name": name_of(aid), "clock": fmt_time(m)}
+                for aid, m in s.confided_to.items()
+            ],
+            "leaked": s.leaked,
+            "leaked_by": s.leaked_by, "leaked_by_name": name_of(s.leaked_by) if s.leaked_by else "",
+        })
+    return JSONResponse({"secrets": out})
+
+
+@app.post("/api/secrets")
+async def plant_secret(body: dict) -> JSONResponse:
+    """God Mode: plant a secret in an agent's head. It surfaces only if they come
+    to trust someone enough to confide it (see decision._maybe_confide)."""
+    assert sim is not None
+    owner = str(body.get("owner", ""))
+    text = str(body.get("text", "")).strip()
+    if owner not in sim.world.agents or not text:
+        return JSONResponse({"error": "owner (a known agent) and non-empty text required"}, status_code=400)
+    try:
+        sensitivity = float(body.get("sensitivity", 0.5))
+    except (TypeError, ValueError):
+        sensitivity = 0.5
+    s = sim.engine.decisions.secrets.add(owner, text, sensitivity, sim.engine.now)
+    return JSONResponse({"id": s.id, "owner": owner, "text": text, "sensitivity": round(s.sensitivity, 2)})
 
 
 @app.get("/api/economy")
