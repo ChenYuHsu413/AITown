@@ -18,7 +18,7 @@ import dataclasses
 from typing import TYPE_CHECKING
 
 from ..agents.agent import Relationship
-from ..agents.core import AgentState, MemoryItem
+from ..agents.core import AgentState, Belief, MemoryItem
 from ..social.rumors import Rumor, RumorVersion
 
 if TYPE_CHECKING:
@@ -28,7 +28,8 @@ if TYPE_CHECKING:
 
 # Bump when the payload shape changes. Restore is additive/defensive, so a new
 # field just needs a sensible dataclass default -- old snapshots keep loading.
-SCHEMA_VERSION = 1
+#   v1 -> v2: added per-agent semantic memory (beliefs).
+SCHEMA_VERSION = 2
 
 
 # ---- capture -------------------------------------------------------------
@@ -58,6 +59,7 @@ def _capture_agent(agent) -> dict:
             "items": [dataclasses.asdict(m) for m in agent.memory.items],
             "importance_since_reflection": agent.memory.importance_since_reflection,
         },
+        "semantic": {"beliefs": [dataclasses.asdict(b) for b in agent.semantic.beliefs]},
     }
 
 
@@ -133,6 +135,17 @@ def _restore_agent(agent, adata: dict) -> None:
             items.append(item)
         agent.memory.items = items
         agent.memory.importance_since_reflection = mem.get("importance_since_reflection", 0)
+
+    if "semantic" in adata:                      # v2+; a v1 snapshot simply keeps the empty default
+        sem = adata.get("semantic") or {}
+        beliefs = []
+        for bd in sem.get("beliefs", []):
+            if not isinstance(bd, dict):
+                continue
+            b = Belief(subject=bd.get("subject", ""), text=bd.get("text", ""))
+            _overlay(b, bd)
+            beliefs.append(b)
+        agent.semantic.beliefs = beliefs
 
 
 def _restore_rumors(rdata: dict) -> dict:

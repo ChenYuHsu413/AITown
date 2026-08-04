@@ -530,6 +530,16 @@ async def agent_detail(agent_id: str) -> JSONResponse:
     if a is None:
         return JSONResponse({"error": "unknown agent"}, status_code=404)
     traces = [t for t in sim.engine.decisions.traces if t.agent_id == agent_id][-3:]
+
+    def subject_name(sid: str) -> str:
+        if sid == "self":
+            return a.name
+        if sid in sim.world.agents:
+            return sim.world.agents[sid].name
+        if sid in sim.world.locations:
+            return sim.world.locations[sid].name
+        return sid
+
     return JSONResponse(
         {
             "id": a.id,
@@ -538,6 +548,14 @@ async def agent_detail(agent_id: str) -> JSONResponse:
             "occupation": a.profile.occupation,
             "traits": a.profile.traits,
             "goals": a.profile.goals,
+            "beliefs": [
+                {
+                    "subject": b.subject, "subject_name": subject_name(b.subject),
+                    "text": b.text, "confidence": round(b.confidence, 2),
+                    "sentiment": round(b.sentiment, 2), "source_count": b.source_count,
+                }
+                for b in sorted(a.semantic.beliefs, key=lambda x: x.confidence, reverse=True)
+            ],
             "state": {
                 "location": sim.world.locations[a.state.location].name,
                 "action": a.state.current_action,

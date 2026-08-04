@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .core import AgentState, EpisodicMemory, Profile
+from .core import AgentState, EpisodicMemory, Profile, SemanticMemory
 from .routine import Routine
 
 
@@ -30,6 +30,7 @@ class Agent:
     state: AgentState
     routine: Routine
     memory: EpisodicMemory = field(default_factory=EpisodicMemory)
+    semantic: SemanticMemory = field(default_factory=SemanticMemory)
     relationships: dict[str, Relationship] = field(default_factory=dict)
 
     @property
@@ -55,9 +56,25 @@ class Agent:
         self, other_id: str, sentiment: float, trust_signal: float, conflict_signal: float
     ) -> None:
         """Relationship math stays in Python -- the LLM only emits signals,
-        it never sets 'friendship = 82' directly (it would drift)."""
+        it never sets 'friendship = 82' directly (it would drift).
+
+        Semantic-memory inertia: a held negative impression of the other person
+        (confidence >= 0.3, sentiment < 0) dampens relationship *gains* to 0.7x
+        and amplifies relationship *hits* to 1.3x -- so a bad impression takes
+        more good interactions to repair, and sours faster."""
         r = self.rel(other_id)
-        r.friendship += (sentiment - 0.4) * 5
-        r.trust += trust_signal * 4
-        r.conflict += conflict_signal * 6 - 0.5
+        df = (sentiment - 0.4) * 5
+        dt = trust_signal * 4
+        dc = conflict_signal * 6 - 0.5
+
+        b = self.semantic.about(other_id)
+        if b is not None and b.confidence >= 0.3 and b.sentiment < 0:
+            df = df * 0.7 if df > 0 else df * 1.3
+            dt = dt * 0.7 if dt > 0 else dt * 1.3
+            if dc > 0:               # more conflict lands harder when the impression is already bad
+                dc *= 1.3
+
+        r.friendship += df
+        r.trust += dt
+        r.conflict += dc
         r.clamp()

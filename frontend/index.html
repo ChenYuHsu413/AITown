@@ -106,6 +106,12 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 .mem{padding:4px 14px;font-size:12px;border-bottom:1px dashed var(--line)}
 .mem time{font-family:var(--mono);font-size:10px;color:var(--faint);margin-right:6px}
 .mem .imp{font-family:var(--mono);font-size:10px;color:var(--amber);margin-left:6px}
+.blf{padding:5px 14px 7px;border-bottom:1px dashed var(--line)}
+.blf-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12px}
+.blf-top b{font-weight:600}
+.blf-conf{font-family:var(--mono);font-size:10px;color:var(--faint)}
+.blf .bar{margin:3px 0 2px}
+.blf-text{font-size:12px;color:var(--faint);line-height:1.4}
 .trace{margin:6px 14px;padding:8px;border:1px solid var(--line);border-radius:6px;font-size:12px;background:var(--paper)}
 .trace .m{font-family:var(--mono);font-size:10px;color:var(--faint)}
 .trace b{color:var(--amber)}
@@ -320,6 +326,7 @@ const I18N={
     relFriend:'friendship', relTrust:'trust',
     cafeToday:'Today',
     recentMemories:'RECENT MEMORIES', decisionTraces:'DECISION TRACES', noDecisions:'No decisions yet.', imp:'imp',
+    beliefsTitle:'LASTING IMPRESSIONS', noBeliefs:'No lasting impressions yet.', beliefSrc:'{n}×',
     'footer.calls':'LLM CALLS','footer.cache':'CACHE HITS','footer.tokens':'TOKENS IN/OUT',
     'footer.cost':'EST. COST','footer.rules':'DECISIONS BY RULES',
     'title.pause':'Pause simulation','title.s1':'1 sim-minute per second','title.s5':'5 sim-minutes per second',
@@ -344,6 +351,7 @@ const I18N={
     relFriend:'友誼', relTrust:'信任',
     cafeToday:'今日',
     recentMemories:'近期記憶', decisionTraces:'決策軌跡', noDecisions:'尚無決策。', imp:'重要度',
+    beliefsTitle:'長期印象', noBeliefs:'尚無長期印象。', beliefSrc:'{n} 次',
     'footer.calls':'LLM 呼叫','footer.cache':'快取命中','footer.tokens':'輸入/輸出 Token',
     'footer.cost':'預估成本','footer.rules':'規則決策佔比',
     'title.pause':'暫停模擬','title.s1':'每秒 1 模擬分鐘','title.s5':'每秒 5 模擬分鐘',
@@ -379,6 +387,7 @@ const EV_TMPL={
     share_rumor:(a,l,tg,sp)=>`${a} shared a rumor with ${tg}: ${sp}`,
     seek_out:(a,l,tg)=>`${a} went looking for ${tg}`,
     confronted:(a,l,tg,sp)=>`${a} confronted ${tg} about the rumor — they ${sp}`,
+    belief:(a,l,tg,sp)=>`💭 ${a} formed an impression of ${tg}: ${sp}`,
     rain_start:()=>`🌧️ It started raining`, rain_end:()=>`🌤️ The rain stopped`,
     festival_start:(a,l)=>`🎉 A festival began at ${l}`, festival_end:(a,l)=>`🎏 The festival at ${l} ended`,
     say:(a,l,tg,sp)=>`💬 ${a}: ${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}: ${sp}`,
@@ -391,6 +400,7 @@ const EV_TMPL={
     share_rumor:(a,l,tg,sp)=>`${a} 向 ${tg} 傳了個八卦：${sp}`,
     seek_out:(a,l,tg)=>`${a} 去找 ${tg} 了`,
     confronted:(a,l,tg,sp)=>`${a} 當面質問了 ${tg}——對方${SPEECH_ZH[sp]||sp}`,
+    belief:(a,l,tg,sp)=>`💭 ${a} 對 ${tg} 有了長期印象:${sp}`,
     rain_start:()=>`🌧️ 下雨了`, rain_end:()=>`🌤️ 雨停了`,
     festival_start:(a,l)=>`🎉 ${l} 的慶典開始了`, festival_end:(a,l)=>`🎏 ${l} 的慶典結束了`,
     say:(a,l,tg,sp)=>`💬 ${a}：${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}：${sp}`,
@@ -406,6 +416,8 @@ const MOOD_EMOJI={upset:'😠',worried:'😟',happy:'🙂'};
 const moodEmoji=m=>MOOD_EMOJI[m]?MOOD_EMOJI[m]+' ':'';
 const actName=a=>LANG==='zh'?(ACTIONS[a]||a):a;
 const traitName=x=>LANG==='zh'?(TRAITS[x]||x):x;
+// A belief's subject display name: localize location subjects to zh; agents/self keep their name.
+const subjName=b=>(LANG==='zh'&&LOCS[b.subject])?(LOC_ZH[b.subject]||b.subject_name):b.subject_name;
 // Render one structured event via its verb template. Unknown verb → deprecated ev.text fallback.
 function evText(ev){
   const tmpl=(EV_TMPL[LANG]||EV_TMPL.en)[ev.verb];
@@ -773,6 +785,10 @@ async function refreshInspector(id,scroll){
     <div class="eyebrow">${t('relationships')}</div>
     ${a.relationships.map(r=>`
       <div class="kv"><b>${r.name}</b><div class="bar amber"><i style="width:${r.friendship}%"></i></div><span>${r.friendship}</span></div>`).join('')||`<div class="placeholder">${t('noRelationships')}</div>`}
+    <div class="eyebrow">${t('beliefsTitle')}</div>
+    ${(a.beliefs&&a.beliefs.length)?a.beliefs.map(b=>{const c=Math.round(b.confidence*100);return `
+      <div class="blf"><div class="blf-top"><b></b><span class="blf-conf">${c}%</span></div>
+      <div class="bar amber"><i style="width:${c}%"></i></div><div class="blf-text"></div></div>`;}).join(''):`<div class="placeholder">${t('noBeliefs')}</div>`}
     <div class="eyebrow">${t('recentMemories')}</div>
     ${a.memories.map(m=>`<div class="mem"><time>${m.clock.replace('Day ','D')}</time><span></span><span class="imp"></span></div>`).join('')}
     <div class="eyebrow">${t('decisionTraces')}</div>
@@ -780,6 +796,13 @@ async function refreshInspector(id,scroll){
       <div class="m">${tr.clock} · L${tr.level} · ${tr.model}</div>
       <span class="obs"></span><br><b>→ ${actName(tr.action)}</b> — <span class="rsn"></span></div>`).join('')||`<div class="placeholder">${t('noDecisions')}</div>`}`;
   // Fill free-form / user-content fields via textContent to avoid HTML injection.
+  (a.beliefs||[]).forEach((b,i)=>{
+    const el=box.querySelectorAll('.blf')[i]; if(!el) return;
+    const sign=b.sentiment<0?'⊖ ':b.sentiment>0?'⊕ ':'';
+    const src=b.source_count>1?` · ${t('beliefSrc').replace('{n}',b.source_count)}`:'';
+    el.querySelector('b').textContent=sign+(subjName(b)||b.subject_name)+src;
+    el.querySelector('.blf-text').textContent=b.text;
+  });
   box.querySelectorAll('.mem').forEach((el,i)=>{
     const m=a.memories[i];
     el.children[1].textContent=(m.kind==='rumor'?'🗣️ ':'')+memText(m.text);

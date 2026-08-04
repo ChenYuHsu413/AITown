@@ -68,6 +68,7 @@ _EN_TEMPLATES = {
     "share_rumor": "{actor} shared a rumor with {target}: {text}",
     "seek_out": "{actor} went looking for {target}",
     "confronted": "{actor} confronted {target} about the rumor — they {text}",
+    "belief": "{actor} formed an impression of {target}: {text}",
     "day_summary": "{actor}'s day closed — {text}",
     "broke": "{actor} couldn't afford a meal at {loc}",
     "rain_start": "It started raining",
@@ -170,6 +171,7 @@ class SimulationEngine:
         target: Agent | None = None,
         location_id: str = "",
         text: str = "",
+        target_name: str | None = None,
     ) -> None:
         loc = self.world.locations.get(location_id)
         ev = Event(
@@ -179,7 +181,9 @@ class SimulationEngine:
             actor=actor.id if actor else "",
             actor_name=actor.name if actor else "",
             target=target.id if target else "",
-            target_name=target.name if target else "",
+            # target_name override lets non-agent subjects (a place, "self") still
+            # render a name when there's no Agent to derive it from.
+            target_name=(target_name if target_name is not None else (target.name if target else "")),
             location=location_id,
             location_name=loc.name if loc else "",
         )
@@ -250,6 +254,7 @@ class SimulationEngine:
             loc.revenue_today = 0.0
         for ag in self.world.agents.values():
             ag.state.money += ag.profile.daily_wage
+            ag.semantic.decay()   # unreinforced impressions fade a little each day
 
     async def tick(self) -> None:
         item = self.scheduler.pop_next()
@@ -292,12 +297,20 @@ class SimulationEngine:
             if decision.action == "move":
                 self._interrupt_colocated(agent)
 
-        # Reflection check (Level 3) fires only on accumulated importance.
-        insights = await self.decisions.maybe_reflect(agent, self.now)
+        # Reflection check (Level 3) fires only on accumulated importance. It also
+        # distills lasting beliefs from repeated experience (semantic memory).
+        insights, beliefs = await self.decisions.maybe_reflect(agent, self.world, self.now)
         for ins in insights:
             self._publish(
                 "reflection", "insight", actor=agent,
                 location_id=agent.state.location, text=ins,
+            )
+        for be in beliefs:
+            self._publish(
+                "reflection", "belief", actor=agent,
+                target=self.world.agents.get(be["subject_id"]),
+                target_name=be["subject_name"],
+                location_id=agent.state.location, text=be["text"],
             )
 
         self.scheduler.schedule(agent.id, self.now + decision.duration)

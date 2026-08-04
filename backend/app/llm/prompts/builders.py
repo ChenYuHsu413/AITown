@@ -97,6 +97,7 @@ def dialogue_prompt(
     a: "Agent", b: "Agent", a_mem: list[str], b_mem: list[str], max_turns: int = 4,
     a_wants_to_mention: str | None = None, b_wants_to_mention: str | None = None,
     is_confrontation: bool = False, time_hint: str = "",
+    a_impression: str | None = None, b_impression: str | None = None,
 ) -> list[dict]:
     scene = f"Scene: {time_hint + ' ' if time_hint else ''}at {a.state.location}.\n"
     user = (
@@ -105,6 +106,11 @@ def dialogue_prompt(
         f"A: {character_card(a)} {state_line(a)}\n{memories_block(a_mem)}\n"
         f"B: {character_card(b)} {state_line(b)}\n{memories_block(b_mem)}"
     )
+    # Lasting impressions colour how they treat each other, beyond today's memories.
+    if a_impression:
+        user += f"\n{a.profile.name}'s lasting impression of {b.profile.name}: \"{a_impression}\""
+    if b_impression:
+        user += f"\n{b.profile.name}'s lasting impression of {a.profile.name}: \"{b_impression}\""
     if a_wants_to_mention:
         user += f"\n{a.profile.name} wants to bring up: {a_wants_to_mention}"
     if b_wants_to_mention:
@@ -191,9 +197,18 @@ def reflection_prompt(agent: "Agent", day_events: list[str]) -> list[dict]:
     return [
         {
             "role": "system",
-            "content": "You produce end-of-day reflection insights for a life-sim character. "
-            'Respond ONLY with JSON: {"insights": ["...", "..."]}. Task: reflection.'
-            + _lang_directive(),
+            "content": (
+                "You produce end-of-day reflection for a life-sim character. Respond ONLY with JSON: "
+                '{"insights": ["...", "..."], '
+                '"beliefs": [{"subject": "<name>", "text": "...", "confidence": 0.0-1.0, "sentiment": -1.0-1.0}]}. '
+                '"insights" are 1-2 short takeaways from today. '
+                '"beliefs" are 0-2 LASTING impressions about a specific person or place -- formed ONLY when '
+                "today's experience repeats or confirms something you already sensed; a single event is NOT "
+                "enough, so prefer an empty list (be sparing). \"subject\" is the exact name of an agent or "
+                'place; "text" is one sentence; "sentiment" is how positive(+1)/negative(-1) the impression is. '
+                "Task: reflection."
+                + _lang_directive()
+            ),
         },
         {
             "role": "user",

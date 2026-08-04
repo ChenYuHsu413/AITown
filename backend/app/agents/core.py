@@ -55,6 +55,48 @@ class MemoryItem:
     rumor_id: str = ""                      # set when this memory records a rumor
 
 
+@dataclass
+class Belief:
+    """A long-term impression distilled from repeated experience -- the semantic
+    layer above episodic memory. One belief per subject (an agent_id, "self", or
+    a location id). ``sentiment`` (-1..1) drives trust inertia; ``confidence``
+    grows with reinforcement and decays when left unreinforced."""
+
+    subject: str                            # agent_id | "self" | location_id
+    text: str                               # one-line long-term impression (English)
+    confidence: float = 0.3                 # 0..1
+    sentiment: float = 0.0                  # -1 negative .. +1 positive
+    formed_minute: int = 0
+    last_reinforced_minute: int = 0
+    source_count: int = 1                   # experiences backing this belief
+
+
+class SemanticMemory:
+    """Every agent's small set of lasting impressions (max 8). Formation and
+    reinforcement happen in the reflection flow; decay runs at each day boundary."""
+
+    def __init__(self) -> None:
+        self.beliefs: list[Belief] = []
+
+    def about(self, subject: str) -> "Belief | None":
+        for b in self.beliefs:
+            if b.subject == subject:
+                return b
+        return None
+
+    def decay(self, amount: float = 0.02, floor: float = 0.15) -> None:
+        """Erode every belief a little (call once per sim-day); drop the faded."""
+        for b in self.beliefs:
+            b.confidence -= amount
+        self.beliefs = [b for b in self.beliefs if b.confidence >= floor]
+
+    def _prune(self, cap: int = 8) -> None:
+        """Keep at most ``cap`` beliefs -- evict the least-confident."""
+        if len(self.beliefs) > cap:
+            self.beliefs.sort(key=lambda b: b.confidence, reverse=True)
+            del self.beliefs[cap:]
+
+
 class EpisodicMemory:
     """Append-only list + naive keyword top-k retrieval.
 

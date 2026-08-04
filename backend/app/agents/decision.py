@@ -29,7 +29,9 @@ from ..llm.router import LLMRouter
 from ..social.rumors import RumorRegistry
 from ..world.world import Observation, World
 from .agent import Agent
-from .core import MemoryItem
+from .core import Belief, MemoryItem
+
+BELIEF_CONTEXT_MIN = 0.3      # a belief this confident (or more) colours dialogue + trust math
 
 RUMOR_DISTORT_CHANCE = 0.35   # probability a shared rumor mutates in the retelling
 
@@ -422,6 +424,10 @@ class DecisionEngine:
         shared_rumors = [sr for sr in (fwd, rev) if sr]
         a_mem = await a.memory.retrieve_async(b.name, k=3)
         b_mem = await b.memory.retrieve_async(a.name, k=3)
+        # A held impression of the other person rides into the dialogue context, so
+        # the model naturally carries the weight of the relationship's history.
+        a_imp = self._impression_of(a, b.id)
+        b_imp = self._impression_of(b, a.id)
         res = await self.router.generate(
             task="dialogue",
             messages=builders.dialogue_prompt(
@@ -430,6 +436,7 @@ class DecisionEngine:
                 b_wants_to_mention=rev["text"] if rev else None,
                 is_confrontation=is_confront,
                 time_hint=builders.time_of_day(now),
+                a_impression=a_imp, b_impression=b_imp,
             ),
             agent_id=a.id,
             sim_minute=now,
@@ -516,11 +523,82 @@ class DecisionEngine:
         ))
         return {"rumor_id": rumor_id, "outcome": outcome, "admitted": admitted}
 
+    # ---- semantic memory (beliefs) -----------------------------------
+
+    @staticmethod
+    def _impression_of(agent: Agent, other_id: str) -> str | None:
+        """The agent's lasting impression of ``other_id`` -- but only once it's
+        confident enough to matter (else dialogue/trust stay uncoloured)."""
+        b = agent.semantic.about(other_id)
+        return b.text if b is not None and b.confidence >= BELIEF_CONTEXT_MIN else None
+
+    @staticmethod
+    def _resolve_subject(agent: Agent, world: World, raw: object) -> tuple[str, str] | None:
+        """Map a belief's subject NAME (from the model) back to an id. Returns
+        (id, display_name) or None when it matches nobody/nowhere (then dropped)."""
+        n = str(raw or "").strip().lower()
+        if not n:
+            return None
+        if n in ("self", agent.name.lower()):
+            return ("self", agent.name)
+        for a in world.agents.values():
+            if a.name.lower() == n:
+                return (a.id, a.name)
+        for loc in world.locations.values():
+            if loc.name.lower() == n:
+                return (loc.id, loc.name)
+        return None
+
+    def _form_beliefs(self, agent: Agent, world: World, raw: object, now: int) -> list[dict]:
+        """Merge the reflection's proposed beliefs into the agent's semantic
+        memory (pure Python). Same subject -> reinforce (confidence up, source
+        count up, new wording wins); new subject -> add, capped at 0.6. Returns
+        one descriptor per formed/reinforced belief for the engine to publish."""
+        events: list[dict] = []
+        if not isinstance(raw, list):
+            return events
+        for rb in raw[:2]:                                # at most 2 per reflection
+            if not isinstance(rb, dict):
+                continue
+            text = str(rb.get("text", "")).strip()
+            if not text:
+                continue
+            resolved = self._resolve_subject(agent, world, rb.get("subject", ""))
+            if resolved is None:                          # unmatched subject -> drop
+                continue
+            sid, sname = resolved
+            try:
+                conf = max(0.0, min(1.0, float(rb.get("confidence", 0.4))))
+            except (TypeError, ValueError):
+                conf = 0.4
+            try:
+                sent = max(-1.0, min(1.0, float(rb.get("sentiment", 0.0))))
+            except (TypeError, ValueError):
+                sent = 0.0
+
+            existing = agent.semantic.about(sid)
+            if existing is not None:                      # reinforce the same slot
+                existing.text = text
+                existing.confidence = min(1.0, existing.confidence * 0.7 + conf * 0.5)
+                existing.sentiment = sent
+                existing.source_count += 1
+                existing.last_reinforced_minute = now
+            else:                                         # brand-new impression -> cap at 0.6
+                agent.semantic.beliefs.append(Belief(
+                    subject=sid, text=text, confidence=min(0.6, conf), sentiment=sent,
+                    formed_minute=now, last_reinforced_minute=now, source_count=1,
+                ))
+                agent.semantic._prune()
+            events.append({"subject_id": sid, "subject_name": sname, "text": text})
+        return events
+
     # ---- Level 3: reflection -----------------------------------------
 
-    async def maybe_reflect(self, agent: Agent, now: int, threshold: int = 25) -> list[str]:
+    async def maybe_reflect(
+        self, agent: Agent, world: World, now: int, threshold: int = 25
+    ) -> tuple[list[str], list[dict]]:
         if agent.memory.importance_since_reflection < threshold:
-            return []
+            return [], []
         day_start = now - (now % (24 * 60))
         events = agent.memory.today(day_start)
         res = await self.router.generate(
@@ -531,10 +609,12 @@ class DecisionEngine:
             schema={"type": "object"},
             max_tokens=300 if builders.lang_is_zh() else 200,
         )
-        insights = []
+        insights: list[str] = []
+        belief_events: list[dict] = []
         if isinstance(res.parsed, dict):
             insights = [str(x) for x in res.parsed.get("insights", [])]
+            belief_events = self._form_beliefs(agent, world, res.parsed.get("beliefs", []), now)
         for ins in insights:
             agent.memory.add(MemoryItem(minute=now, text=ins, importance=5, kind="reflection"))
         agent.memory.importance_since_reflection = 0
-        return insights
+        return insights, belief_events
