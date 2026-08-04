@@ -4,9 +4,7 @@ A generative multi-agent social simulation with a pixel-art town UI. Five LLM-dr
 villagers follow daily routines, talk, gossip, fall out, and make up — and you can watch
 it unfold, rewind it, or nudge it as a god.
 
-![AI Town — the pixel-art village, event feed, and agent inspector](docs/screenshots/town.png)
-
-> _Screenshot placeholder — drop `town.png` into `docs/screenshots/` (maintainer)._
+![AI Town — the pixel-art village, event feed, and agent inspector](docs/town.png)
 
 - **Emergent social drama, not scripted.** Plant a rumor and watch it spread mouth-to-mouth,
   distort in the retelling, erode trust, drive customers away from a shop, and end in an
