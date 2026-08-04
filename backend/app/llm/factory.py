@@ -96,9 +96,17 @@ def build_router(live: bool | None = None) -> LLMRouter:
                               input_price_per_m=0.25, output_price_per_m=2.00)
 
     openrouter = None
+    openrouter_zh = None
     if os.environ.get("OPENROUTER_API_KEY"):
-        from .providers.openrouter_provider import OpenRouterProvider
+        from .providers.openrouter_provider import DEFAULT_MODEL_ZH, OpenRouterProvider
         openrouter = OpenRouterProvider()  # third free provider; English/structured only
+        # A pinned Chinese-capable free model as a zh dialogue/reflection tail, so the
+        # town doesn't fall all the way to the English mock once Gemini's free quota is
+        # spent. Defaults to the best free zh model found on OpenRouter; blank
+        # OPENROUTER_MODEL_ZH to disable.
+        zh_model = os.environ.get("OPENROUTER_MODEL_ZH", DEFAULT_MODEL_ZH).strip()
+        if zh_model:
+            openrouter_zh = OpenRouterProvider(model=zh_model)
 
     if not any((small, gem, nano, openrouter)):
         print("[llm] AI_TOWN_LIVE=1 but no provider key found "
@@ -127,9 +135,11 @@ def build_router(live: bool | None = None) -> LLMRouter:
     # Gemini (best) -> Gemini-lite -> llama-3.3-70b (fluent, high quota) -> mock.
     # English keeps the full dual chain (8b is fine there).
     task_chains: dict[str, list[LLMProvider]] = {}
-    if builders.lang_is_zh() and (gem or gem_lite or large):
-        # or_tail=False: OpenRouter's free model isn't trusted for zh free text.
-        zh_reliable = chain(gem, gem_lite, large, or_tail=False)  # no 8b/openrouter; mock floor last
+    if builders.lang_is_zh() and (gem or gem_lite or large or openrouter_zh):
+        # or_tail=False keeps the English Free-Models-Router out of zh; the pinned
+        # Chinese-capable openrouter_zh goes on the tail (before mock) instead, and a
+        # gibberish gate (see decision._zh_text_ok) rejects any character-soup it emits.
+        zh_reliable = chain(gem, gem_lite, large, openrouter_zh, or_tail=False)  # mock floor last
         task_chains["dialogue"] = zh_reliable
         task_chains["reflection"] = zh_reliable
 
@@ -140,6 +150,7 @@ def build_router(live: bool | None = None) -> LLMRouter:
     if gem: tags.append("gemini [ok]")
     if nano: tags.append("openai [ok]")
     if openrouter: tags.append("openrouter [ok]")
+    if openrouter_zh: tags.append("or-zh [ok]")
     dchain = " -> ".join(f"{p.name}/{getattr(p, 'model', '')}"
                          for p in task_chains.get("dialogue", tiers["normal"]))
     print(f"[live] providers: {' '.join(tags) if tags else 'mock-only'} | "

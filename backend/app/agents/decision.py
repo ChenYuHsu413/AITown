@@ -22,6 +22,8 @@ import hashlib
 import json
 import os
 import random
+import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from ..llm.prompts import builders
@@ -40,27 +42,59 @@ TALK_DURATION_MIN = 10
 LOW_ENERGY = 20
 
 
+_CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
+# Latin letters glued straight onto CJK with no space -- the tell of weak-model
+# "character soup" (e.g. "吃asks导"). Real zh keeps English proper nouns spaced
+# and capitalized, so this stays clear of "覺得 David 最近...".
+_GLUE_RE = re.compile(r"[㐀-䶿一-鿿][a-z]{3,}|[a-z]{3,}[㐀-䶿一-鿿]")
+
+
+def _zh_text_ok(text: str) -> bool:
+    """Gibberish gate for a single zh dialogue turn (the precondition for putting
+    a new model on the zh chain). Rejects character-soup weak models emit:
+      - the Unicode replacement char (encoding corruption),
+      - a run of 4+ identical characters (a stuck loop),
+      - latin letters glued into CJK with no spacing (mixed-script soup),
+      - fewer than 60% CJK among the letters (excluding punctuation/space) --
+        i.e. the "Chinese" turn isn't actually mostly Chinese.
+    A rejected turn drops the whole conversation to the next provider / mock."""
+    if "�" in text:
+        return False
+    if _GLUE_RE.search(text):
+        return False
+    if re.search(r"(.)\1{3,}", text):
+        return False
+    letters = [c for c in text if not c.isspace() and not unicodedata.category(c).startswith("P")]
+    if not letters:
+        return False
+    cjk = sum(1 for c in letters if _CJK_RE.match(c))
+    return cjk / len(letters) >= 0.6
+
+
 def _dialogue_ok(result) -> bool:
     """Structural quality gate for a generated conversation (passed to the router
     so a bad result is retried / falls through instead of landing on-screen):
     real turns, each with non-empty, sensibly-sized text. Catches truncated JSON
     and the empty-"text" JSON that Groq's 70b intermittently emits.
 
-    Deliberately NOT a language check: keeping weak-at-Chinese models off the zh
-    chain is handled by language-aware routing in the factory, and a structural-
-    only gate lets the English mock serve as a readable last resort (a rare, plain
-    fallback) rather than being rejected into an empty bubble."""
+    In a zh run it ALSO runs the gibberish gate per turn (``_zh_text_ok``), which
+    is what lets a Chinese-capable OpenRouter model sit on the zh chain safely:
+    any character-soup it emits is rejected and falls through to mock. English
+    runs are unaffected (the zh check only applies when the language is zh)."""
     parsed = result.parsed
     if not isinstance(parsed, dict):
         return False
     turns = parsed.get("turns")
     if not isinstance(turns, list) or not turns or len(turns) > 12:
         return False
+    zh = builders.lang_is_zh()
     for t in turns:
         if not isinstance(t, dict):
             return False
         text = str(t.get("text", "")).strip()
         if not text or len(text) > 500:
+            return False
+        if zh and not _zh_text_ok(text):
             return False
     return True
 

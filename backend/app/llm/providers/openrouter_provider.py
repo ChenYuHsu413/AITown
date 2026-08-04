@@ -21,6 +21,17 @@ from .openai_provider import OpenAIProvider
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "openrouter/free"  # Free Models Router: auto-picks a live free model
 
+# A specific Chinese-capable free model for the zh dialogue/reflection tail. The
+# Free Models Router (openrouter/free) can land on English-weak models, so zh
+# free text pins a known-multilingual slug instead. Picked by live-querying
+# GET /api/v1/models for a free model from the strong-zh families (Qwen ->
+# DeepSeek -> GLM -> Gemma); at time of writing only Gemma 4 was free. Both the
+# 31B and 26B variants speak fluent zh-TW, but the 31B was persistently
+# upstream-rate-limited (Google AI Studio) while the 26B served reliably, so the
+# default is Gemma 4 26B (262k ctx). Override with OPENROUTER_MODEL_ZH (e.g. the
+# 31B slug); the free list churns, so re-check when the town's zh output degrades.
+DEFAULT_MODEL_ZH = "google/gemma-4-26b-a4b-it:free"
+
 
 class OpenRouterProvider(OpenAIProvider):
     name = "openrouter"
