@@ -671,12 +671,15 @@ function applyDaylight(minute){
   $('#nightfall').setAttribute('opacity',nf);
   $('#lights').setAttribute('opacity',(nf/0.45).toFixed(3));   // windows glow as night deepens
 }
-function fmtMin(m){                                             // client-side "Day X HH:MM" (matches server)
+// The one client-side "Day X HH:MM" formatter, shared by live + replay. Floors
+// first, so a fractional replay minute never leaks decimals into the label.
+function fmtMinute(m){
+  m=Math.floor(m);
   const day=Math.floor(m/1440)+1, x=((m%1440)+1440)%1440;
   return `Day ${day} ${String(Math.floor(x/60)).padStart(2,'0')}:${String(x%60).padStart(2,'0')}`;
 }
 function updateClock(minute,clock,paused,speed){
-  $('#clock').textContent=clock;
+  $('#clock').textContent=fmtMinute(minute);                   // derive from the minute (server clock is identical)
   applyDaylight(minute);
   $('#btn-pause').classList.toggle('active',paused);
   ['1','5','20'].forEach(s=>$('#btn-'+s).classList.toggle('active',!paused&&speed==+s));
@@ -1150,8 +1153,9 @@ function replayRenderEffects(){
   if(REPLAY.fest) eff.push({type:'festival',location:REPLAY.fest});
   renderEffects(eff);
 }
-function replayShowTime(m){ const s=fmtMin(m); $('#replay-time').textContent=s; $('#clock').textContent=s; applyDaylight(m); }
-function syncSlider(){ const sl=$('#replay-slider'); if(sl) sl.value=REPLAY.cur; }
+function replayShowTime(m){ const im=Math.floor(m), s=fmtMinute(im);
+  $('#replay-time').textContent=s; $('#clock').textContent=s; applyDaylight(im); }
+function syncSlider(){ const sl=$('#replay-slider'); if(sl) sl.value=Math.floor(REPLAY.cur); }
 
 // ---- seek (rebuild state from scratch to time T; no bubbles for the past) ----
 let seekBusy=false;
@@ -1163,7 +1167,7 @@ function queueSeek(T){                              // serialize rapid slider dr
     finally{ seekBusy=false; } })();
 }
 async function replaySeek(T){
-  T=Math.max(REPLAY.minMin,Math.min(Math.round(T),REPLAY.maxMin));
+  T=Math.max(REPLAY.minMin,Math.min(Math.floor(T),REPLAY.maxMin));   // integer minutes only
   await replayEnsure(T);
   REPLAY.loc=Object.assign({},SEED_LOC); REPLAY.act={}; REPLAY.rain=false; REPLAY.fest='';
   const rf=$('#replay-feed'); rf.innerHTML=''; const shown=[];
@@ -1177,14 +1181,15 @@ async function replaySeek(T){
 
 // ---- play (advance the clock, fire new events forward) ----
 async function advanceTo(next){
-  await replayEnsure(next);
+  const m=Math.floor(next);                            // integer minute for fetch / compare / display
+  await replayEnsure(m);
   const pending=[];
-  while(REPLAY.idx<REPLAY.events.length && REPLAY.events[REPLAY.idx].minute<=next){
+  while(REPLAY.idx<REPLAY.events.length && REPLAY.events[REPLAY.idx].minute<=m){
     const ev=REPLAY.events[REPLAY.idx++];
     applyEventState(ev); addEventTo($('#replay-feed'),ev); pending.push(ev);
   }
-  REPLAY.cur=next;
-  replayRenderAgents(); replayRenderEffects(); replayShowTime(next); syncSlider();
+  REPLAY.cur=next;                                      // keep the fractional accumulator for smooth playback
+  replayRenderAgents(); replayRenderEffects(); replayShowTime(m); syncSlider();
   for(const ev of pending) if(ev.kind==='dialogue') maybeBubble(ev);   // bubbles after reposition
 }
 async function replayLoop(){
