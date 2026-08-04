@@ -20,12 +20,27 @@ Env: AI_TOWN_LIVE, GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY,
 from __future__ import annotations
 
 import os
+import sys
 
 from .env import load_env
 from .prompts import builders
 from .providers.base import LLMProvider
 from .providers.mock import MockProvider
 from .router import LLMRouter
+
+
+def _make_console_safe() -> None:
+    """Stop logs from crashing the process on a non-UTF-8 console -- notably
+    Windows' cp950, where an emoji or a stray symbol raises UnicodeEncodeError
+    mid-print. We only relax the *error handler*; the console keeps its own
+    encoding, so Big5-encodable CJK still prints correctly and only characters it
+    genuinely can't represent degrade to '?'. Idempotent and safe to call when
+    stdout is redirected/captured (then it's simply a no-op)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass  # not a reconfigurable TextIO -- nothing to harden
 
 
 def _budget_from_env() -> float | None:
@@ -38,6 +53,7 @@ def _budget_from_env() -> float | None:
 
 
 def build_router(live: bool | None = None) -> LLMRouter:
+    _make_console_safe()  # before the first status print, harden the console (cp950 etc.)
     load_env()  # fill missing keys from repo-root .env (real env still wins)
     if live is None:
         live = os.environ.get("AI_TOWN_LIVE") == "1"
@@ -120,12 +136,12 @@ def build_router(live: bool | None = None) -> LLMRouter:
     # Startup live-status summary: make "am I actually on real models?" a one-line,
     # unmissable fact (a server restarted without .env in scope would show mock-only).
     tags = []
-    if small: tags.append("groq ✓")
-    if gem: tags.append("gemini ✓")
-    if nano: tags.append("openai ✓")
-    if openrouter: tags.append("openrouter ✓")
-    dchain = " → ".join(f"{p.name}/{getattr(p, 'model', '')}"
-                        for p in task_chains.get("dialogue", tiers["normal"]))
+    if small: tags.append("groq [ok]")
+    if gem: tags.append("gemini [ok]")
+    if nano: tags.append("openai [ok]")
+    if openrouter: tags.append("openrouter [ok]")
+    dchain = " -> ".join(f"{p.name}/{getattr(p, 'model', '')}"
+                         for p in task_chains.get("dialogue", tiers["normal"]))
     print(f"[live] providers: {' '.join(tags) if tags else 'mock-only'} | "
           f"lang={builders.lang_code()} | dialogue: {dchain}", flush=True)
 
