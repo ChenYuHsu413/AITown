@@ -499,6 +499,16 @@ function agentNameW(id){ const n=agentName(id); let w=0;
 const SPEECH_ZH={'admitted it':'承認了','denied it':'否認了'};
 // Landmark names are internal English; map the small set for the zh event feed.
 const LANDMARK_ZH={'the interactive light installation':'互動燈光裝置'};
+// Memory-placeholder resolution: {agent:id}/{loc:id}/{landmark:id} -> current-language
+// names. Landmarks keyed by id here (memory text uses ids). Unknown ids fall through.
+const LANDMARK_DISP={installation:{zh:'互動燈光裝置',en:'the interactive light installation'}};
+function landmarkDisp(id){ const d=LANDMARK_DISP[id]; return d?(LANG==='zh'?d.zh:d.en):id; }
+function resolvePlaceholders(text){
+  return String(text)
+    .replace(/\{agent:([a-z_]+)\}/g,(_,id)=>agentName(id))
+    .replace(/\{loc:([a-z_]+)\}/g,(_,id)=>locById(id,(LOCS[id]&&LOCS[id].name)||id))
+    .replace(/\{landmark:([a-z_]+)\}/g,(_,id)=>landmarkDisp(id));
+}
 // Event Contract v1 templates, keyed by ev.verb. (a)ctor, (l)ocation, (tg)target, (sp)eech.
 // speech is model-generated free text — inserted verbatim, never translated.
 const EV_TMPL={
@@ -558,9 +568,10 @@ function evText(ev){
 }
 // Translate memory text where it follows a known template.
 function memText(raw){
-  if(LANG!=='zh') return raw;
-  const m=raw.match(/^Talked with (.+?) at (.+?)\.$/);
-  return m?`與 ${m[1]} 在 ${locByEn(m[2])} 交談。`:raw;
+  let s=String(raw);
+  // zh: reword the conversation template (placeholders stay intact) before resolving.
+  if(LANG==='zh'){ const m=s.match(/^Talked with (.+?) at (.+?)\.$/); if(m) s=`與 ${m[1]} 在 ${m[2]} 交談。`; }
+  return resolvePlaceholders(s);   // {agent:id}/{loc:id}/{landmark:id} -> names; plain old text passes through
 }
 function applyLang(){
   document.querySelectorAll('[data-i18n]').forEach(el=>{el.textContent=t(el.dataset.i18n);});

@@ -111,6 +111,32 @@ def _dialogue_ok(result) -> bool:
     return True
 
 
+# Memory text stores {agent:id}/{loc:id}/{landmark:id} placeholders. For the LLM
+# context we resolve them to pinyin/English (the model stays in an English name
+# space); the UI resolves the same placeholders to zh/en names at display time.
+_PLACEHOLDER_RE = re.compile(r"\{(agent|loc|landmark):([a-z_]+)\}")
+
+
+def _resolve_placeholders(text: str, world: "World") -> str:
+    def repl(m: "re.Match") -> str:
+        kind, key = m.group(1), m.group(2)
+        if kind == "agent":
+            return key.capitalize()                       # pinyin name for the model
+        if kind == "loc":
+            loc = world.locations.get(key)
+            return loc.name if loc is not None else key
+        for loc in world.locations.values():              # landmark: find by id
+            for lm in loc.landmarks:
+                if lm.get("id") == key:
+                    return lm.get("name", key)
+        return key
+    return _PLACEHOLDER_RE.sub(repl, text)
+
+
+def _resolve_mems(mems: list[str], world: "World") -> list[str]:
+    return [_resolve_placeholders(m, world) for m in mems]
+
+
 @dataclass
 class Decision:
     action: str                        # move | work | rest | eat | sleep | talk | idle
@@ -227,7 +253,7 @@ class DecisionEngine:
                 memories = await agent.memory.retrieve_async(f"{partner.name} {obs.location}", k=5)
                 res = await self.router.generate(
                     task="should_talk",
-                    messages=builders.should_talk_prompt(agent, partner.name, memories),
+                    messages=builders.should_talk_prompt(agent, partner.name, _resolve_mems(memories, world)),
                     agent_id=agent.id,
                     sim_minute=now,
                     schema={"type": "object"},
@@ -260,7 +286,7 @@ class DecisionEngine:
             res = await self.router.generate(
                 task="decision",
                 messages=builders.decision_prompt(
-                    agent, observation, memories, ["continue_routine", "seek_out"]
+                    agent, observation, _resolve_mems(memories, world), ["continue_routine", "seek_out"]
                 ),
                 agent_id=agent.id,
                 sim_minute=now,
@@ -405,14 +431,13 @@ class DecisionEngine:
             if worker is not None and (prev is None or jumped):
                 agent.memory.add(MemoryItem(
                     minute=now, importance=2,
-                    text=f"Saw {worker.name} working on {lm['name']} at {loc.name}.",
+                    text=f"Saw {{agent:{worker.id}}} working on {{landmark:{lid}}} at {{loc:{loc.id}}}.",
                 ))
                 seen[lid] = cur
             elif jumped:
-                bare = lm["name"][4:] if lm["name"].startswith("the ") else lm["name"]
                 agent.memory.add(MemoryItem(
                     minute=now, importance=2,
-                    text=f"The {bare} at {loc.name} has come along since I last saw it.",
+                    text=f"{{landmark:{lid}}} at {{loc:{loc.id}}} has come along since I last saw it.",
                 ))
                 seen[lid] = cur
             elif prev is None:
@@ -492,7 +517,7 @@ class DecisionEngine:
             # The rumor made it back to the person it is about -- no relationship
             # math against oneself; instead it lands hard and demands a reaction.
             b.memory.add(MemoryItem(
-                minute=now, text=f"{a.name} told me people are saying: {text}",
+                minute=now, text=f"{{agent:{a.id}}} told me people are saying: {text}",
                 importance=8, kind="rumor", rumor_id=rumor.id,
             ))
             if rumor.sentiment < 0:
@@ -500,7 +525,7 @@ class DecisionEngine:
             b.state.pending_concern = {"rumor_id": rumor.id, "told_by": a.id}
         else:
             b.memory.add(MemoryItem(
-                minute=now, text=f"Heard from {a.name}: {text}",
+                minute=now, text=f"Heard from {{agent:{a.id}}}: {text}",
                 importance=4, kind="rumor", rumor_id=rumor.id,
             ))
             # Relationship math stays in Python; the rumor's polarity moves it.
@@ -549,7 +574,7 @@ class DecisionEngine:
         if random.Random(seed).random() >= p:
             return None
         b.memory.add(MemoryItem(
-            minute=now, text=f"{a.name} confided in me: {secret.text}",
+            minute=now, text=f"{{agent:{a.id}}} confided in me: {secret.text}",
             importance=int(4 + secret.sensitivity * 4), kind="secret", secret_id=secret.id,
         ))
         self.secrets.record_confide(secret.id, b.id, now)
@@ -582,7 +607,7 @@ class DecisionEngine:
             return None
 
         owner = world.agents.get(secret.owner)
-        owner_name = owner.name if owner else secret.owner
+        owner_name = secret.owner.capitalize() if owner else secret.owner   # pinyin for the model
         res = await self.router.generate(       # rephrase to a 3rd-person rumor + appraise, in one call
             task="leak", messages=builders.leak_prompt(owner_name, secret.text),
             agent_id=b.id, sim_minute=now, schema={"type": "object"}, max_tokens=80,
@@ -601,7 +626,7 @@ class DecisionEngine:
         self.secrets.mark_leaked(secret.id, leaked_by=b.id)
         # c now holds the leaked rumor: record it + apply the recipient relationship math.
         c.memory.add(MemoryItem(
-            minute=now, text=f"Heard from {b.name}: {text}", importance=5, kind="rumor", rumor_id=rumor.id))
+            minute=now, text=f"Heard from {{agent:{b.id}}}: {text}", importance=5, kind="rumor", rumor_id=rumor.id))
         rel = c.rel(secret.owner)
         rel.trust += sentiment * 5; rel.friendship += sentiment * 2; rel.clamp()
         if sentiment <= -0.4:
@@ -647,7 +672,7 @@ class DecisionEngine:
         res = await self.router.generate(
             task="dialogue",
             messages=builders.dialogue_prompt(
-                a, b, a_mem, b_mem,
+                a, b, _resolve_mems(a_mem, world), _resolve_mems(b_mem, world),
                 a_wants_to_mention=confront_text or (fwd or leak_fwd or {}).get("text"),
                 b_wants_to_mention=(rev or leak_rev or {}).get("text"),
                 is_confrontation=is_confront,
@@ -678,16 +703,12 @@ class DecisionEngine:
         # Both sides remember the conversation (importance via cheap tier
         # is skipped here: conversation gets a flat importance; a real
         # importance call is wired for notable events in the engine).
-        summary = f"Talked with {b.name} at {world.locations[a.state.location].name}."
-        a.memory.add(MemoryItem(minute=now, text=summary, importance=3, kind="conversation"))
-        b.memory.add(
-            MemoryItem(
-                minute=now,
-                text=f"Talked with {a.name} at {world.locations[b.state.location].name}.",
-                importance=3,
-                kind="conversation",
-            )
-        )
+        a.memory.add(MemoryItem(
+            minute=now, text=f"Talked with {{agent:{b.id}}} at {{loc:{a.state.location}}}.",
+            importance=3, kind="conversation"))
+        b.memory.add(MemoryItem(
+            minute=now, text=f"Talked with {{agent:{a.id}}} at {{loc:{b.state.location}}}.",
+            importance=3, kind="conversation"))
         a.apply_conversation_signals(b.id, **signals)
         b.apply_conversation_signals(a.id, **signals)
         a.state.last_talk_minute[b.id] = now
@@ -746,20 +767,20 @@ class DecisionEngine:
         if is_betrayal:
             a.memory.add(MemoryItem(
                 minute=now, importance=9, kind="conversation",
-                text=f"Confronted {b.name} for leaking the secret I trusted them with. Betrayed.",
+                text=f"Confronted {{agent:{b.id}}} for leaking the secret I trusted them with. Betrayed.",
             ))
             b.memory.add(MemoryItem(
                 minute=now, importance=8, kind="conversation",
-                text=f"{a.name} confronted me for leaking their secret.",
+                text=f"{{agent:{a.id}}} confronted me for leaking their secret.",
             ))
         else:
             a.memory.add(MemoryItem(
                 minute=now, importance=6, kind="conversation",
-                text=f"Confronted {b.name} about the rumor. They {'admitted it' if admitted else 'denied it'}.",
+                text=f"Confronted {{agent:{b.id}}} about the rumor. They {'admitted it' if admitted else 'denied it'}.",
             ))
             b.memory.add(MemoryItem(
                 minute=now, importance=6, kind="conversation",
-                text=f"{a.name} confronted me about the rumor I "
+                text=f"{{agent:{a.id}}} confronted me about the rumor I "
                      f"{'started' if admitted else 'was accused of starting'}.",
             ))
         return {"rumor_id": rumor_id, "outcome": outcome, "admitted": admitted, "betrayal": is_betrayal}
@@ -856,7 +877,7 @@ class DecisionEngine:
         if agent.memory.importance_since_reflection < agent.profile.reflection_threshold:
             return [], []
         day_start = now - (now % (24 * 60))
-        events = agent.memory.today(day_start)
+        events = _resolve_mems(agent.memory.today(day_start), world)
         res = await self.router.generate(
             task="reflection",
             messages=builders.reflection_prompt(agent, events),

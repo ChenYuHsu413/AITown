@@ -64,8 +64,8 @@ def build_agents() -> list[Agent]:
             (hm(23, 0), "sleep", "home_a"),
         ]),
     )
-    jiji.memory.add(MemoryItem(0, "Xue mentioned she wants to resign from her job.", importance=6))
-    jiji.memory.add(MemoryItem(0, "Xue likes black coffee.", importance=2))
+    jiji.memory.add(MemoryItem(0, "{agent:xue} mentioned she wants to resign from her job.", importance=6))
+    jiji.memory.add(MemoryItem(0, "{agent:xue} likes black coffee.", importance=2))
 
     # ange (Baker) -- inherits Rosa: the rivalry with the cafe is built in.
     ange = Agent(
@@ -198,7 +198,7 @@ def build_agents() -> list[Agent]:
             (hm(23, 30), "sleep", "home_a"),
         ]),
     )
-    aisi.memory.add(MemoryItem(0, "The light installation in the park is about a third done.", importance=5))
+    aisi.memory.add(MemoryItem(0, "The {landmark:installation} in {loc:park} is about a third done.", importance=5))
 
     # xue (Office Worker) -- inherits Bob: quiet, stressed, weighing whether to quit.
     xue = Agent(
@@ -221,7 +221,7 @@ def build_agents() -> list[Agent]:
         ]),
     )
     xue.memory.add(MemoryItem(0, "Argued with the manager last week.", importance=7))
-    xue.memory.add(MemoryItem(0, "Jiji's cafe feels like a safe place.", importance=4))
+    xue.memory.add(MemoryItem(0, "{loc:cafe} feels like a safe place.", importance=4))
 
     # long (Market Vendor) -- inherits Mei: frugal, wise, quietly generous.
     long = Agent(

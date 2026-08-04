@@ -246,7 +246,7 @@ class SimulationEngine:
                 else:
                     imp, mood = 2, ""
                 owner.memory.add(MemoryItem(
-                    minute=self.now, text=f"Cafe made ${x:.0f} today.", importance=imp))
+                    minute=self.now, text=f"{{loc:{loc.id}}} made ${x:.0f} today.", importance=imp))
                 if mood:
                     owner.state.mood = mood
                 self._publish(

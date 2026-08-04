@@ -165,17 +165,19 @@ class World:
         if lm["progress"] < 1.0:
             return None
         lm["state"] = "completed"
-        bare = lm["name"][4:] if lm["name"].startswith("the ") else lm["name"]
+        # Memory text uses {agent:id}/{loc:id}/{landmark:id} placeholders (internal
+        # English); the display and prompt layers resolve them (see the resolvers).
         agent.memory.add(MemoryItem(
             minute=now, importance=8,
-            text=f"I finished {lm['name']} at {loc.name}. It's done at last.",
+            text=f"I finished {{landmark:{lm['id']}}} at {{loc:{loc.id}}}. It's done at last.",
         ))
         # The ripple: everyone who watched it grow shares the moment it's complete.
         for other in self.agents.values():
             if other.id != agent.id and lm["id"] in other.state.seen_landmark_progress:
                 other.memory.add(MemoryItem(
                     minute=now, importance=4,
-                    text=f"{agent.name}'s {bare} at {loc.name} is finished. It looks wonderful.",
+                    text=f"{{landmark:{lm['id']}}} at {{loc:{loc.id}}} is finished — "
+                         f"{{agent:{agent.id}}}'s work. It looks wonderful.",
                 ))
         return {"verb": "landmark_done", "location": loc.id, "text": lm["name"]}
 
@@ -224,12 +226,12 @@ class World:
                     st.meals_bought += 1
                     if st.meals_bought == 1 or st.meals_bought % 5 == 0:  # throttle the memory
                         agent.memory.add(MemoryItem(
-                            minute=now, text=f"Had a meal at {loc.name}.", importance=1))
+                            minute=now, text=f"Had a meal at {{loc:{loc.id}}}.", importance=1))
                 else:
                     # Too poor to buy a meal -> fall back to resting, and remember the sting.
                     st.last_meal_slot = slot   # settle the slot so we don't re-broke on re-entry
                     agent.memory.add(MemoryItem(
-                        minute=now, text=f"Couldn't afford to eat at {loc.name}.", importance=5))
+                        minute=now, text=f"Couldn't afford to eat at {{loc:{loc.id}}}.", importance=5))
                     st.current_action = "rest"
                     self._apply_energy(agent, "rest", duration)
                     return {"verb": "broke", "location": st.location}
