@@ -258,11 +258,11 @@ footer b{font-weight:500;font-size:14px}
       <g id="roads"></g>
       <g id="locs"></g>
       <g id="agents"></g>
-      <g id="bubbles"></g>
       <g id="festival" pointer-events="none"></g>
       <g id="rain" opacity="0" pointer-events="none"><rect width="800" height="520" fill="#4a6a90" opacity="0.12"/><g id="raindrops"></g></g>
       <rect id="nightfall" width="800" height="520" fill="var(--night)" opacity="0" pointer-events="none"/>
       <g id="lights" opacity="0" pointer-events="none"></g>
+      <g id="bubbles"></g>   <!-- topmost: speech stays readable over nightfall / rain / festival -->
     </svg>
   </div>
   <aside>
@@ -710,22 +710,56 @@ function addEventTo(feed,ev){                        // shared by the live feed 
 }
 function addEvent(ev){ addEventTo($('#feed'),ev); }
 
-/* ---------- speech bubbles (one per speaker, collision-stacked) ----------
-   Multiple simultaneous conversations at one place used to pile bubbles into
-   an unreadable heap. Now: each speaker shows at most one bubble; a new bubble
-   that would overlap an existing one stacks upward (a tower, capped at 3 per
-   place, oldest evicted); everything is clamped inside the viewBox. */
+/* ---------- speech bubbles (one per speaker, multi-line, collision-stacked) ----
+   Real dialogue runs 40-80 chars, so bubbles wrap onto up to 3 lines (SVG text
+   doesn't wrap -- we break it into <tspan>s ourselves, CJK-aware). Each speaker
+   shows at most one bubble; a new one that would overlap stacks upward (a tower,
+   capped at 3 per place, oldest evicted); the box is clamped inside the viewBox
+   by its real (multi-line) height. */
 const BUBBLES=[];                        // {el, speaker, loc, box:{x,y,w,h}, timer, gone}
-const BUB_H=20, BUB_GAP=4, BUB_MAX_W=224, BUB_MAX_PER_LOC=3;
+const BUB_GAP=4, BUB_MAX_W=220, BUB_MAX_PER_LOC=3;
+const BUB_PAD_X=8, BUB_PAD_Y=6, BUB_FONT=11, BUB_LINE_H=15, BUB_MAX_LINES=3;   // line-height ~1.35x
+const BUB_LINE_W=BUB_MAX_W-BUB_PAD_X*2;  // text budget per line (~16-18 CJK chars)
 const VB_W=800, VB_H=520;
 const bubEsc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
 const bubCharW=ch=>ch.codePointAt(0)>0x2E7F?11:6.2;    // CJK ~ full width, latin ~ half
-function bubFit(s){                       // clip to the max bubble width, adding an ellipsis
-  let w=0,out='';
-  for(const ch of s){ const cw=bubCharW(ch); if(w+cw>BUB_MAX_W-18) return out+'…'; w+=cw; out+=ch; }
-  return out;
-}
 function bubWidth(s){ let w=0; for(const ch of s) w+=bubCharW(ch); return w; }
+const RE_LATIN=/[A-Za-z0-9''\-]/;        // keep latin words whole; CJK/punct wrap per char
+function bubTokens(s){                    // split into wrap tokens (latin runs stay together)
+  const toks=[]; let cur='';
+  for(const ch of s){
+    if(RE_LATIN.test(ch)) cur+=ch;
+    else { if(cur){ toks.push(cur); cur=''; } toks.push(ch); }
+  }
+  if(cur) toks.push(cur);
+  return toks;
+}
+function bubWrapAll(s){                    // greedy wrap into lines at BUB_LINE_W (no line cap)
+  const lines=[]; let line='', w=0;
+  for(let tok of bubTokens(s)){
+    if(tok===' ' && line==='') continue;   // drop a leading space on a fresh line
+    let tw=bubWidth(tok);
+    if(w+tw<=BUB_LINE_W){ line+=tok; w+=tw; continue; }
+    if(line!==''){ lines.push(line); line=''; w=0; if(tok===' ') continue; tw=bubWidth(tok); }
+    if(tw<=BUB_LINE_W){ line=tok; w=tw; }
+    else for(const ch of tok){            // a single latin word too wide -> hard split
+      const cw=bubCharW(ch);
+      if(w+cw>BUB_LINE_W){ lines.push(line); line=''; w=0; }
+      line+=ch; w+=cw;
+    }
+  }
+  if(line!=='') lines.push(line);
+  return lines.length?lines:[''];
+}
+function bubLines(s){                       // clamp to BUB_MAX_LINES, ellipsize the last if it overflows
+  const all=bubWrapAll(s);
+  if(all.length<=BUB_MAX_LINES) return all;
+  const kept=all.slice(0,BUB_MAX_LINES);
+  let last=kept[BUB_MAX_LINES-1];
+  while(last && bubWidth(last+'…')>BUB_LINE_W) last=Array.from(last).slice(0,-1).join('');
+  kept[BUB_MAX_LINES-1]=last+'…';
+  return kept;
+}
 function bubHit(a,b){ return a.x<b.x+b.w && a.x+a.w>b.x && a.y<b.y+b.h && a.y+a.h>b.y; }
 function removeBubble(rec){
   if(rec.gone) return; rec.gone=true; clearTimeout(rec.timer); rec.el.remove();
@@ -736,13 +770,17 @@ function maybeBubble(ev){
   const el=AGENTS[ev.actor]; if(!el) return;            // position by agent id, no name-string matching
   const tf=el.getAttribute('transform').match(/(-?[\d.]+),(-?[\d.]+)/); if(!tf) return;
   const ax=+tf[1], ay=+tf[2];
-  const text=bubFit(ev.speech||''); if(!text) return;
-  const w=Math.min(BUB_MAX_W, bubWidth(text)+16), h=BUB_H;
+  const raw=String(ev.speech||''); if(!raw.trim()) return;
+  const lines=bubLines(raw);
+  const maxLineW=Math.max(...lines.map(bubWidth));
+  const w=Math.min(BUB_MAX_W, Math.ceil(maxLineW)+BUB_PAD_X*2);
+  const h=BUB_PAD_Y*2+lines.length*BUB_LINE_H;
 
   // (1) one bubble per speaker: drop this speaker's previous one
   BUBBLES.filter(b=>b.speaker===ev.actor).forEach(removeBubble);
 
-  // start above the head, then stack upward past any bubble it would overlap
+  // bottom edge sits ~34px above the head (tail points at the speaker); stack
+  // upward by this bubble's real height past anything it would overlap
   let bx=ax-w/2, by=ay-34-h, guard=0;
   while(guard++<6 && BUBBLES.some(b=>bubHit({x:bx,y:by,w,h},b.box))) by-=(h+BUB_GAP);
 
@@ -754,14 +792,16 @@ function maybeBubble(ev){
     by=Math.min(by,VB_H-h-2);
   }
 
+  const tspans=lines.map((ln,i)=>
+    `<tspan x="${bx+BUB_PAD_X}"${i?` dy="${BUB_LINE_H}"`:''}>${bubEsc(ln)}</tspan>`).join('');
   const g=document.createElementNS(SVGNS,'g'); g.setAttribute('class','bubble');
-  g.innerHTML=`<rect x="${bx}" y="${by}" width="${w}" height="${h}" rx="6"/>`
-    +`<text x="${bx+8}" y="${by+14}">${bubEsc(text)}</text>`;
+  g.innerHTML=`<rect x="${bx}" y="${by}" width="${w}" height="${h}" rx="7"/>`
+    +`<text x="${bx+BUB_PAD_X}" y="${by+BUB_PAD_Y+BUB_FONT}">${tspans}</text>`;
   $('#bubbles').appendChild(g);
 
-  // (4) lifetime scales with length so long lines stay readable
+  // (4) lifetime scales with length so long lines stay readable (up to 9s for 3 lines)
   const rec={el:g, speaker:ev.actor, loc:ev.location, box:{x:bx,y:by,w,h}, timer:null, gone:false};
-  const life=Math.min(6000, 3000 + Math.ceil(text.length/10)*500);
+  const life=Math.min(9000, 3000 + Math.ceil(raw.length/10)*500);
   rec.timer=setTimeout(()=>removeBubble(rec), life);
   BUBBLES.push(rec);
 
