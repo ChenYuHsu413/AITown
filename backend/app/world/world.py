@@ -48,7 +48,9 @@ class Location:
     owner: str = ""          # agent_id who runs this place ("" = public/unowned)
     price: float = 0.0       # cost of one meal here (0 = free, e.g. eating at home)
     revenue: float = 0.0     # lifetime takings
-    revenue_today: float = 0.0  # takings since the last day boundary (reset in settlement)
+    revenue_today: float = 0.0  # takings since the last day boundary (reset in daily settlement)
+    revenue_week: float = 0.0   # takings since the last Sunday (reset in the weekly settlement)
+    closed_days: list[int] = field(default_factory=list)  # weekly days off (0=Mon..6=Sun); no takings then
     # World objects that live here. Each: {"id", "name", "state": in_progress|completed,
     # "progress": 0.0-1.0, "created_by": agent_id}. Pure Level-0 state; the creator's
     # `work` here nudges progress (see advance_landmark).
@@ -211,8 +213,12 @@ class World:
         # the same routine slot just eats (free), it doesn't ring up a second sale.
         if action == "eat":
             loc = self.locations.get(st.location)
-            if loc and loc.owner and loc.price > 0 and loc.owner != agent.id:
-                slot = (now // (24 * 60)) * (24 * 60) + agent.routine.current(now % (24 * 60)).start
+            dow = (now // (24 * 60)) % 7
+            # A closed shop rings up nothing (it's the owner's day off) -- the eat
+            # just falls through to a free meal, same as an already-settled slot.
+            if loc and loc.owner and loc.price > 0 and loc.owner != agent.id \
+                    and dow not in loc.closed_days:
+                slot = (now // (24 * 60)) * (24 * 60) + agent.routine.current(now % (24 * 60), dow).start
                 if st.last_meal_slot == slot:
                     pass  # already settled this meal slot -> fall through to a free eat
                 elif st.money >= loc.price:
@@ -223,6 +229,7 @@ class World:
                         owner.state.money += loc.price
                     loc.revenue += loc.price
                     loc.revenue_today += loc.price
+                    loc.revenue_week += loc.price
                     st.meals_bought += 1
                     if st.meals_bought == 1 or st.meals_bought % 5 == 0:  # throttle the memory
                         agent.memory.add(MemoryItem(

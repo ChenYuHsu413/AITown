@@ -19,8 +19,12 @@ def build_locations() -> list[Location]:
     return [
         Location("home_a", "Riverside House", "home", x=120, y=120),
         Location("home_b", "Hillside Apartment", "home", x=685, y=105),
-        Location("cafe", "Moonlight Cafe", "cafe", x=340, y=185, owner="jiji", price=5.0),
-        Location("bakery", "Sunrise Bakery", "bakery", x=400, y=405, owner="ange", price=4.0),
+        # Two shops open 7 days but each takes one weekly day off, staggered so the
+        # town always has one open: the cafe rests Monday, the bakery Wednesday.
+        Location("cafe", "Moonlight Cafe", "cafe", x=340, y=185, owner="jiji", price=5.0,
+                 closed_days=[0]),   # Monday
+        Location("bakery", "Sunrise Bakery", "bakery", x=400, y=405, owner="ange", price=4.0,
+                 closed_days=[2]),   # Wednesday
         Location("market", "Old Street Market", "market", x=610, y=215),
         Location("office", "Townsend Office", "office", x=690, y=375),
         Location("park", "Old Oak Park", "park", x=155, y=330, landmarks=[
@@ -33,8 +37,11 @@ def build_locations() -> list[Location]:
     ]
 
 
-def _routine(entries: list[tuple[int, str, str]]) -> Routine:
-    return Routine([RoutineEntry(t, a, l) for (t, a, l) in entries])
+def _routine(weekday: list[tuple[int, str, str]],
+             weekend: list[tuple[int, str, str]] | None = None) -> Routine:
+    def mk(es):
+        return [RoutineEntry(t, a, l) for (t, a, l) in es]
+    return Routine(mk(weekday), mk(weekend) if weekend is not None else None)
 
 
 def _rel(agent: Agent, other_id: str, friendship: float, trust: float) -> None:
@@ -95,6 +102,7 @@ def build_agents() -> list[Agent]:
             traits=["cheerful", "gossipy", "restless"],
             goals=[{"goal": "Get to know every single person in town", "priority": 0.8}],
             daily_wage=55.0,
+            off_days=[6],   # postman rests Sunday -> the gossip engine idles, a weekly rumor lull
         ),
         state=AgentState(location="home_a"),
         routine=_routine([                        # the rumor superconductor
@@ -129,6 +137,14 @@ def build_agents() -> list[Agent]:
             (hm(18, 30), "rest", "park"),
             (hm(20, 0), "eat", "home_a"),
             (hm(22, 0), "sleep", "home_a"),
+        ], weekend=[                              # weekend: sleep in, then out and about
+            (hm(9, 0), "eat", "home_a"),
+            (hm(10, 30), "rest", "park"),
+            (hm(12, 30), "eat", "cafe"),
+            (hm(14, 0), "rest", "market"),
+            (hm(16, 0), "rest", "park"),
+            (hm(19, 0), "eat", "home_a"),
+            (hm(22, 30), "sleep", "home_a"),
         ]),
     )
 
@@ -152,6 +168,14 @@ def build_agents() -> list[Agent]:
             (hm(18, 30), "eat", "home_b"),
             (hm(20, 0), "rest", "park"),
             (hm(22, 30), "sleep", "home_b"),
+        ], weekend=[                              # weekend: no client work, more social drifting
+            (hm(9, 0), "eat", "home_b"),
+            (hm(10, 30), "rest", "cafe"),
+            (hm(12, 30), "eat", "cafe"),
+            (hm(14, 0), "rest", "market"),
+            (hm(16, 0), "rest", "park"),
+            (hm(19, 0), "eat", "home_b"),
+            (hm(22, 30), "sleep", "home_b"),
         ]),
     )
 
@@ -172,6 +196,14 @@ def build_agents() -> list[Agent]:
             (hm(14, 30), "rest", "park"),         # afternoons near the installation, where Aisi works
             (hm(18, 0), "eat", "home_a"),
             (hm(19, 30), "work", "home_a"),
+            (hm(23, 0), "sleep", "home_a"),
+        ], weekend=[                              # weekend: sleep in, long afternoons at the park
+            (hm(9, 30), "eat", "bakery"),
+            (hm(11, 0), "rest", "park"),
+            (hm(13, 0), "eat", "cafe"),
+            (hm(14, 30), "rest", "park"),
+            (hm(17, 0), "rest", "market"),
+            (hm(19, 0), "eat", "home_a"),
             (hm(23, 0), "sleep", "home_a"),
         ]),
     )
@@ -196,6 +228,14 @@ def build_agents() -> list[Agent]:
             (hm(19, 0), "eat", "home_a"),
             (hm(20, 0), "work", "home_a"),        # coding at night
             (hm(23, 30), "sleep", "home_a"),
+        ], weekend=[                              # weekend: no day-job -> a full installation sprint
+            (hm(9, 30), "eat", "home_a"),
+            (hm(10, 30), "work", "park"),         # into the park early
+            (hm(13, 30), "eat", "cafe"),
+            (hm(14, 30), "work", "park"),         # long build session
+            (hm(19, 0), "eat", "home_a"),
+            (hm(20, 0), "work", "park"),          # night-owl finishing touches on the lights
+            (hm(23, 30), "sleep", "home_a"),
         ]),
     )
     aisi.memory.add(MemoryItem(0, "The {landmark:installation} in {loc:park} is about a third done.", importance=5))
@@ -216,6 +256,14 @@ def build_agents() -> list[Agent]:
             (hm(12, 0), "eat", "cafe"),           # lunch at the cafe -> encounters
             (hm(13, 0), "work", "office"),
             (hm(17, 30), "rest", "park"),
+            (hm(19, 0), "eat", "home_b"),
+            (hm(22, 30), "sleep", "home_b"),
+        ], weekend=[                              # weekend: office empty, sleep in, unwind in town
+            (hm(9, 0), "eat", "home_b"),
+            (hm(10, 30), "rest", "cafe"),
+            (hm(12, 0), "eat", "cafe"),
+            (hm(14, 0), "rest", "market"),
+            (hm(16, 30), "rest", "park"),
             (hm(19, 0), "eat", "home_b"),
             (hm(22, 30), "sleep", "home_b"),
         ]),
@@ -242,6 +290,14 @@ def build_agents() -> list[Agent]:
             (hm(18, 0), "eat", "home_b"),
             (hm(20, 0), "rest", "home_b"),
             (hm(22, 0), "sleep", "home_b"),
+        ], weekend=[                              # weekend: the market's busiest -- open earlier, close later
+            (hm(6, 0), "eat", "home_b"),
+            (hm(6, 30), "work", "market"),
+            (hm(12, 0), "eat", "market"),
+            (hm(12, 45), "work", "market"),       # short lunch, back to a busy stall
+            (hm(19, 30), "eat", "home_b"),
+            (hm(21, 0), "rest", "home_b"),
+            (hm(22, 30), "sleep", "home_b"),
         ]),
     )
 

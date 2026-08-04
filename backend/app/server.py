@@ -303,12 +303,13 @@ class Sim:
             "type": "snapshot",
             "minute": self.engine.now,
             "clock": fmt_time(self.engine.now),
+            "day_of_week": (self.engine.now // (24 * 60)) % 7,   # 0=Mon .. 6=Sun
             "paused": self.paused,
             "idle": self._idle,
             "speed": self.speed,
             "locations": [
                 {"id": l.id, "name": l.name, "kind": l.kind, "x": l.x, "y": l.y,
-                 "owner": l.owner, "landmarks": l.landmarks}
+                 "owner": l.owner, "landmarks": l.landmarks, "closed_days": l.closed_days}
                 for l in self.world.locations.values()
             ],
             "agents": self.agent_states(),

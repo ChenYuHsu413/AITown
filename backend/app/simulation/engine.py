@@ -19,15 +19,22 @@ from typing import Callable
 from ..agents.agent import Agent
 from ..agents.core import MemoryItem
 from ..agents.decision import DecisionEngine
+from ..llm.prompts import builders
 from ..world.world import World
 
 DAY_MIN = 24 * 60
 
+# Day 1 = Monday. day_of_week 0=Mon .. 6=Sun.
+_DOW_EN = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_DOW_ZH = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
+
 
 def fmt_time(minute: int) -> str:
     day = minute // DAY_MIN + 1
+    dow = (day - 1) % 7
     m = minute % DAY_MIN
-    return f"Day {day} {m // 60:02d}:{m % 60:02d}"
+    names = _DOW_ZH if builders.lang_is_zh() else _DOW_EN
+    return f"Day {day} · {names[dow]} {m // 60:02d}:{m % 60:02d}"
 
 
 @dataclass
@@ -232,7 +239,10 @@ class SimulationEngine:
 
     def _daily_settlement(self) -> None:
         """Close each shop's books (record + reset today's revenue, nudge the
-        owner's mood/memory) and pay everyone their daily wage."""
+        owner's mood/memory) and pay everyone their daily wage. When the day that
+        just closed was a Sunday, also run the weekly books."""
+        closed_dow = (self._last_day - 1) % 7        # dow of the day just closed (Day 1 = Mon)
+        week_close = closed_dow == 6                  # Sunday -> weekly settlement too
         for loc in self.world.locations.values():
             if not (loc.owner and loc.price > 0):
                 continue
@@ -253,7 +263,21 @@ class SimulationEngine:
                     "action", "day_summary", actor=owner,
                     location_id=loc.id, text=f"cafe revenue ${x:.0f}",
                 )
+                if week_close:
+                    xw = loc.revenue_week
+                    if xw < 100:
+                        wimp, wmood = 6, "worried"
+                    elif xw >= 250:
+                        wimp, wmood = 4, "happy"
+                    else:
+                        wimp, wmood = 3, ""
+                    owner.memory.add(MemoryItem(
+                        minute=self.now, text=f"This week {{loc:{loc.id}}} made ${xw:.0f}.", importance=wimp))
+                    if wmood:
+                        owner.state.mood = wmood
             loc.revenue_today = 0.0
+            if week_close:
+                loc.revenue_week = 0.0
         for ag in self.world.agents.values():
             ag.state.money += ag.profile.daily_wage
             ag.semantic.decay()   # unreinforced impressions fade a little each day

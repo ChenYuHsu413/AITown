@@ -23,6 +23,9 @@ class Profile:
     daily_wage: float = 0.0                 # flat daily income paid at each day boundary
     reflection_threshold: int = 25          # importance to accumulate before a Level-3 reflection fires
                                             # (raise it for quiet background characters -> fewer smart-tier calls)
+    off_days: list[int] = field(default_factory=list)  # weekly rest days (0=Mon..6=Sun) beyond the weekend
+                                            # table -- e.g. the postman's Sunday. Shop owners' days off come
+                                            # from their shop's closed_days, not here.
 
     @property
     def extraversion(self) -> float:

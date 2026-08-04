@@ -53,6 +53,7 @@ def capture(engine: "SimulationEngine", world: "World", decisions: "DecisionEngi
             lid: {
                 "revenue": loc.revenue,
                 "revenue_today": loc.revenue_today,
+                "revenue_week": loc.revenue_week,
                 "landmarks": [dict(lm) for lm in loc.landmarks],
             }
             for lid, loc in world.locations.items()
@@ -105,6 +106,8 @@ def restore(payload: dict, engine: "SimulationEngine", world: "World",
                 loc.revenue = float(ldata["revenue"])
             if "revenue_today" in ldata:
                 loc.revenue_today = float(ldata["revenue_today"])
+            if "revenue_week" in ldata:  # v5+; older snapshots keep 0.0
+                loc.revenue_week = float(ldata["revenue_week"])
             if "landmarks" in ldata:     # v4+; older snapshots keep the seed landmarks
                 loc.landmarks = [dict(lm) for lm in (ldata.get("landmarks") or []) if isinstance(lm, dict)]
 

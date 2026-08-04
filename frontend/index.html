@@ -201,6 +201,8 @@ footer b{font-weight:500;font-size:14px}
 .loc-kind{font-family:var(--mono);font-size:8px;fill:var(--faint);letter-spacing:.12em;text-anchor:middle}
 .shop-rev-g rect{fill:var(--panel);stroke:var(--line);stroke-width:.5}
 .shop-rev{font-family:var(--mono);font-size:8.5px;font-weight:500;fill:var(--amber);text-anchor:middle}
+.closed-badge{fill:#C0503A;stroke:#8f3a2a;stroke-width:.5}
+.closed-text{font-family:var(--mono);font-size:9px;font-weight:600;fill:#fff;text-anchor:middle;letter-spacing:.06em}
 #inspector .money{color:var(--amber);font-weight:500}
 #terrain,#roads{shape-rendering:crispEdges}
 .river-hi{animation:ripple 1.3s steps(2) infinite}
@@ -335,6 +337,7 @@ footer b{font-weight:500;font-size:14px}
       <g id="roads"></g>
       <g id="locs"></g>
       <g id="landmarks"></g>   <!-- world objects (the mural); above buildings, below villagers -->
+      <g id="closed-signs"></g>   <!-- weekly day-off badges over shops -->
       <g id="agents"></g>
       <g id="festival" pointer-events="none"></g>
       <g id="rain" opacity="0" pointer-events="none"><rect width="800" height="520" fill="#4a6a90" opacity="0.12"/><g id="raindrops"></g></g>
@@ -582,6 +585,8 @@ function applyLang(){
   $('#btn-lang').title=t('title.lang');
   document.documentElement.lang=LANG==='zh'?'zh-Hant':'en';
   if(LOC_LIST.length) buildMap(LOC_LIST);                          // relabel map
+  $('#clock').textContent=fmtMinute(LAST_MINUTE);                  // clock weekday follows the language
+  updateClosedSigns(LAST_MINUTE);                                  // 休 / CLOSED badge follows the language
   refreshNametags();                                               // villager labels follow the language
   if(RG) relabelGraph();                                           // relationship-graph node labels too
   document.querySelectorAll('#feed .ev,#replay-feed .ev').forEach(d=>{d.lastChild.textContent=evText(JSON.parse(d.dataset.ev));});
@@ -909,17 +914,38 @@ function applyDaylight(minute){
 }
 // The one client-side "Day X HH:MM" formatter, shared by live + replay. Floors
 // first, so a fractional replay minute never leaks decimals into the label.
+const DOW_EN=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const DOW_ZH=['週一','週二','週三','週四','週五','週六','週日'];
+const dowOf=m=>((Math.floor(m/1440)%7)+7)%7;                    // 0=Mon .. 6=Sun (Day 1 = Monday)
 function fmtMinute(m){
   m=Math.floor(m);
   const day=Math.floor(m/1440)+1, x=((m%1440)+1440)%1440;
-  return `Day ${day} ${String(Math.floor(x/60)).padStart(2,'0')}:${String(x%60).padStart(2,'0')}`;
+  const dow=(LANG==='zh'?DOW_ZH:DOW_EN)[dowOf(m)];
+  return `Day ${day} · ${dow} ${String(Math.floor(x/60)).padStart(2,'0')}:${String(x%60).padStart(2,'0')}`;
 }
+let LAST_MINUTE=0;
 function updateClock(minute,clock,paused,speed){
+  LAST_MINUTE=minute;
   $('#clock').textContent=fmtMinute(minute);                   // derive from the minute (server clock is identical)
   applyDaylight(minute);
+  updateClosedSigns(minute);                                   // shops on their weekly day off
   if(paused && pausePending) clearPausePending();              // server confirmed the pause -> drop the transitional state
   $('#btn-pause').classList.toggle('active',paused);
   ['1','5','20'].forEach(s=>$('#btn-'+s).classList.toggle('active',!paused&&speed==+s));
+}
+// A small "休" / "CLOSED" badge over any shop resting on its weekly day off.
+function updateClosedSigns(minute){
+  const g=$('#closed-signs'); if(!g) return;
+  const dow=dowOf(minute); let s='';
+  LOC_LIST.forEach(l=>{
+    if(l.owner && (l.closed_days||[]).includes(dow)){
+      const label=LANG==='zh'?'休':'CLOSED', w=LANG==='zh'?18:46;
+      s+=`<g transform="translate(${l.x},${l.y-8})">`
+        +`<rect class="closed-badge" x="${-w/2}" y="-9" width="${w}" height="14" rx="3"/>`
+        +`<text class="closed-text" x="0" y="1.5">${label}</text></g>`;
+    }
+  });
+  g.innerHTML=s;
 }
 
 /* ---------- feed ---------- */

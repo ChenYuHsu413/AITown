@@ -211,7 +211,8 @@ class DecisionEngine:
         self, agent: Agent, world: World, obs: Observation, now: int
     ) -> Decision:
         minute_of_day = now % (24 * 60)
-        entry = agent.routine.current(minute_of_day)
+        dow = (now // (24 * 60)) % 7        # 0=Mon .. 6=Sun (Day 1 = Monday)
+        entry = agent.routine.current(minute_of_day, dow)
         obs_text = obs.describe(world)
         self._record_observations(agent, world, now)
         memories: list[str] = []
@@ -232,7 +233,7 @@ class DecisionEngine:
 
         # ---- Level 0: hard rules --------------------------------------
         if agent.state.current_action == "sleep" and entry.action == "sleep":
-            decision = Decision("sleep", duration=agent.routine.next_boundary(minute_of_day) - minute_of_day,
+            decision = Decision("sleep", duration=agent.routine.next_boundary(minute_of_day, dow) - minute_of_day,
                                 reason="asleep per routine")
         elif agent.state.energy <= LOW_ENERGY and entry.action not in ("sleep", "rest"):
             decision = Decision("rest", duration=30, reason=f"energy {agent.state.energy} <= {LOW_ENERGY}")
@@ -331,14 +332,36 @@ class DecisionEngine:
         # ---- Level 0 default: follow the routine ----------------------
         if decision is None:
             dest = entry.location
+            # Day off: a shop owner on their shop's closing day, or an agent with a
+            # personal weekly rest day (the postman on Sunday). They don't work or
+            # patrol -- they relax at home in the morning and drift out as a free
+            # agent later (meals still redirect them around town, incl. a rival's shop).
+            own_shop = next((l for l in world.locations.values()
+                             if l.owner == agent.id and l.price > 0), None)
+            off_today = (dow in agent.profile.off_days) \
+                or (own_shop is not None and dow in own_shop.closed_days)
+            day_off_rest = off_today and (
+                entry.action == "work"
+                or (entry.action == "rest" and entry.location != agent.home)
+            )
+            if day_off_rest:
+                if minute_of_day < 12 * 60:
+                    dest = agent.home                          # sleep in / relax at home
+                else:
+                    opts = ["park", "market", agent.home]
+                    dest = opts[(minute_of_day // 160) % len(opts)]   # drift around town
             # Economy: if the routine sends us to eat at a shop we're shunning
-            # (heard a bad rumor about its owner), take our custom to a RIVAL shop
-            # instead of eating at home -- so a rumor that hurts the cafe feeds the
-            # bakery, closing the competition loop. Home is only the last resort.
-            if entry.action == "eat" and agent.state.avoid_location and dest == agent.state.avoid_location:
+            # (a bad rumor about its owner) OR at a shop that's closed today (weekly
+            # day off), take our custom to a rival shop that's open -- so a rumor
+            # that hurts one shop, or a closing day, feeds the other. Home is the
+            # last resort.
+            dest_loc = world.locations.get(dest)
+            shunned = agent.state.avoid_location and dest == agent.state.avoid_location
+            closed = dest_loc is not None and dow in dest_loc.closed_days
+            if entry.action == "eat" and (shunned or closed):
                 rival = next(
                     (lid for lid, loc in world.locations.items()
-                     if loc.price > 0 and loc.owner and lid != agent.state.avoid_location),
+                     if loc.price > 0 and loc.owner and lid != dest and dow not in loc.closed_days),
                     None,
                 )
                 dest = rival or agent.home
@@ -362,17 +385,18 @@ class DecisionEngine:
             if festival and agent.state.location == festival["location"]:
                 agent.state.mood = "happy"
 
-            until_next = agent.routine.next_boundary(minute_of_day) - minute_of_day
+            until_next = agent.routine.next_boundary(minute_of_day, dow) - minute_of_day
             if agent.state.location != dest:
                 decision = Decision(
                     "move", target_location=dest,
                     duration=10, reason=f"routine: head to {dest}",
                 )
             else:
-                act = "rest" if park_rained_out else entry.action
+                act = "rest" if (park_rained_out or day_off_rest) else entry.action
+                reason = ("routine: rest (rained out)" if park_rained_out
+                          else "day off" if day_off_rest else f"routine: {entry.action}")
                 decision = Decision(
-                    act, duration=max(15, min(until_next, 120)),
-                    reason="routine: rest (rained out)" if park_rained_out else f"routine: {entry.action}",
+                    act, duration=max(15, min(until_next, 120)), reason=reason,
                 )
             model_used = "rules" if decision.level == 0 else model_used
 
