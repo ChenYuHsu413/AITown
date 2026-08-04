@@ -58,6 +58,7 @@ class Event:
     location_name: str = ""
     text: str = ""            # generated free text ONLY (dialogue line / insight)
     text_en: str = ""         # deprecated: prerendered English sentence
+    detail: str = ""          # optional richer context for the chronicle (secret text, rumor wording, ...)
 
     def render(self) -> str:
         return f"[{fmt_time(self.minute)}] {self.text_en}"
@@ -206,6 +207,7 @@ class SimulationEngine:
         location_id: str = "",
         text: str = "",
         target_name: str | None = None,
+        detail: str = "",
     ) -> None:
         loc = self.world.locations.get(location_id)
         ev = Event(
@@ -222,25 +224,34 @@ class SimulationEngine:
             location_name=loc.name if loc else "",
         )
         ev.text = text
+        ev.detail = detail
         ev.text_en = render_en(
             verb, ev.actor_name, ev.target_name, ev.location_name, text
         )
         self.bus.publish(ev)
 
+    # Conversation-borne beats (confide/confront) carry a time window so the UI can
+    # pull the actual dialogue lines said around them from /api/history.
+    _CONV_VERBS = {"confide", "confronted"}
+
     def _chronicle_add(self, ev: Event) -> None:
         """Bus subscriber: keep the notable beats (last 200) as the town's history.
         Structured fields mirror the event so the UI renders/translates them like
-        any other event and can jump replay to the minute."""
+        any other event and can jump replay to the minute. ``detail`` carries the
+        expandable specifics; conversation beats also carry their dialogue window."""
         if ev.verb not in CHRONICLE_VERBS:
             return
-        self.chronicle.append({
+        entry = {
             "minute": ev.minute, "kind": ev.kind, "verb": ev.verb,
             "icon_hint": CHRONICLE_ICONS.get(ev.verb, "•"),
             "actor": ev.actor, "actor_name": ev.actor_name,
             "target": ev.target, "target_name": ev.target_name,
             "location": ev.location, "location_name": ev.location_name,
-            "speech": ev.text,
-        })
+            "speech": ev.text, "detail": ev.detail,
+        }
+        if ev.verb in self._CONV_VERBS:  # the surrounding exchange spans a few sim-minutes
+            entry["conversation_minutes"] = [ev.minute, ev.minute + 20]
+        self.chronicle.append(entry)
         if len(self.chronicle) > 200:
             del self.chronicle[:-200]
 
@@ -285,6 +296,7 @@ class SimulationEngine:
         just closed was a Sunday, also run the weekly books."""
         closed_dow = (self._last_day - 1) % 7        # dow of the day just closed (Day 1 = Mon)
         week_close = closed_dow == 6                  # Sunday -> weekly settlement too
+        week_rev: dict[str, float] = {}              # shop id -> weekly takings (captured before reset)
         for loc in self.world.locations.values():
             if not (loc.owner and loc.price > 0):
                 continue
@@ -319,12 +331,14 @@ class SimulationEngine:
                         owner.state.mood = wmood
             loc.revenue_today = 0.0
             if week_close:
+                week_rev[loc.id] = loc.revenue_week
                 loc.revenue_week = 0.0
         for ag in self.world.agents.values():
             ag.state.money += ag.profile.daily_wage
             ag.semantic.decay()   # unreinforced impressions fade a little each day
-        if week_close:
-            self._publish("system", "week_close")   # a chronicle beat: the week's books closed
+        if week_close:            # a chronicle beat: the week's books closed, with the shop-vs-shop takings
+            detail = " vs ".join(f"{{loc:{lid}}} ${rev:.0f}" for lid, rev in week_rev.items())
+            self._publish("system", "week_close", detail=detail)
 
     async def tick(self) -> None:
         item = self.scheduler.pop_next()
@@ -387,11 +401,13 @@ class SimulationEngine:
                 location_id=agent.state.location, text=ins,
             )
         for be in beliefs:
+            conf = be.get("confidence")
+            detail = be["text"] + (f"  (confidence {int(conf * 100)}%)" if conf is not None else "")
             self._publish(
                 "reflection", "belief", actor=agent,
                 target=self.world.agents.get(be["subject_id"]),
                 target_name=be["subject_name"],
-                location_id=agent.state.location, text=be["text"],
+                location_id=agent.state.location, text=be["text"], detail=detail,
             )
 
         self.scheduler.schedule(agent.id, self.now + decision.duration)
@@ -424,18 +440,22 @@ class SimulationEngine:
                 location_id=a.state.location, text=sr["text"],
             )
             if sr.get("leak"):  # a confided secret just became gossip -> a chronicle beat
+                secret_text = sr.get("secret_text", "")
                 self._publish(
                     "action", "leak",
                     actor=self.world.agents.get(sr["from"]),
                     target=self.world.agents.get(sr.get("subject", "")),
                     location_id=a.state.location, text=sr["text"],
+                    detail=(f'Secret: "{secret_text}"  ->  now spreading as: "{sr["text"]}"'
+                            if secret_text else f'Now spreading as: "{sr["text"]}"'),
                 )
-        for cf in confided:  # content-free: the world sees they opened up, not what about
+        for cf in confided:  # content-free to the world; the chronicle (god's-eye) keeps the detail
             self._publish(
                 "action", "confide",
                 actor=self.world.agents.get(cf["from"]),
                 target=self.world.agents.get(cf["to"]),
                 location_id=a.state.location,
+                detail=cf.get("text", ""),   # the confided secret's text
             )
         by_name = {a.name.lower(): a, b.name.lower(): b}
         for i, turn in enumerate(turns):
@@ -453,10 +473,14 @@ class SimulationEngine:
             )
             self.now = saved_now
         if confrontation is not None:  # the rumor's endpoint: publish the verdict
+            outcome = "admitted it" if confrontation["outcome"] == "admitted" else "denied it"
+            rumor = self.decisions.rumors.rumors.get(confrontation.get("rumor_id", ""))
+            rumor_text = rumor.versions[-1].text if rumor and rumor.versions else ""
             self._publish(
                 "action", "confronted", actor=a, target=b,
-                location_id=a.state.location,
-                text="admitted it" if confrontation["outcome"] == "admitted" else "denied it",
+                location_id=a.state.location, text=outcome,
+                detail=(f'About the rumor "{rumor_text}" -> {b.id.capitalize()} {outcome}'
+                        if rumor_text else f"{b.id.capitalize()} {outcome}"),
             )
         self.scheduler.schedule(b.id, self.now + duration)
 

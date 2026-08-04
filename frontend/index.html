@@ -72,10 +72,21 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 #chron-preview{flex:1;min-width:0;font-size:12px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #chron-caret{flex:none;color:var(--faint);font-size:10px;transition:transform .2s}
 #chronicle.open #chron-caret{transform:rotate(90deg)}
-#chron-list{max-height:34vh;overflow-y:auto;padding:0 12px 8px}
-.chron-row{display:flex;gap:8px;padding:5px 0;border-top:1px dashed var(--line);font-size:12.5px;line-height:1.4;color:var(--ink);cursor:pointer}
-.chron-row:hover{color:var(--amber)}
-.chron-row time{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;padding-top:1px}
+#chron-list{max-height:38vh;overflow-y:auto;padding:0 12px 8px}
+.chron-row{border-top:1px dashed var(--line);font-size:12.5px;line-height:1.4;color:var(--ink)}
+.chron-line{display:flex;gap:8px;padding:5px 0;cursor:pointer;align-items:flex-start}
+.chron-line:hover{color:var(--amber)}
+.chron-line time{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;padding-top:1px}
+.chron-line .chron-msg{flex:1;min-width:0}
+.chron-rowcaret{flex:none;color:var(--faint);font-size:9px;padding-top:3px;transition:transform .2s}
+.chron-row.open .chron-rowcaret{transform:rotate(90deg)}
+.chron-detail{padding:1px 0 9px 18px}
+.chron-detail-text{color:var(--faint);font-size:12px;line-height:1.5;margin-bottom:7px;word-break:break-word}
+.chron-convo{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+.chron-bubble{background:var(--amber-soft);border-left:2px solid var(--amber);border-radius:0 6px 6px 0;padding:3px 8px;font-size:12px;line-height:1.4}
+.chron-bubble b{font-family:var(--body);font-weight:600;color:var(--ink)}
+.chron-jump{border:1px solid var(--line);background:var(--paper);color:var(--ink);font-family:inherit;font-size:11px;padding:3px 10px;border-radius:5px;cursor:pointer}
+.chron-jump:hover{border-color:var(--amber);color:var(--amber)}
 .chron-empty{font-size:12px;color:var(--faint);padding:6px 0}
 .ev{padding:5px 0;border-bottom:1px dashed var(--line);display:flex;gap:8px}
 .ev time{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;padding-top:1px}
@@ -522,6 +533,7 @@ const I18N={
     'away.jump':'Jump to this moment in replay',
     'chron.title':'CHRONICLE','chron.empty':'No notable events yet.',
     'chron.secret':"🔒 {who} started keeping something to themselves",
+    'chron.replayHere':'⏪ Replay this moment','chron.noConvo':'(no dialogue recorded)',
   },
   zh:{
     subtitle:'田野觀測站 · 10 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', replayTitle:'回放', inspectorTitle:'智能體檢視器',
@@ -564,6 +576,7 @@ const I18N={
     'away.jump':'在回放中跳到此刻',
     'chron.title':'大事記','chron.empty':'尚無大事。',
     'chron.secret':'🔒 {who} 開始藏著心事',
+    'chron.replayHere':'⏪ 回放這一刻','chron.noConvo':'(沒有對話記錄)',
   },
 };
 const LOC_ZH={home_a:'河畔之家',home_b:'山丘公寓',cafe:'月光咖啡館',office:'湯森辦公室',park:'老橡樹公園',
@@ -631,7 +644,7 @@ const EV_TMPL={
     seek_out:(a,l,tg)=>`${a} 去找 ${tg} 了`,
     landmark_done:(a,l,tg,sp)=>`🎨 ${a} 完成了 ${l} 的${LANDMARK_ZH[sp]||sp}`,
     confronted:(a,l,tg,sp)=>`${a} 當面質問了 ${tg}——對方${SPEECH_ZH[sp]||sp}`,
-    confide:(a,l,tg)=>`🤫 ${a} 向 ${tg} 說了體己話`,
+    confide:(a,l,tg)=>`🤫 ${a} 向 ${tg} 說了心事`,
     belief:(a,l,tg,sp)=>`💭 ${a} 對 ${tg} 有了長期印象:${sp}`,
     broke:(a,l)=>`💸 ${a} 在 ${l} 付不起餐費`,
     rain_start:()=>`🌧️ 下雨了`, rain_end:()=>`🌤️ 雨停了`,
@@ -2065,14 +2078,52 @@ function renderChronList(){
   const box=$('#chron-list'); if(!box) return; box.innerHTML='';
   if(!CHRON.length){ box.innerHTML=`<div class="chron-empty">${t('chron.empty')}</div>`; return; }
   const trP=[];
-  CHRON.slice(-30).reverse().forEach(e=>{                       // newest first
-    const d=document.createElement('div'); d.className='chron-row'; d.title=t('away.jump');
+  CHRON.slice(-30).reverse().forEach(e=>{                       // newest first, expandable
+    const row=document.createElement('div'); row.className='chron-row';
+    const line=document.createElement('div'); line.className='chron-line';
     const tm=document.createElement('time'); tm.textContent=(e.clock||fmtMinute(e.minute)).replace('Day ','D');
-    const lab=awayEvLabel(e); const sp=document.createElement('span'); sp.textContent=lab;
-    d.appendChild(tm); d.appendChild(sp); d.onclick=()=>jumpToReplay(e.minute); box.appendChild(d);
-    trP.push({el:sp,en:lab});
+    const lab=awayEvLabel(e); const msg=document.createElement('span'); msg.className='chron-msg'; msg.textContent=lab;
+    const caret=document.createElement('span'); caret.className='chron-rowcaret'; caret.textContent='▸';
+    line.appendChild(tm); line.appendChild(msg); line.appendChild(caret);
+    const det=document.createElement('div'); det.className='chron-detail'; det.hidden=true;
+    line.onclick=()=>{                                          // expand/collapse; lazy-fill on first open
+      const open=det.hidden; row.classList.toggle('open',open); det.hidden=!open;
+      if(open && !det.dataset.filled){ det.dataset.filled='1'; fillChronDetail(e, det); }
+    };
+    row.appendChild(line); row.appendChild(det); box.appendChild(row);
+    trP.push({el:msg,en:lab});
   });
   trSwap(trP);
+}
+// Fill an expanded chronicle row: detail text (translated) + the actual dialogue
+// said around a confide/confront (from /api/history) + a jump-to-replay button.
+async function fillChronDetail(e, det){
+  const trP=[];
+  if(e.detail){
+    const dt=document.createElement('div'); dt.className='chron-detail-text';
+    const en=resolvePlaceholders(e.detail); dt.textContent=en; det.appendChild(dt);
+    trP.push({el:dt,en});                                       // English-canonical -> zh on display
+  }
+  const convo=document.createElement('div'); convo.className='chron-convo'; det.appendChild(convo);
+  const jump=document.createElement('button'); jump.className='chron-jump';
+  jump.textContent=t('chron.replayHere'); jump.onclick=()=>jumpToReplay(e.minute); det.appendChild(jump);
+  trSwap(trP);
+  // Conversation excerpt (confide/confront): the say lines in the window, same place.
+  if(Array.isArray(e.conversation_minutes)){
+    const [from,to]=e.conversation_minutes;
+    try{
+      const r=await fetch(`/api/history?minute_from=${from}&minute_to=${to}&limit=200`);
+      if(r.status===501) return;                               // no DB -> detail text only
+      const d=await r.json();
+      const lines=(d.events||[]).filter(x=>x.verb==='say' && (!e.location||x.location===e.location)).slice(0,8);
+      lines.forEach(x=>{
+        const b=document.createElement('div'); b.className='chron-bubble';
+        const who=document.createElement('b'); who.textContent=agentName(x.actor,x.actor)+(LANG==='zh'?'：':': ');
+        const sp=document.createElement('span'); sp.textContent=x.speech||'';
+        b.appendChild(who); b.appendChild(sp); convo.appendChild(b);
+      });
+    }catch(err){}
+  }
 }
 function renderChron(){ renderChronPreview(); if(chronOpen) renderChronList(); }
 function toggleChron(){ chronOpen=!chronOpen;

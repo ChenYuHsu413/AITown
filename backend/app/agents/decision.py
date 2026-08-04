@@ -727,7 +727,7 @@ class DecisionEngine:
                 c.state.avoid_location = shop
         gossip_bond = c.rel(b.id); gossip_bond.friendship += 1; gossip_bond.clamp()
         return {"rumor_id": rumor.id, "text": text, "from": b.id, "to": c.id,
-                "leak": True, "subject": secret.owner}
+                "leak": True, "subject": secret.owner, "secret_text": secret.text}
 
     async def run_conversation(
         self, a: Agent, b: Agent, world: World, now: int, confront_text: str | None = None,
@@ -954,13 +954,16 @@ class DecisionEngine:
                 existing.sentiment = sent
                 existing.source_count += 1
                 existing.last_reinforced_minute = now
+                final_conf = existing.confidence
             else:                                         # brand-new impression -> cap at 0.6
+                final_conf = min(0.6, conf)
                 agent.semantic.beliefs.append(Belief(
-                    subject=sid, text=text, confidence=min(0.6, conf), sentiment=sent,
+                    subject=sid, text=text, confidence=final_conf, sentiment=sent,
                     formed_minute=now, last_reinforced_minute=now, source_count=1,
                 ))
                 agent.semantic._prune()
-            events.append({"subject_id": sid, "subject_name": sname, "text": text})
+            events.append({"subject_id": sid, "subject_name": sname, "text": text,
+                           "confidence": round(final_conf, 2)})
         return events
 
     # ---- Level 3: reflection -----------------------------------------
