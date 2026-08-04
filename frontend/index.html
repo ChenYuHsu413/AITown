@@ -22,7 +22,20 @@ body{font-family:var(--body);background:var(--paper);color:var(--ink);display:fl
 header{display:flex;align-items:center;gap:20px;padding:10px 18px;border-bottom:1px solid var(--line)}
 .wordmark{font-family:var(--disp);font-weight:700;font-size:20px;letter-spacing:.02em}
 .wordmark small{font-family:var(--mono);font-weight:400;font-size:10px;color:var(--faint);display:block;letter-spacing:.14em}
-#clock{font-family:var(--mono);font-size:22px;font-weight:500;min-width:150px}
+.clockwrap{display:flex;align-items:center;gap:9px;min-width:150px}
+#clock{font-family:var(--mono);font-size:22px;font-weight:500}
+/* LLM in-flight hint: a quiet amber pulse beside the clock (only past 2s; this is
+   normal, not an error, so it stays small). */
+#llm-dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--amber);
+  box-shadow:0 0 0 0 var(--amber);animation:llmpulse 1.5s ease-in-out infinite;cursor:default}
+@keyframes llmpulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
+/* pending pause: instant button feedback while the server finishes an in-flight call */
+.controls #btn-pause.pending{animation:pausepulse 1s ease-in-out infinite}
+@keyframes pausepulse{0%,100%{opacity:1}50%{opacity:.4}}
+@media (prefers-reduced-motion:reduce){
+  #llm-dot{animation:none;opacity:.75}
+  .controls #btn-pause.pending{animation:none;opacity:.55}
+}
 #daystrip{flex:1;height:6px;border:1px solid var(--line);border-radius:3px;position:relative;background:
   linear-gradient(90deg,#131F35 0%,#131F35 20%,#c98a3a 27%,#f2ecd8 40%,#f2ecd8 62%,#c98a3a 75%,#131F35 85%,#131F35 100%)}
 #sun{position:absolute;top:-4px;width:12px;height:12px;border-radius:50%;background:var(--ink);border:2px solid var(--paper);transform:translateX(-50%)}
@@ -259,7 +272,10 @@ footer b{font-weight:500;font-size:14px}
 <body>
 <header>
   <div class="wordmark">AI TOWN<small data-i18n="subtitle">FIELD STATION · 5 AGENTS</small></div>
-  <div id="clock">— —:—</div>
+  <div class="clockwrap">
+    <div id="clock">— —:—</div>
+    <span id="llm-dot" hidden data-i18n-title="llmBusy" title="Waiting for AI…" role="status"></span>
+  </div>
   <div id="daystrip"><div id="sun" style="left:25%"></div></div>
   <div class="controls">
     <button id="btn-pause" data-i18n-title="title.pause" title="Pause simulation">▮▮</button>
@@ -398,7 +414,8 @@ const I18N={
     beliefsTitle:'LASTING IMPRESSIONS', noBeliefs:'No lasting impressions yet.', beliefSrc:'{n}×',
     'footer.calls':'LLM CALLS','footer.cache':'CACHE HITS','footer.tokens':'TOKENS IN/OUT',
     'footer.cost':'EST. COST','footer.rules':'DECISIONS BY RULES',
-    'title.pause':'Pause simulation','title.s1':'1 sim-minute per second','title.s5':'5 sim-minutes per second',
+    'title.pause':'Pause simulation','title.pausing':'Pausing…','llmBusy':'Waiting for AI…',
+    'title.s1':'1 sim-minute per second','title.s5':'5 sim-minutes per second',
     'title.s20':'20 sim-minutes per second','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
     'title.god':'World events','god.rain':'Rain · 3h','god.festival':'Park festival · 4h',
     'god.rumorHead':'RUMORS','god.startedBy':'Started by','god.presetDefault':'(preset default)',
@@ -430,7 +447,8 @@ const I18N={
     beliefsTitle:'長期印象', noBeliefs:'尚無長期印象。', beliefSrc:'{n} 次',
     'footer.calls':'LLM 呼叫','footer.cache':'快取命中','footer.tokens':'輸入/輸出 Token',
     'footer.cost':'預估成本','footer.rules':'規則決策佔比',
-    'title.pause':'暫停模擬','title.s1':'每秒 1 模擬分鐘','title.s5':'每秒 5 模擬分鐘',
+    'title.pause':'暫停模擬','title.pausing':'暫停中…','llmBusy':'等待 AI 回應中…',
+    'title.s1':'每秒 1 模擬分鐘','title.s5':'每秒 5 模擬分鐘',
     'title.s20':'每秒 20 模擬分鐘','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
     'title.god':'世界事件','god.rain':'下雨 3 小時','god.festival':'公園慶典 4 小時',
     'god.rumorHead':'謠言','god.startedBy':'由誰起頭','god.presetDefault':'(預設起頭者)',
@@ -543,6 +561,8 @@ ws.onmessage=e=>{
   if(REPLAY.on) return;                                // in replay: keep receiving, but don't paint over it
   if(msg.type==='snapshot') msg.events.forEach(addEvent);
   updateClock(msg.minute,msg.clock,msg.paused,msg.speed);
+  if('llm_busy' in msg) updateBusy(msg);               // tick / snapshot / status all carry the in-flight state
+  if(msg.type==='status') return;                      // status heartbeat: clock + busy hint only, no world data
   if(msg.agents) updateAgents(msg.agents);
   if(msg.landmarks) updateLandmarks(msg.landmarks);  // mural fill climbs as Emma paints
   if(msg.effects) renderEffects(msg.effects);      // rain/festival visuals switch in real time
@@ -814,6 +834,7 @@ function fmtMinute(m){
 function updateClock(minute,clock,paused,speed){
   $('#clock').textContent=fmtMinute(minute);                   // derive from the minute (server clock is identical)
   applyDaylight(minute);
+  if(paused && pausePending) clearPausePending();              // server confirmed the pause -> drop the transitional state
   $('#btn-pause').classList.toggle('active',paused);
   ['1','5','20'].forEach(s=>$('#btn-'+s).classList.toggle('active',!paused&&speed==+s));
 }
@@ -1013,10 +1034,18 @@ $('#insp-close').onclick=closeInspector;
 
 /* ---------- controls & usage ---------- */
 function ctl(body){ fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
-$('#btn-pause').onclick=()=>ctl({cmd:'pause'});
-$('#btn-1').onclick=()=>ctl({cmd:'speed',speed:1});
-$('#btn-5').onclick=()=>ctl({cmd:'speed',speed:5});
-$('#btn-20').onclick=()=>ctl({cmd:'speed',speed:20});
+// LLM in-flight hint: only surface a call slow enough to notice (2s), so mock's
+// instant calls never flash the dot.
+function updateBusy(msg){ $('#llm-dot').hidden=!(msg.llm_busy && (msg.busy_ms||0)>=2000); }
+// Pause gives instant button feedback ("Pausing…") without waiting for the server,
+// which may still be finishing an in-flight LLM call. Confirmed once paused arrives.
+let pausePending=false;
+function setPausePending(){ pausePending=true; const b=$('#btn-pause'); b.classList.add('pending'); b.title=t('title.pausing'); }
+function clearPausePending(){ if(!pausePending) return; pausePending=false; const b=$('#btn-pause'); b.classList.remove('pending'); b.title=t('title.pause'); }
+$('#btn-pause').onclick=()=>{ setPausePending(); ctl({cmd:'pause'}); };
+$('#btn-1').onclick=()=>{ clearPausePending(); ctl({cmd:'speed',speed:1}); };
+$('#btn-5').onclick=()=>{ clearPausePending(); ctl({cmd:'speed',speed:5}); };
+$('#btn-20').onclick=()=>{ clearPausePending(); ctl({cmd:'speed',speed:20}); };
 $('#btn-lang').onclick=toggleLang;
 applyLang();
 
@@ -1580,7 +1609,7 @@ function exitReplay(){
 }
 async function restoreLive(){
   try{ const s=await (await fetch('/api/state')).json();
-    updateAgents(s.agents||[]); updateLandmarks(s.landmarks||[]); renderEffects(s.effects||[]); updateClock(s.minute,s.clock,s.paused,s.speed);
+    updateAgents(s.agents||[]); updateLandmarks(s.landmarks||[]); renderEffects(s.effects||[]); updateClock(s.minute,s.clock,s.paused,s.speed); updateBusy(s);
   }catch(e){}
 }
 

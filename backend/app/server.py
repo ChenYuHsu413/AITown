@@ -64,6 +64,16 @@ class Sim:
         self.persistence = None          # set by lifespan when DB configured
         self._snap_wall: float = 0.0     # monotonic time of the last periodic snapshot
         self._snap_minute: int = -1      # sim minute at the last periodic snapshot
+        # LLM in-flight tracking: the router pings these around each real call so
+        # the UI can show a quiet "waiting for AI" hint while a slow call freezes
+        # the tick, plus a watchdog that flags a call stuck past 45s.
+        self._llm_depth: int = 0
+        self._llm_since: float = 0.0     # monotonic when the current call started (0 = idle)
+        self._llm_provider: str = ""
+        self._llm_task: str = ""
+        self._llm_warned: bool = False
+        self.router.on_call_start = self._on_llm_start
+        self.router.on_call_end = self._on_llm_end
         self.engine.bootstrap(START_MINUTE)
 
     async def attach_persistence(self) -> None:
@@ -124,6 +134,77 @@ class Sim:
         self.persistence.on_snapshot(payload)
         self._snap_minute = self.engine.now
         self._snap_wall = time.monotonic()
+
+    # ---- LLM in-flight state (the "waiting for AI" hint) -------------
+
+    def _on_llm_start(self, provider_name: str, task: str) -> None:
+        if self._llm_depth == 0:
+            self._llm_since = time.monotonic()
+            self._llm_provider = provider_name
+            self._llm_task = task
+            self._llm_warned = False
+        self._llm_depth += 1
+
+    def _on_llm_end(self) -> None:
+        self._llm_depth = max(0, self._llm_depth - 1)
+        if self._llm_depth == 0:
+            self._llm_since = 0.0
+
+    def _llm_busy_ms(self) -> int:
+        """Milliseconds the current call has been in flight (0 when idle). The UI
+        only shows its hint past a 2s threshold, so a mock's instant call -- which
+        pings start/end within the same tick -- never trips it."""
+        if self._llm_depth <= 0 or not self._llm_since:
+            return 0
+        return int((time.monotonic() - self._llm_since) * 1000)
+
+    def _llm_watchdog(self) -> None:
+        """Log once if a single call has been in flight past 45s. httpx's own
+        timeout should catch it well before; this only makes a genuinely stuck
+        call visible in the log -- it never kills anything."""
+        if self._llm_depth > 0 and not self._llm_warned and self._llm_since:
+            elapsed = time.monotonic() - self._llm_since
+            if elapsed > 45:
+                print(f"[watchdog] LLM call stuck: {self._llm_provider}/{self._llm_task} "
+                      f"{elapsed:.0f}s", flush=True)
+                self._llm_warned = True
+
+    async def status_loop(self) -> None:
+        """A lightweight heartbeat independent of the main pacing loop: while an
+        LLM call blocks a tick (the sim clock is frozen inside run_until), the
+        main loop can't broadcast, so this pushes the in-flight state instead.
+        Sends only while busy, plus once to clear -- the normal tick carries
+        everything else, so quiet periods stay silent."""
+        last_busy = False
+        while True:
+            await asyncio.sleep(0.4)
+            self._llm_watchdog()
+            busy = self._llm_depth > 0
+            if self.clients and (busy or last_busy):
+                await self._broadcast_status()
+            last_busy = busy
+
+    async def _broadcast_status(self) -> None:
+        await self._send_all({
+            "type": "status",
+            "minute": self.engine.now,
+            "clock": fmt_time(self.engine.now),
+            "paused": self.paused,
+            "idle": self._idle,
+            "speed": self.speed,
+            "llm_busy": self._llm_depth > 0,
+            "busy_ms": self._llm_busy_ms(),
+        })
+
+    async def _send_all(self, payload: dict) -> None:
+        dead = []
+        for ws in self.clients:
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.clients.discard(ws)
 
     # ---- pacing loop ----------------------------------------------
 
@@ -233,6 +314,8 @@ class Sim:
             "agents": self.agent_states(),
             "effects": self.effects_json(),
             "landmarks": self.landmarks_json(),
+            "llm_busy": self._llm_depth > 0,
+            "busy_ms": self._llm_busy_ms(),
             "events": [self._event_json(e) for e in self.engine.bus.events[-40:]],
         }
 
@@ -264,31 +347,29 @@ class Sim:
             "agents": self.agent_states(),
             "effects": self.effects_json(),
             "landmarks": self.landmarks_json(),
+            "llm_busy": self._llm_depth > 0,
+            "busy_ms": self._llm_busy_ms(),
             "events": [self._event_json(e) for e in self._new_events],
         }
         self._new_events.clear()
-        dead = []
-        for ws in self.clients:
-            try:
-                await ws.send_json(payload)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.clients.discard(ws)
+        await self._send_all(payload)
 
 
 sim: Sim | None = None
 _loop_task: asyncio.Task | None = None
+_status_task: asyncio.Task | None = None
 
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    global sim, _loop_task
+    global sim, _loop_task, _status_task
     sim = Sim()
     await sim.attach_persistence()
     _loop_task = asyncio.create_task(sim.loop())
+    _status_task = asyncio.create_task(sim.status_loop())   # in-flight heartbeat
     yield
     _loop_task.cancel()
+    _status_task.cancel()
     if sim.persistence is not None:
         sim._take_snapshot()          # final graceful-shutdown snapshot...
         await sim.persistence.stop()  # ...which stop() drains before disposing

@@ -47,6 +47,11 @@ class LLMRouter:
     task_chains: dict[str, list[LLMProvider]] = field(default_factory=dict)
     usage: UsageTracker = field(default_factory=UsageTracker)
     budget_usd: float | None = None       # hard spend cap; None = unlimited
+    # In-flight hooks: fired immediately before/after each real provider call
+    # (never for cache hits or cooled-down skips), so a host can surface "waiting
+    # for the LLM" state while a slow call blocks the tick. Paired 1:1.
+    on_call_start: Callable[[str, str], None] | None = None   # (provider_name, task)
+    on_call_end: Callable[[], None] | None = None
     _cache: dict[str, LLMResult] = field(default_factory=dict)
     _budget_logged: bool = False
     _cooldown: dict[int, float] = field(default_factory=dict)  # id(provider) -> monotonic deadline
@@ -152,6 +157,8 @@ class LLMRouter:
             # so retry the SAME provider once before moving on. Hard errors (429,
             # timeout) won't fix on retry, so those break to the next provider.
             for _ in range(1 + SOFT_RETRIES):
+                if self.on_call_start is not None:
+                    self.on_call_start(provider.name, task)
                 try:
                     result = await provider.generate(
                         messages, schema=schema, max_tokens=max_tokens
@@ -162,6 +169,9 @@ class LLMRouter:
                     if getattr(getattr(err, "response", None), "status_code", None) == 429:
                         self._start_cooldown(provider, err)   # back off, don't hammer
                     break
+                finally:
+                    if self.on_call_end is not None:
+                        self.on_call_end()
                 reason = self._reject_reason(result, schema, validate)
                 if reason is None:
                     break  # good output
