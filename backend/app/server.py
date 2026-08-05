@@ -1379,11 +1379,20 @@ async def usage() -> JSONResponse:
     recent_cut = (max((c.sim_minute for c in dlg), default=0)) - 1440
     dlg_recent = [c for c in dlg if c.sim_minute >= recent_cut]
     dlg_recent_floor = sum(1 for c in dlg_recent if c.provider == "mock")
+    # Patient-retry stats (task 4): proof the task-1 retry is doing its job. Of the
+    # conversations that failed the first whole-chain pass and had to brew+retry,
+    # ``recovered`` is how many a retry then rescued to a real model (vs ``exhausted``,
+    # which spent every round and still fell to mock). retry_success_rate is the
+    # fraction rescued -- a high value means the retry is what's keeping floor low.
+    rs = sim.engine.dialogue_retry_stats
     dialogue_floor = {
         "total": len(dlg), "floor": dlg_floor,
         "rate": round(dlg_floor / len(dlg), 3) if dlg else 0.0,
         "recent_total": len(dlg_recent), "recent_floor": dlg_recent_floor,
         "recent_rate": round(dlg_recent_floor / len(dlg_recent), 3) if dlg_recent else 0.0,
+        "retried": rs["retried"], "recovered": rs["recovered"], "exhausted": rs["exhausted"],
+        "retry_rounds": rs["rounds_extra"],
+        "retry_success_rate": round(rs["recovered"] / rs["retried"], 3) if rs["retried"] else 0.0,
     }
     return JSONResponse(
         {
