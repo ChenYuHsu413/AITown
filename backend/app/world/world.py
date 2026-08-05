@@ -43,6 +43,7 @@ class Location:
     id: str
     name: str
     kind: str  # home | cafe | office | park | market
+    name_zh: str = ""        # canonical Traditional-Chinese name (for zh-run prompts/display)
     x: float = 0.0   # map coordinates for the UI
     y: float = 0.0
     owner: str = ""          # agent_id who runs this place ("" = public/unowned)

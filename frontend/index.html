@@ -616,6 +616,29 @@ function resolvePlaceholders(text){
     .replace(/\{loc:([a-z_]+)\}/g,(_,id)=>locById(id,(LOCS[id]&&LOCS[id].name)||id))
     .replace(/\{landmark:([a-z_]+)\}/g,(_,id)=>landmarkDisp(id));
 }
+// ---- dialogue name/place backstop (zh only) ----------------------------------
+// A real model occasionally copies the English/pinyin sign-names (Ange, Sunrise
+// Bakery) straight into a spoken line. This is the guarantee line: a deterministic
+// pass swaps pinyin resident names and English place names to their zh forms,
+// built from the SAME single-source tables the rest of the UI uses (NAME_EN/NAME_ZH
+// for people, LOCS[id].name/LOC_ZH for places). Zero work and zero cost in en mode.
+let SUBST=null;
+function buildSubst(){
+  const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const pairs=[];
+  for(const id in NAME_ZH){ const en=NAME_EN[id]; if(en&&NAME_ZH[id]) pairs.push([en,NAME_ZH[id]]); }
+  for(const id in LOC_ZH){ const en=LOCS[id]&&LOCS[id].name; if(en&&LOC_ZH[id]) pairs.push([en,LOC_ZH[id]]); }
+  pairs.sort((a,b)=>b[0].length-a[0].length);                   // longest first: "Sunrise Bakery" before "Bakery"
+  SUBST=pairs.map(([en,zh])=>[new RegExp('\\b'+esc(en)+'\\b','gi'),zh]);
+}
+function dialogueSubst(text){
+  if(LANG!=='zh'||!text) return text;
+  if(!SUBST) buildSubst();
+  let s=String(text); for(const [re,zh] of SUBST) s=s.replace(re,zh); return s;
+}
+// day_summary carries "cafe revenue $N" -> render the figure in zh without an LLM
+// round-trip (keeps the translate cache from filling with one entry per amount).
+function dayRevZh(sp){ const m=String(sp||'').match(/\$\s*(\d+)/); return m?`營收 $${m[1]}`:String(sp||''); }
 // Event Contract v1 templates, keyed by ev.verb. (a)ctor, (l)ocation, (tg)target, (sp)eech.
 // speech is model-generated free text — inserted verbatim, never translated.
 const EV_TMPL={
@@ -630,6 +653,7 @@ const EV_TMPL={
     confronted:(a,l,tg,sp)=>`${a} confronted ${tg} about the rumor — they ${sp}`,
     confide:(a,l,tg)=>`🤫 ${a} confided something personal to ${tg}`,
     belief:(a,l,tg,sp)=>`💭 ${a} formed an impression of ${tg}: ${sp}`,
+    day_summary:(a,l,tg,sp)=>`💰 ${a}'s day closed — ${sp}`,
     broke:(a,l)=>`💸 ${a} couldn't afford a meal at ${l}`,
     rain_start:()=>`🌧️ It started raining`, rain_end:()=>`🌤️ The rain stopped`,
     festival_start:(a,l)=>`🎉 A festival began at ${l}`, festival_end:(a,l)=>`🎏 The festival at ${l} ended`,
@@ -646,10 +670,11 @@ const EV_TMPL={
     confronted:(a,l,tg,sp)=>`${a} 當面質問了 ${tg}——對方${SPEECH_ZH[sp]||sp}`,
     confide:(a,l,tg)=>`🤫 ${a} 向 ${tg} 說了心事`,
     belief:(a,l,tg,sp)=>`💭 ${a} 對 ${tg} 有了長期印象:${sp}`,
+    day_summary:(a,l,tg,sp)=>`💰 ${a} 的一天結束了 — ${dayRevZh(sp)}`,
     broke:(a,l)=>`💸 ${a} 在 ${l} 付不起餐費`,
     rain_start:()=>`🌧️ 下雨了`, rain_end:()=>`🌤️ 雨停了`,
     festival_start:(a,l)=>`🎉 ${l} 的慶典開始了`, festival_end:(a,l)=>`🎏 ${l} 的慶典結束了`,
-    say:(a,l,tg,sp)=>`💬 ${a}：${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}：${sp}`,
+    say:(a,l,tg,sp)=>`💬 ${a}：${dialogueSubst(sp)}`, insight:(a,l,tg,sp)=>`💭 ${a}：${sp}`,
   },
 };
 let LANG=localStorage.getItem('lang')||(navigator.language&&navigator.language.startsWith('zh')?'zh':'en');
@@ -696,7 +721,7 @@ function applyLang(){
   updateClosedSigns(LAST_MINUTE);                                  // 休 / CLOSED badge follows the language
   refreshNametags();                                               // villager labels follow the language
   if(RG) relabelGraph();                                           // relationship-graph node labels too
-  document.querySelectorAll('#feed .ev,#replay-feed .ev').forEach(d=>{d.lastChild.textContent=evText(JSON.parse(d.dataset.ev));});
+  document.querySelectorAll('#feed .ev,#replay-feed .ev').forEach(d=>{renderEventText(d.lastChild,JSON.parse(d.dataset.ev));});
   if(selected && !$("#inspector").hidden) refreshInspector(selected,false);                  // else static placeholder already updated
   if(!$('#social').hidden) loadSocial();               // re-render the secrets/rumors tab in the new language
   if(!$('#replay-body').hidden){ buildRunOptions(); updatePlayBtn(); }   // "events" word + play/pause title follow the language
@@ -877,7 +902,7 @@ function buildTerrain(){
 buildTerrain();
 
 function buildMap(locations){
-  LOCS={}; LOC_LIST=locations;
+  LOCS={}; LOC_LIST=locations; SUBST=null;   // rebuild the dialogue backstop once real place names are known
   const g=$('#locs'), roads=$('#roads'), lights=$('#lights');
   g.innerHTML=''; roads.innerHTML=''; lights.innerHTML='';
   locations.forEach(l=>{LOCS[l.id]=l;});
@@ -1059,12 +1084,28 @@ function updateClosedSigns(minute){
 }
 
 /* ---------- feed ---------- */
+// Verbs whose `speech` is English-canonical knowledge (reflection insights,
+// lasting impressions, retold rumors): in zh they render English at once, then
+// swap in a cached translation -- the same pipeline the inspector/social/chronicle
+// panes already use. Dialogue (`say`) is NOT here: it's generated in zh and only
+// gets the deterministic name/place backstop.
+const TR_SPEECH_VERBS=new Set(['insight','belief','share_rumor']);
+function renderEventText(span,ev){                   // render now; zh knowledge speech swaps to Chinese when ready
+  span.textContent=evText(ev);
+  if(LANG!=='zh'||!TR_SPEECH_VERBS.has(ev.verb)) return;
+  const sp=String(ev.speech||''); if(!sp.trim()||!/[A-Za-z]/.test(sp)) return;
+  trFetch([sp]).then(()=>{
+    if(LANG!=='zh') return;                          // switched away mid-flight
+    const zh=TR_CACHE[sp]; if(zh===undefined||zh===sp) return;
+    span.textContent=evText({...ev,speech:zh});
+  });
+}
 function addEventTo(feed,ev){                        // shared by the live feed and the replay feed
   const d=document.createElement('div');
   d.className='ev '+ev.kind;
   d.dataset.ev=JSON.stringify(ev);                 // stash for re-render on language switch
   d.innerHTML=`<time>${ev.clock.replace('Day ','D')}</time><span></span>`;
-  d.lastChild.textContent=evText(ev);
+  renderEventText(d.lastChild,ev);
   feed.appendChild(d);
   while(feed.children.length>120) feed.removeChild(feed.firstChild);
   feed.scrollTop=feed.scrollHeight;
@@ -1131,7 +1172,7 @@ function maybeBubble(ev){
   const el=AGENTS[ev.actor]; if(!el) return;            // position by agent id, no name-string matching
   const tf=el.getAttribute('transform').match(/(-?[\d.]+),(-?[\d.]+)/); if(!tf) return;
   const ax=+tf[1], ay=+tf[2];
-  const raw=String(ev.speech||''); if(!raw.trim()) return;
+  const raw=dialogueSubst(String(ev.speech||'')); if(!raw.trim()) return;   // zh: pinyin/English names -> zh
   const lines=bubLines(raw);
   const maxLineW=Math.max(...lines.map(bubWidth));
   const w=Math.min(BUB_MAX_W, Math.ceil(maxLineW)+BUB_PAD_X*2);
@@ -2119,7 +2160,7 @@ async function fillChronDetail(e, det){
       lines.forEach(x=>{
         const b=document.createElement('div'); b.className='chron-bubble';
         const who=document.createElement('b'); who.textContent=agentName(x.actor,x.actor)+(LANG==='zh'?'：':': ');
-        const sp=document.createElement('span'); sp.textContent=x.speech||'';
+        const sp=document.createElement('span'); sp.textContent=dialogueSubst(x.speech||'');
         b.appendChild(who); b.appendChild(sp); convo.appendChild(b);
       });
     }catch(err){}

@@ -17,17 +17,17 @@ def build_locations() -> list[Location]:
     # at the top corners, the two shops mid-band as economic rivals, park + office
     # anchoring the lower corners, market on the right as the second social pole.
     return [
-        Location("home_a", "Riverside House", "home", x=120, y=120),
-        Location("home_b", "Hillside Apartment", "home", x=685, y=105),
+        Location("home_a", "Riverside House", "home", name_zh="河畔之家", x=120, y=120),
+        Location("home_b", "Hillside Apartment", "home", name_zh="山丘公寓", x=685, y=105),
         # Two shops open 7 days but each takes one weekly day off, staggered so the
         # town always has one open: the cafe rests Monday, the bakery Wednesday.
-        Location("cafe", "Moonlight Cafe", "cafe", x=340, y=185, owner="jiji", price=5.0,
+        Location("cafe", "Moonlight Cafe", "cafe", name_zh="月光咖啡館", x=340, y=185, owner="jiji", price=5.0,
                  closed_days=[0]),   # Monday
-        Location("bakery", "Sunrise Bakery", "bakery", x=400, y=405, owner="ange", price=4.0,
+        Location("bakery", "Sunrise Bakery", "bakery", name_zh="日出烘焙坊", x=400, y=405, owner="ange", price=4.0,
                  closed_days=[2]),   # Wednesday
-        Location("market", "Old Street Market", "market", x=610, y=215),
-        Location("office", "Townsend Office", "office", x=690, y=375),
-        Location("park", "Old Oak Park", "park", x=155, y=330, landmarks=[
+        Location("market", "Old Street Market", "market", name_zh="老街市場", x=610, y=215),
+        Location("office", "Townsend Office", "office", name_zh="湯森辦公室", x=690, y=375),
+        Location("park", "Old Oak Park", "park", name_zh="老橡樹公園", x=155, y=330, landmarks=[
             # Aisi's interactive light installation, seeded a third done -- an
             # engineering piece she builds up over afternoons in the park until
             # it lights up completely.

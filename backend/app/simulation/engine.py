@@ -167,6 +167,8 @@ class SimulationEngine:
         # forbid inventing names (Lengyue must never become a hallucinated name).
         from ..llm.prompts import builders
         builders.set_roster([(a.id.capitalize(), a.name) for a in world.agents.values()])
+        # Places too, so zh dialogue speaks "月光咖啡館" rather than "Moonlight Cafe".
+        builders.set_places([(l.name, l.name_zh) for l in world.locations.values() if l.name_zh])
         self.scheduler = Scheduler()
         self.bus = EventBus()
         # The town's rolling chronicle of notable beats (last 200), fed straight off

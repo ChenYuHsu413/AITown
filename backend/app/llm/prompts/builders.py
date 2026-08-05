@@ -67,6 +67,16 @@ def set_roster(pairs: list[tuple[str, str]]) -> None:
     _ROSTER = list(pairs)
 
 
+# The town's places, (english_name, zh_name), set once at startup alongside the
+# roster. Used only to steer zh dialogue toward the Chinese place names.
+_PLACES: list[tuple[str, str]] = []
+
+
+def set_places(pairs: list[tuple[str, str]]) -> None:
+    global _PLACES
+    _PLACES = [(en, zh) for en, zh in pairs if en and zh]
+
+
 def roster_directive(english_only: bool = False) -> str:
     if not _ROSTER:
         return ""
@@ -80,6 +90,27 @@ def roster_directive(english_only: bool = False) -> str:
 
 def roster_pairs() -> list[tuple[str, str]]:
     return list(_ROSTER)
+
+
+def dialogue_locale_directive() -> str:
+    """zh runs only: tell the model to speak people's and places' Chinese names,
+    never the English/pinyin sign-name form (a weak model otherwise copies
+    "Sunrise Bakery"/"Ange" straight into the spoken line). Empty in English, so
+    en/mock runs are byte-for-byte unchanged. The display layer substitutes these
+    deterministically regardless, so this is a soft steer, not the guarantee."""
+    if not lang_is_zh():
+        return ""
+    names = "; ".join(f"{en}={zh}" for en, zh in _ROSTER if zh and zh != en)
+    places = "; ".join(f"{en}={zh}" for en, zh in _PLACES if zh and zh != en)
+    parts = []
+    if names:
+        parts.append(f"people ({names})")
+    if places:
+        parts.append(f"places ({places})")
+    if not parts:
+        return ""
+    return (" When a spoken line names a person or place, use its Chinese name, "
+            "never the English/pinyin form: " + "; ".join(parts) + ".")
 
 
 def character_card(agent: "Agent", name: str | None = None) -> str:
@@ -176,7 +207,8 @@ def dialogue_prompt(
             f"{b.profile.name} admitted to it."
         )
     return [
-        {"role": "system", "content": system + roster_directive() + _lang_directive()},
+        {"role": "system",
+         "content": system + roster_directive() + _lang_directive() + dialogue_locale_directive()},
         {"role": "user", "content": user},
     ]
 

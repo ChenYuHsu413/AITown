@@ -101,14 +101,24 @@ class MockProvider(LLMProvider):
             # Confrontation: A asks B to their face; B must admit or deny, and the
             # verdict rides back in an extra "admitted" field. Detected via the
             # confrontation opener or the system-prompt instruction.
+            # zh floor must stay valid Chinese: the zh dialogue gate (decision.
+            # _zh_text_ok) rejects any English turn, so a mock that spliced in the
+            # English rumor/confront text would fail the gate and let an English
+            # provider-`floor` surface instead. In zh we therefore keep the canned
+            # Chinese lines and drop the English mention.
+            zh = os.environ.get("AI_TOWN_LANG", "en").strip().lower().startswith("zh")
             is_confront = ("did this come from you" in prompt) or ("confrontation" in prompt)
             if is_confront:
                 admit = rng.random() < 0.6                    # ~60% own up, deterministic per seed
-                verdict = (
-                    "...Yes, I did say that. I'm sorry."
-                    if admit else "That wasn't me, I swear."
-                )
-                opener = mention or "I heard people are saying something. Did this come from you?"
+                if zh:
+                    verdict = "…對，那句話是我說的，對不起。" if admit else "那不是我，我發誓。"
+                    opener = "我聽說有人在傳我的閒話，是你說的嗎？"
+                else:
+                    verdict = (
+                        "...Yes, I did say that. I'm sorry."
+                        if admit else "That wasn't me, I swear."
+                    )
+                    opener = mention or "I heard people are saying something. Did this come from you?"
                 turns = [
                     {"speaker": a, "text": opener},
                     {"speaker": b, "text": verdict},          # B's admit/deny is the last word
@@ -121,7 +131,6 @@ class MockProvider(LLMProvider):
                     "admitted": admit,
                 }
             else:
-                zh = os.environ.get("AI_TOWN_LANG", "en").strip().lower().startswith("zh")
                 small_talk, concerns, closer = (
                     (_SMALL_TALK_ZH, _CONCERNS_ZH, _CLOSER_ZH) if zh
                     else (_SMALL_TALK, _CONCERNS, "I'm here if you want to talk about it.")
@@ -134,8 +143,9 @@ class MockProvider(LLMProvider):
                 if rng.random() < 0.5:
                     turns.append({"speaker": b, "text": rng.choice(concerns)})
                     turns.append({"speaker": a, "text": closer})
-                # If A brought something up (a rumor), have A actually say it.
-                if mention:
+                # If A brought something up (a rumor), have A actually say it -- but
+                # only in English; the zh gate would reject the English mention.
+                if mention and not zh:
                     turns = [{"speaker": a, "text": mention}] + turns
                 parsed = {
                     "turns": turns,
