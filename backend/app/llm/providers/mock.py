@@ -21,9 +21,14 @@ def _seed_from(messages: list[dict]) -> int:
     return int(hashlib.sha256(blob.encode()).hexdigest()[:8], 16)
 
 
+# NB: the mock is the deterministic FLOOR (last resort when every live provider is
+# down). Its canned lines must assert NO specific world fact -- a hardcoded "the new
+# mural near the park" once leaked a nonexistent landmark into a run whose park has a
+# light installation, not a mural. Keep every line world-agnostic (weather, mood,
+# business, plans); anything run-specific must arrive via the prompt, never from here.
 _SMALL_TALK = [
     ("How has your day been so far?", "Pretty good, just the usual. And you?"),
-    ("Did you hear about the new mural near the park?", "No! I should go take a look."),
+    ("The weather's been pleasant lately, hasn't it?", "It really has. Makes the day easier."),
     ("Business has been steady lately.", "Glad to hear it, you deserve it."),
     ("You look a bit tired today.", "Yeah... long week. Thanks for noticing."),
     ("Any plans for the evening?", "Probably just an early night, honestly."),
@@ -40,7 +45,7 @@ _CONCERNS = [
 # than dropping to English. Generic, not contextual -- it's the last resort.
 _SMALL_TALK_ZH = [
     ("你今天過得如何？", "還不錯，就老樣子。你呢？"),
-    ("你聽說公園那幅新壁畫了嗎？", "還沒！我該去看看。"),
+    ("最近天氣挺舒服的，對吧？", "真的，讓人一天都輕鬆些。"),
     ("最近生意還算穩定。", "那真是太好了，你值得的。"),
     ("你今天看起來有點累。", "嗯…這週有點長。謝謝你關心。"),
     ("今晚有什麼安排嗎？", "大概就早點休息吧，說真的。"),

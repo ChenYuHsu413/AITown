@@ -48,6 +48,15 @@ TALK_COOLDOWN_MIN = 90        # don't re-approach the same person within 90 sim-
 TALK_DURATION_MIN = 10
 LOW_ENERGY = 20
 
+# Words that named a PRIOR run's world -- e.g. a park "mural" (壁畫), long since
+# replaced by a light installation. A generated turn mentioning one is almost
+# certainly stale context bleeding through (the old culprit was a hardcoded mock
+# line; the real model is fenced against inventing facts). We LOG it rather than
+# reject -- the false-positive rate on a legitimate mention is unknown -- so the
+# frequency can be watched and confirmed trending to zero. Extend as new artifacts
+# from retired runs surface.
+STALE_WORLD_TERMS = ("mural", "壁畫")
+
 # Social tiering (pure rules, before the cheap should_talk call). Close friends
 # chat freely; acquaintances less; near-strangers rarely -- so the cheap-tier call
 # volume stays bounded as the town grows and social circles form on their own.
@@ -978,6 +987,22 @@ class DecisionEngine:
         mock = self.router.tiers["normal"][-1]
         return await mock.generate(plan.messages, schema={"type": "object"}, max_tokens=plan.max_tokens)
 
+    @staticmethod
+    def _warn_stale_world_terms(a: Agent, b: Agent, turns: object, now: int) -> None:
+        """Light observability gate: log (never reject) a generated turn that names a
+        prior run's world (see STALE_WORLD_TERMS), so any lingering stale-context bleed
+        is visible in the log and its frequency can be watched to zero."""
+        if not isinstance(turns, list):
+            return
+        for turn in turns:
+            text = str(turn.get("text", "")) if isinstance(turn, dict) else ""
+            low = text.lower()
+            for term in STALE_WORLD_TERMS:
+                if term.lower() in low:
+                    print(f"[stale-world] minute {now}: {a.id}/{b.id} dialogue mentions "
+                          f"'{term}' -> {text[:90]!r}", flush=True)
+                    return
+
     def settle_conversation(
         self, plan: ConvPlan, world: World, res: object
     ) -> tuple[list[dict], dict, dict | None, dict | None, list[dict]]:
@@ -989,6 +1014,7 @@ class DecisionEngine:
         a, b, now = plan.a, plan.b, plan.init_minute
         parsed = res.parsed if isinstance(res.parsed, dict) else {}
         turns = parsed.get("turns", [])
+        self._warn_stale_world_terms(a, b, turns, now)   # observe (don't block) stale-world bleed
         signals = {
             "sentiment": float(parsed.get("sentiment", 0.5)),
             "trust_signal": float(parsed.get("trust_signal", 0.0)),
