@@ -674,7 +674,41 @@ class DecisionEngine:
             return False
         owner.memory.add(MemoryItem(minute=now, text=resolution, importance=5, kind="reflection"))
         self.rewrite_goals_on_resolve(owner, secret, now)   # the worry's goal moves forward too
+        owner.memory.suppress_theme(self.secret_subject(secret),
+                                    self.secret_theme_keywords(secret), now)  # old anxiety fades
         return True
+
+    @staticmethod
+    def secret_subject(secret) -> str:
+        """Who/what a secret is about -- the seeded ``about`` id, else the first
+        proper-noun name in the text (so a pre-``about`` secret still resolves)."""
+        if secret.about:
+            return secret.about.lower()
+        for w in secret.text.split():
+            c = w.strip(".,;:!?'\"")
+            if c.istitle() and len(c) > 2 and c.lower() not in ("i",):
+                return c.lower()
+        return ""
+
+    @staticmethod
+    def secret_theme_keywords(secret) -> set:
+        """The distinctive words of a secret's worry -- used to fade pre-resolution
+        memories of the same theme."""
+        return {w.strip(".,;:!?'\"").lower() for w in secret.text.split() if len(w) > 3} \
+            - DecisionEngine._GOAL_STOP
+
+    def rebuild_suppressed_themes(self, world: World) -> None:
+        """Re-derive every agent's suppressed themes from the resolved secrets --
+        called after a snapshot restore, so the down-weight survives a resume without
+        needing its own snapshot slot (the secrets are the source of truth)."""
+        for a in world.agents.values():
+            a.memory.suppressed = []
+        for s in self.secrets.secrets.values():
+            if s.resolved:
+                owner = world.agents.get(s.owner)
+                if owner is not None:
+                    before = s.resolved_minute if s.resolved_minute >= 0 else 10 ** 12
+                    owner.memory.suppress_theme(self.secret_subject(s), self.secret_theme_keywords(s), before)
 
     # Common short words to ignore when matching a goal to a secret's theme.
     _GOAL_STOP = {"want", "have", "been", "that", "this", "with", "from", "they", "them",

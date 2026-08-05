@@ -143,6 +143,29 @@ class EpisodicMemory:
         self.importance_since_reflection: int = 0
         self.on_add = None            # Callable[[MemoryItem], None] | None
         self.vector_search = None     # async (query, k) -> list[str] | None
+        # Themes of resolved worries: reflection/rumor memories from BEFORE a worry
+        # was settled get their retrieval weight halved, so old anxiety fades from
+        # the narrative instead of dominating it. Each: (subject, keyword frozenset,
+        # before_minute). A memory matches when it names the subject, or shares two
+        # distinctive theme words -- and only if it predates the resolution.
+        self.suppressed: list[tuple[str, frozenset, int]] = []
+
+    def suppress_theme(self, subject: str, keywords, before_minute: int) -> None:
+        kws = frozenset(w.lower() for w in keywords if w)
+        subj = (subject or "").lower()
+        if subj or kws:
+            self.suppressed.append((subj, kws, before_minute))
+
+    def penalty(self, text: str, kind: str, minute: int) -> float:
+        """0.5 for a reflection/rumor memory that predates a resolved worry and is
+        about it (names the subject or shares >=2 theme words); 1.0 otherwise."""
+        if not self.suppressed or kind not in ("reflection", "rumor"):
+            return 1.0
+        words = {w.strip(".,;:!?'\"").lower() for w in text.split()}
+        for subj, kws, before in self.suppressed:
+            if minute < before and ((subj and subj in words) or len(kws & words) >= 2):
+                return 0.5
+        return 1.0
 
     def add(self, item: MemoryItem) -> None:
         self.items.append(item)
@@ -167,7 +190,7 @@ class EpisodicMemory:
         for m in self.items:
             overlap = len(q_words & set(m.text.lower().split()))
             recency = 1.0 - min((latest - m.minute) / (24 * 60), 1.0)
-            score = overlap * 2.0 + m.importance * 0.3 + recency
+            score = (overlap * 2.0 + m.importance * 0.3 + recency) * self.penalty(m.text, m.kind, m.minute)
             if score > 0:
                 scored.append((score, m))
         scored.sort(key=lambda t: t[0], reverse=True)

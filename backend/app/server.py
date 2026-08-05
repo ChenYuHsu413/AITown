@@ -189,8 +189,11 @@ class Sim:
             if not resumed:
                 for item in agent.memory.items:
                     p.on_memory(agent.id, item)
-            # Retrieval switches to pgvector cosine search.
-            agent.memory.vector_search = p.vector_retriever(agent.id)
+            # Retrieval switches to pgvector cosine search (memory passed so the
+            # resolved-worry down-weight applies here too).
+            agent.memory.vector_search = p.vector_retriever(agent.id, agent.memory)
+        # Rebuild the resolved-worry theme suppressions from the restored secrets.
+        self.engine.decisions.rebuild_suppressed_themes(self.world)
         if resumed:
             print(f"[resume] restored from {fmt_time(restored_minute or self.engine.now)} "
                   f"(run {p.run_id})")

@@ -225,20 +225,33 @@ class Persistence:
             return [{"id": r.id, "run_id": r.run_id, "minute": r.minute,
                      "reason": r.reason, "created_at": r.created_at.isoformat()} for r in rows]
 
-    def vector_retriever(self, agent_id: str):
-        """Returns an async (query, k) -> list[str] bound to one agent,
-        matching EpisodicMemory's retrieval contract."""
+    def vector_retriever(self, agent_id: str, memory=None):
+        """Returns an async (query, k) -> list[str] bound to one agent, matching
+        EpisodicMemory's retrieval contract. When the agent has suppressed themes
+        (resolved worries), it over-fetches and re-ranks so a pre-resolution
+        reflection/rumor of that theme sinks (its effective similarity is halved)."""
 
         async def retrieve(query: str, k: int = 5) -> list[str]:
             q_emb = await self.embedder.embed(query)
+            suppress = bool(memory is not None and memory.suppressed)
             async with self.session() as s:
-                rows = await s.execute(
-                    select(MemoryRow.text)
+                if not suppress:
+                    rows = await s.execute(
+                        select(MemoryRow.text)
+                        .where(MemoryRow.run_id == self.run_id, MemoryRow.agent_id == agent_id)
+                        .order_by(MemoryRow.embedding.cosine_distance(q_emb))
+                        .limit(k)
+                    )
+                    return [r[0] for r in rows]
+                dist = MemoryRow.embedding.cosine_distance(q_emb)
+                rows = (await s.execute(
+                    select(MemoryRow.text, MemoryRow.kind, MemoryRow.minute, dist.label("d"))
                     .where(MemoryRow.run_id == self.run_id, MemoryRow.agent_id == agent_id)
-                    .order_by(MemoryRow.embedding.cosine_distance(q_emb))
-                    .limit(k)
-                )
-                return [r[0] for r in rows]
+                    .order_by(dist).limit(k * 4)
+                )).all()
+            # halved weight == doubled distance for a penalized memory
+            ranked = sorted(rows, key=lambda r: r[3] * (2.0 if memory.penalty(r[0], r[1], r[2]) < 1.0 else 1.0))
+            return [r[0] for r in ranked[:k]]
 
         return retrieve
 
