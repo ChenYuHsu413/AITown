@@ -31,6 +31,7 @@ from ..llm.router import LLMRouter
 from ..social.rumors import RumorRegistry
 from ..social.secrets import SecretRegistry
 from ..world.world import Observation, World
+from . import transitions as transitions_mod
 from .agent import Agent
 from .core import Belief, MemoryItem
 
@@ -377,8 +378,13 @@ class DecisionEngine:
             # agent later (meals still redirect them around town, incl. a rival's shop).
             own_shop = next((l for l in world.locations.values()
                              if l.owner == agent.id and l.price > 0), None)
+            # Shop staff rest on their employer's shop's closing day, same as the owner.
+            staff_shop = next((l for l in world.locations.values()
+                               if l.owner == agent.state.employer and l.price > 0), None) \
+                if agent.state.employer else None
             off_today = (dow in agent.profile.off_days) \
-                or (own_shop is not None and dow in own_shop.closed_days)
+                or (own_shop is not None and dow in own_shop.closed_days) \
+                or (staff_shop is not None and dow in staff_shop.closed_days)
             day_off_rest = off_today and (
                 entry.action == "work"
                 or (entry.action == "rest" and entry.location != agent.home)
@@ -833,15 +839,36 @@ class DecisionEngine:
         b.memory.add(MemoryItem(
             minute=now, text=f"Talked with {{agent:{a.id}}} at {{loc:{b.state.location}}}.",
             importance=3, kind="conversation"))
+        f_before = a.rel(b.id).friendship                     # for the relationship-milestone check
         a.apply_conversation_signals(b.id, **signals)
         b.apply_conversation_signals(a.id, **signals)
         a.state.last_talk_minute[b.id] = now
         b.state.last_talk_minute[a.id] = now
+        milestone = self._detect_milestone(a, b, f_before, now)
 
         confrontation = None
         if is_confront:
             confrontation = self._settle_confrontation(a, b, world, confront_rumor_id, parsed, now)
-        return turns, signals, shared_rumors, confrontation, confided
+        return turns, signals, shared_rumors, confrontation, confided, milestone
+
+    def _detect_milestone(self, a: Agent, b: Agent, f_before: float, now: int) -> dict | None:
+        """A conversation that moves ``a``'s friendship for ``b`` across a stage
+        boundary (stranger/acquaintance/friend/close) is a visible beat. Debounced
+        to at most one milestone per pair per 3 sim-days so a pair hovering on a
+        threshold doesn't spam. Symmetric: the debounce day is stamped on both."""
+        s_before = transitions_mod.rel_stage(f_before)
+        s_after = transitions_mod.rel_stage(a.rel(b.id).friendship)
+        if s_after == s_before:
+            return None
+        day = now // (24 * 60)
+        last = max(a.state.rel_stage_day.get(b.id, -100), b.state.rel_stage_day.get(a.id, -100))
+        if day - last < 3:
+            return None
+        a.state.rel_stage_day[b.id] = day
+        b.state.rel_stage_day[a.id] = day
+        up = transitions_mod.stage_rank(s_after) > transitions_mod.stage_rank(s_before)
+        return {"a": a.id, "b": b.id, "stage": s_after, "up": up,
+                "fa": round(a.rel(b.id).friendship), "fb": round(b.rel(a.id).friendship)}
 
     def _settle_confrontation(
         self, a: Agent, b: Agent, world: World, rumor_id: str, parsed: dict, now: int
@@ -1012,9 +1039,15 @@ class DecisionEngine:
         # The agent's own still-open worries ride into the reflection so it can judge
         # which, if any, recent experience has laid to rest.
         open_secrets = self.secrets.active_secrets_of(agent.id)
+        # Life changes are only offered when the cooldown has lapsed and none is
+        # already staged -- so reflection can't queue two at once.
+        offer = []
+        if (not agent.state.pending_transition
+                and now // (24 * 60) - agent.state.last_transition_day >= transitions_mod.TRANSITION_COOLDOWN_DAYS):
+            offer = [(t.id, t.label) for t in transitions_mod.available_for(agent, world)]
         res = await self.router.generate(
             task="reflection",
-            messages=builders.reflection_prompt(agent, events, open_secrets),
+            messages=builders.reflection_prompt(agent, events, open_secrets, offer or None),
             agent_id=agent.id,
             sim_minute=now,
             schema={"type": "object"},
@@ -1028,6 +1061,8 @@ class DecisionEngine:
             belief_events = self._form_beliefs(agent, world, res.parsed.get("beliefs", []), now)
             secret_born = self._maybe_new_secret(agent, world, res.parsed.get("new_secret"), now)
             self._resolve_reflected_secrets(agent, res.parsed.get("resolved_secret_ids"), open_secrets, now)
+            if offer:
+                self._stage_transition(agent, world, res.parsed.get("life_decision"), now)
         for ins in insights:
             agent.memory.add(MemoryItem(minute=now, text=ins, importance=5, kind="reflection"))
         agent.memory.importance_since_reflection = 0
@@ -1046,6 +1081,20 @@ class DecisionEngine:
                 self._resolve_secret(
                     agent, secret, now,
                     f"{agent.id.capitalize()} has come to terms with this; it no longer weighs on them.")
+
+    def _stage_transition(self, agent: Agent, world: World, raw: object, now: int) -> None:
+        """Record a reflection's life decision for the engine to apply at the next
+        day boundary. Re-verifies the template exists and its precondition still
+        holds; the cooldown was already checked when the option was offered."""
+        if not isinstance(raw, dict):
+            return
+        tid = str(raw.get("action", "")).strip()
+        tmpl = transitions_mod.REGISTRY.get(tid)
+        if tmpl is None or agent.state.pending_transition or not tmpl.precondition(agent, world):
+            return
+        agent.state.pending_transition = tid
+        agent.state.pending_transition_reason = str(raw.get("reason", "")).strip()
+        print(f"[transition] {agent.id} decided '{tid}' (applies next settlement)", flush=True)
 
     def _maybe_new_secret(self, agent: Agent, world: World, raw: object, now: int) -> bool:
         """Add a private matter surfaced by reflection (owner = the reflecting

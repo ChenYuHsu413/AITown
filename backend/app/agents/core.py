@@ -52,6 +52,17 @@ class AgentState:
     last_meal_slot: int = -1                # (day, eat-slot) already paid for -- stops double-charging
     seen_landmark_progress: dict[str, float] = field(default_factory=dict)  # landmark_id -> progress last noticed
     closed_reroute_notes: dict[str, int] = field(default_factory=dict)  # shop_id -> sim-day already noted "found it closed"
+    # Life transitions (see agents/transitions.py). A decided change is staged here
+    # and applied at the next daily settlement (clean day boundary); a 7-day cooldown
+    # keeps lives from lurching. ``employer`` is the shop owner who pays this agent's
+    # wage (shop staff) -- "" for the self-supporting.
+    pending_transition: str = ""            # transition template id awaiting apply ("" = none)
+    pending_transition_reason: str = ""     # the reflection's reason, kept for the chronicle detail
+    last_transition_day: int = -100         # sim-day of the last applied transition (cooldown anchor)
+    employer: str = ""                      # agent_id who pays this agent's daily wage ("" = none)
+    # Relationship milestones: sim-day a stage-change was last recorded per partner,
+    # so a pair crossing a threshold back and forth doesn't spam the chronicle.
+    rel_stage_day: dict[str, int] = field(default_factory=dict)  # partner_id -> sim-day of last milestone
 
 
 @dataclass

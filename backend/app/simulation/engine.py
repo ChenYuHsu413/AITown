@@ -90,6 +90,8 @@ _EN_TEMPLATES = {
     "leak": "{actor} let slip a secret about {target}",
     "secret_born": "{actor} started quietly keeping something to themselves",
     "week_close": "The week's books were settled",
+    "transition": "{actor}'s life took a turn: {text}",
+    "milestone": "{actor} and {target} — {text}",
 }
 
 # The town's living history: the notable beats worth remembering (see Sim.chronicle
@@ -98,12 +100,13 @@ _EN_TEMPLATES = {
 CHRONICLE_VERBS = {
     "confide", "confronted", "landmark_done", "belief", "broke",
     "rain_start", "rain_end", "festival_start", "festival_end",
-    "leak", "secret_born", "week_close",
+    "leak", "secret_born", "week_close", "transition", "milestone",
 }
 CHRONICLE_ICONS = {
     "confide": "🤫", "confronted": "⚖️", "landmark_done": "🎨", "belief": "💭",
     "broke": "💸", "rain_start": "🌧️", "rain_end": "🌤️", "festival_start": "🎉",
     "festival_end": "🎏", "leak": "🕳️", "secret_born": "🔒", "week_close": "📅",
+    "transition": "🔀", "milestone": "🤝",
 }
 
 
@@ -337,10 +340,77 @@ class SimulationEngine:
                 loc.revenue_week = 0.0
         for ag in self.world.agents.values():
             ag.state.money += ag.profile.daily_wage
+            # Shop staff are paid BY their employer -- a real transfer out of the
+            # owner's wallet, so hiring actually costs (can Jiji afford it?).
+            if ag.state.employer and ag.profile.daily_wage > 0:
+                owner = self.world.agents.get(ag.state.employer)
+                if owner is not None:
+                    owner.state.money -= ag.profile.daily_wage
             ag.semantic.decay()   # unreinforced impressions fade a little each day
         if week_close:            # a chronicle beat: the week's books closed, with the shop-vs-shop takings
             detail = " vs ".join(f"{{loc:{lid}}} ${rev:.0f}" for lid, rev in week_rev.items())
             self._publish("system", "week_close", detail=detail)
+        # Staged life changes take effect now, on the clean day boundary.
+        self._apply_pending_transitions()
+
+    _TRANSITION_RIPPLE = {                        # third person, for friends' memories
+        "quit_job": "quit their job",
+        "take_job_cafe": "started working at the cafe",
+        "take_job_bakery": "started working at the bakery",
+        "freelance_from_home": "started freelancing from home",
+    }
+    _TRANSITION_SELF = {                          # first person, for the owner's own memory
+        "quit_job": "quit my job to find a new direction",
+        "take_job_cafe": "started working at the cafe",
+        "take_job_bakery": "started working at the bakery",
+        "freelance_from_home": "started freelancing from home",
+    }
+
+    def _apply_pending_transitions(self) -> None:
+        """Apply every staged life change (decided by yesterday's reflection). Each:
+        re-verify the precondition, run the template's effects (occupation / wage /
+        routine / mood), rewrite goals, resolve any secret the change settles, then
+        publish a chronicle beat, an importance-9 self memory, and a light ripple to
+        close friends. Runs once per day boundary, so routines swap cleanly."""
+        from ..agents import transitions as transitions_mod
+        for agent in self.world.agents.values():
+            tid = agent.state.pending_transition
+            if not tid:
+                continue
+            reason = agent.state.pending_transition_reason
+            agent.state.pending_transition = ""
+            agent.state.pending_transition_reason = ""
+            tmpl = transitions_mod.REGISTRY.get(tid)
+            if tmpl is None or not tmpl.precondition(agent, self.world):
+                continue                                  # conditions changed overnight -> drop it
+            tmpl.effects(agent, self.world)
+            # Goal rewrite: drop the goals this change makes moot, install the new one.
+            agent.profile.goals = [
+                g for g in agent.profile.goals
+                if not any(s in str(g.get("goal", "")).lower() for s in tmpl.clears_goal)
+            ]
+            agent.profile.goals.insert(0, {"goal": tmpl.goal, "priority": 0.85})
+            # Resolve the secret this change acts on (Xue's interview secret on quit).
+            for s in self.decisions.secrets.active_secrets_of(agent.id):
+                if tmpl.resolves_secret_kw and any(kw in s.text.lower() for kw in tmpl.resolves_secret_kw):
+                    self.decisions._resolve_secret(
+                        agent, s, self.now,
+                        f"{agent.id.capitalize()} acted on it and moved forward.")
+            agent.state.last_transition_day = self.now // DAY_MIN
+            agent.memory.add(MemoryItem(
+                minute=self.now, importance=9, kind="reflection",
+                text=f"I made a real change today: I {self._TRANSITION_SELF.get(tid, 'made a big change')}."
+                     + (f" ({reason})" if reason else "")))
+            self._publish("system", "transition", actor=agent,
+                          location_id=agent.state.location, text=tid, detail=reason or tmpl.label)
+            # Friends hear about it.
+            note = self._TRANSITION_RIPPLE.get(tid, "made a big change")
+            for other in self.world.agents.values():
+                rel = other.relationships.get(agent.id)
+                if other.id != agent.id and rel is not None and rel.friendship >= 55:
+                    other.memory.add(MemoryItem(
+                        minute=self.now, importance=4, kind="reflection",
+                        text=f"Heard {{agent:{agent.id}}} {note}."))
 
     async def tick(self) -> None:
         item = self.scheduler.pop_next()
@@ -422,7 +492,7 @@ class SimulationEngine:
             # Partner got occupied since the decision; retry shortly.
             self.scheduler.schedule(a.id, self.now + 5)
             return
-        turns, signals, shared_rumors, confrontation, confided = await self.decisions.run_conversation(
+        turns, signals, shared_rumors, confrontation, confided, milestone = await self.decisions.run_conversation(
             a, b, self.world, self.now,
             confront_text=confront_text or None, confront_rumor_id=confront_rumor_id,
         )
@@ -484,7 +554,24 @@ class SimulationEngine:
                 detail=(f'About the rumor "{rumor_text}" -> {b.id.capitalize()} {outcome}'
                         if rumor_text else f"{b.id.capitalize()} {outcome}"),
             )
+        if milestone is not None:  # a friendship crossed a stage boundary -> a visible beat
+            self._publish_milestone(a, b, milestone)
         self.scheduler.schedule(b.id, self.now + duration)
+
+    def _publish_milestone(self, a: Agent, b: Agent, m: dict) -> None:
+        """A relationship stage-change: one chronicle beat + a memory for each side.
+        ``text`` is the stage reached (up) or 'distant' (a conflict-driven drop); the
+        frontend renders both languages. ``detail`` carries the current friendship
+        both ways so the expanded row shows where they stand."""
+        stage = m["stage"] if m["up"] else "distant"
+        detail = f"{{agent:{a.id}}} ↔ {{agent:{b.id}}} · {m['fa']} / {m['fb']}"
+        self._publish("system", "milestone", actor=a, target=b,
+                      location_id=a.state.location, text=stage, detail=detail)
+        note = ("grew closer to" if m["up"] else "drifted apart from")
+        a.memory.add(MemoryItem(minute=self.now, importance=4, kind="reflection",
+                                text=f"I {note} {{agent:{b.id}}}."))
+        b.memory.add(MemoryItem(minute=self.now, importance=4, kind="reflection",
+                                text=f"I {note} {{agent:{a.id}}}."))
 
     def _interrupt_colocated(self, mover: Agent) -> None:
         """Arrival interrupt: others at the destination may react now."""

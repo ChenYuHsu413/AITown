@@ -492,7 +492,8 @@ const $=s=>document.querySelector(s);
 let LOCS={}, AGENTS={}, selected=null, LOC_LIST=[], ECON=null, AWAY=null;
 let CHRON=[], chronOpen=false;      // chronicle state (declared early: applyLang() renders it during init)
 const CHRON_VERBS=new Set(['confide','confronted','landmark_done','belief','broke',
-  'rain_start','rain_end','festival_start','festival_end','leak','secret_born','week_close']);
+  'rain_start','rain_end','festival_start','festival_end','leak','secret_born','week_close',
+  'transition','milestone']);
 
 /* ---------- i18n ---------- */
 const I18N={
@@ -591,7 +592,8 @@ const KINDS={home:'住家',cafe:'咖啡館',office:'辦公室',park:'公園',bak
 const ACTIONS={work:'工作',eat:'用餐',move:'移動',sleep:'睡眠',rest:'休息',idle:'閒置',talk:'交談'};
 const OCCS={'Cafe Owner':'咖啡館老闆','Office Worker':'上班族','Doctor':'醫生','Retired Teacher':'退休教師','Art Student':'藝術系學生',
   'Baker':'烘焙師','Postman':'郵差','Market Vendor':'市場攤販','Student':'學生','Retired Nurse':'退休護士',
-  'Engineer':'工程師','Freelance Designer':'自由設計師','Retired':'退休'};
+  'Engineer':'工程師','Freelance Designer':'自由設計師','Retired':'退休',
+  'job seeker':'求職中','cafe staff':'咖啡館員工','bakery staff':'烘焙坊員工','freelancer':'自由接案者'};
 const TRAITS={curious:'好奇',friendly:'友善',gossipy:'八卦',quiet:'安靜',loyal:'忠誠',stressed:'焦慮',
   calm:'冷靜',observant:'敏銳',helpful:'樂於助人',wise:'睿智',talkative:'健談',nostalgic:'念舊',
   creative:'有創意',dreamy:'愛幻想','night-owl':'夜貓子',
@@ -612,6 +614,18 @@ function agentNameW(id){ const n=agentName(id); let w=0;
 const SPEECH_ZH={'admitted it':'承認了','denied it':'否認了'};
 // Landmark names are internal English; map the small set for the zh event feed.
 const LANDMARK_ZH={'the interactive light installation':'互動燈光裝置'};
+// Life transitions: ev.speech carries the template id; render a phrase per language.
+const TRANSITION_EN={quit_job:'quit their job to look for a new direction',
+  take_job_cafe:'started working at the cafe',take_job_bakery:'started working at the bakery',
+  freelance_from_home:'started freelancing from home'};
+const TRANSITION_ZH={quit_job:'辭去了工作,開始尋找新方向',
+  take_job_cafe:'到月光咖啡館上工了',take_job_bakery:'到日出烘焙坊上工了',
+  freelance_from_home:'開始了在家接案的生活'};
+// Relationship milestones: ev.speech is the stage reached (or 'distant' for a drop).
+const MILESTONE_EN={acquaintance:'are getting to know each other',friend:'became friends',
+  close:'became close friends',distant:'grew distant'};
+const MILESTONE_ZH={acquaintance:'開始互相熟識',friend:'成為了朋友',
+  close:'成了摯友',distant:'漸漸疏遠了'};
 // Memory-placeholder resolution: {agent:id}/{loc:id}/{landmark:id} -> current-language
 // names. Landmarks keyed by id here (memory text uses ids). Unknown ids fall through.
 const LANDMARK_DISP={installation:{zh:'互動燈光裝置',en:'the interactive light installation'}};
@@ -664,6 +678,8 @@ const EV_TMPL={
     rain_start:()=>`🌧️ It started raining`, rain_end:()=>`🌤️ The rain stopped`,
     festival_start:(a,l)=>`🎉 A festival began at ${l}`, festival_end:(a,l)=>`🎏 The festival at ${l} ended`,
     say:(a,l,tg,sp)=>`💬 ${a}: ${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}: ${sp}`,
+    transition:(a,l,tg,sp)=>`🔀 ${a} ${TRANSITION_EN[sp]||sp}`,
+    milestone:(a,l,tg,sp)=>`${sp==='distant'?'💔':'🤝'} ${a} and ${tg} ${MILESTONE_EN[sp]||sp}`,
   },
   zh:{
     sleep:(a,l)=>`${a} 在 ${l} 就寢`, eat:(a,l)=>`${a} 在 ${l} 用餐`,
@@ -681,6 +697,8 @@ const EV_TMPL={
     rain_start:()=>`🌧️ 下雨了`, rain_end:()=>`🌤️ 雨停了`,
     festival_start:(a,l)=>`🎉 ${l} 的慶典開始了`, festival_end:(a,l)=>`🎏 ${l} 的慶典結束了`,
     say:(a,l,tg,sp)=>`💬 ${a}：${dialogueSubst(sp)}`, insight:(a,l,tg,sp)=>`💭 ${a}：${sp}`,
+    transition:(a,l,tg,sp)=>`🔀 ${a} ${TRANSITION_ZH[sp]||sp}`,
+    milestone:(a,l,tg,sp)=>`${sp==='distant'?'💔':'🤝'} ${a} 與 ${tg} ${MILESTONE_ZH[sp]||sp}`,
   },
 };
 let LANG=localStorage.getItem('lang')||(navigator.language&&navigator.language.startsWith('zh')?'zh':'en');
@@ -690,7 +708,7 @@ const locById=(id,fb)=>LANG==='zh'?(LOC_ZH[id]||fb||id):(fb||id);           // e
 const locByEn=n=>{ if(LANG!=='zh') return n;                                  // inspector (only has English name)
   const h=Object.values(LOCS).find(l=>l.name===n); return (h&&LOC_ZH[h.id])||n; };
 const occName=o=>LANG==='zh'?(OCCS[o]||o):o;
-const MOOD_EMOJI={upset:'😠',worried:'😟',happy:'🙂'};
+const MOOD_EMOJI={upset:'😠',worried:'😟',happy:'🙂',anxious:'😰'};
 const moodEmoji=m=>MOOD_EMOJI[m]?MOOD_EMOJI[m]+' ':'';
 const actName=a=>LANG==='zh'?(ACTIONS[a]||a):a;
 const traitName=x=>LANG==='zh'?(TRAITS[x]||x):x;

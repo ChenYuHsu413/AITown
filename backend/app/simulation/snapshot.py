@@ -38,7 +38,11 @@ if TYPE_CHECKING:
 #   v5 -> v6: the rolling chronicle (town history) rides along; absent -> empty.
 #   v6 -> v7: secret resolution lifecycle (about/resolved/resolved_minute/resolution).
 #             Restore is additive, so a v6 snapshot loads with every secret unresolved.
-SCHEMA_VERSION = 7
+#   v7 -> v8: life transitions -- transition/employer/milestone state (rides in the
+#             state dict) plus the mutable profile (occupation/wage/goals) and the
+#             live routine, so an applied change survives a resume. Older snapshots
+#             keep the seed profile/routine.
+SCHEMA_VERSION = 8
 
 
 # ---- capture -------------------------------------------------------------
@@ -68,8 +72,21 @@ def capture(engine: "SimulationEngine", world: "World", decisions: "DecisionEngi
 
 
 def _capture_agent(agent) -> dict:
+    r = agent.routine
     return {
         "state": dataclasses.asdict(agent.state),
+        # Mutable-by-transition profile bits + the live routine, so a life change
+        # (occupation/wage/goals/timetable) survives a resume. The rest of the
+        # profile (id/name/personality/traits) is static and comes from the seed.
+        "profile": {
+            "occupation": agent.profile.occupation,
+            "daily_wage": agent.profile.daily_wage,
+            "goals": [dict(g) for g in agent.profile.goals],
+        },
+        "routine": {
+            "weekday": [[e.start, e.action, e.location] for e in r.entries],
+            "weekend": [[e.start, e.action, e.location] for e in r._weekend],
+        },
         "relationships": {oid: dataclasses.asdict(r) for oid, r in agent.relationships.items()},
         "memory": {
             "items": [dataclasses.asdict(m) for m in agent.memory.items],
@@ -141,6 +158,21 @@ def _overlay(obj, data: dict) -> None:
 
 def _restore_agent(agent, adata: dict) -> None:
     _overlay(agent.state, adata.get("state") or {})
+
+    prof = adata.get("profile") or {}                # v8+; older snapshots keep seed occupation/wage/goals
+    if "occupation" in prof:
+        agent.profile.occupation = prof["occupation"]
+    if "daily_wage" in prof:
+        agent.profile.daily_wage = float(prof["daily_wage"])
+    if isinstance(prof.get("goals"), list):
+        agent.profile.goals = [dict(g) for g in prof["goals"] if isinstance(g, dict)]
+
+    rt = adata.get("routine") or {}                  # v8+; a transitioned routine rides along
+    if isinstance(rt.get("weekday"), list) and rt["weekday"]:
+        from ..agents.routine import Routine, RoutineEntry
+        wk = [RoutineEntry(int(e[0]), str(e[1]), str(e[2])) for e in rt["weekday"] if len(e) >= 3]
+        we = [RoutineEntry(int(e[0]), str(e[1]), str(e[2])) for e in (rt.get("weekend") or []) if len(e) >= 3]
+        agent.routine = Routine(wk, we or None)
 
     if "relationships" in adata:
         rels = {}

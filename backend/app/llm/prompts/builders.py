@@ -322,7 +322,8 @@ def decision_prompt(agent: "Agent", observation: str, memories: list[str], actio
     ]
 
 
-def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list | None = None) -> list[dict]:
+def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list | None = None,
+                      transitions: list | None = None) -> list[dict]:
     # The character's own still-open worries, offered back so reflection can retire
     # the ones today's experience has settled. Ids are opaque handles the sim maps
     # back to secrets; the model only judges which are done.
@@ -335,6 +336,14 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
         )
         secrets_block = "\nYour still-open private worries:\n" + lines
         resolved_key = '"resolved_secret_ids": ["<id>", ...], '
+    # Available life changes (each precondition already passed). Reflection may pick
+    # at most one -- but only when the accumulated evidence is overwhelming.
+    transitions_block = ""
+    decision_key = ""
+    if transitions:
+        opts = "\n".join(f"  [{tid}] {label}" for tid, label in transitions)
+        transitions_block = "\nLife changes you could choose right now:\n" + opts
+        decision_key = '"life_decision": {"action": "<id>", "reason": "..."} | null, '
     return [
         {
             "role": "system",
@@ -342,7 +351,7 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
                 "You produce end-of-day reflection for a life-sim character. Respond ONLY with JSON: "
                 '{"insights": ["...", "..."], '
                 '"beliefs": [{"subject": "<name>", "text": "...", "confidence": 0.0-1.0, "sentiment": -1.0-1.0}], '
-                + resolved_key +
+                + resolved_key + decision_key +
                 '"new_secret": {"text": "...", "sensitivity": 0.0-1.0} | null}. '
                 '"insights" are 1-2 short takeaways from today. '
                 '"beliefs" are 0-2 LASTING impressions about a specific person or place -- formed ONLY when '
@@ -359,6 +368,11 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
                    "settled or acted on -- you finally did the thing, spoke to the person it concerns, or "
                    "it plainly stopped weighing on you. Include an id ONLY with clear evidence in today's "
                    "events; when in doubt leave it out (prefer an empty list). " if open_secrets else "")
+                + ('"life_decision" is a MAJOR life change, chosen from the listed options -- pick one ONLY '
+                   "when a long, repeated pattern of experience makes it clearly the right moment (a settled "
+                   "resolve built over many days, not a single bad afternoon). This is rare: the vast "
+                   "majority of reflections MUST return null. When you do choose, give the id and a reason "
+                   "grounded in the accumulated evidence. " if transitions else "")
                 + "Write all text in English (this is internal knowledge, translated for display separately). "
                 "Task: reflection."
                 + roster_directive(english_only=True)
@@ -371,7 +385,7 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
                 # come back with roster names the sim can resolve.
                 f"{character_card(agent, name=agent.id.capitalize())}\n"
                 "Events today:\n" + "\n".join(f"- {e}" for e in day_events[-15:])
-                + secrets_block
+                + secrets_block + transitions_block
             ),
         },
     ]
