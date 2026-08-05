@@ -121,6 +121,10 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 .soc-badge{padding:1px 6px;border-radius:999px;border:1px solid var(--line);font-size:9.5px;letter-spacing:.04em}
 .soc-badge.intact{color:var(--moss);border-color:color-mix(in srgb,var(--moss) 45%,var(--line))}
 .soc-badge.leaked{color:#C0503A;border-color:#d8a99f;background:#fbeeea}
+.soc-badge.resolved{color:var(--moss);border-color:color-mix(in srgb,var(--moss) 55%,var(--line));background:color-mix(in srgb,var(--moss) 10%,transparent)}
+.soc-card.resolved{opacity:.72}
+.soc-card.resolved .soc-text{text-decoration:line-through;text-decoration-color:color-mix(in srgb,var(--faint) 60%,transparent)}
+.soc-resolution{margin-top:4px;font-size:11.5px;line-height:1.35;color:var(--moss)}
 .soc-rumorlink{margin-top:4px;font-family:var(--mono);font-size:10px;color:var(--amber)}
 /* rumors: card + expandable version chain */
 .soc-rumor{margin:8px 14px 0;border:1px solid var(--line);border-radius:6px;background:var(--paper);overflow:hidden}
@@ -523,6 +527,7 @@ const I18N={
     'god.confidedTo':'confided to {n}','god.secretIntact':'intact','god.secretLeaked':'leaked by {who}',
     socialTitle:'SECRETS','social.secretsHead':'SECRETS','social.rumorsHead':'RUMORS',
     'social.knownToNoOne':'Known to no one','social.confidedTo':'Confided to','social.leaked':'⚠️ leaked · {who}',
+    'social.resolved':'✓ laid to rest',
     'social.becameRumor':'→ now a rumor','social.origin':'origin','social.expandHint':'tap to trace the retelling',
     'away.title':'While you were away…',
     'away.gap':'Away {mins} · {from} → {to}',
@@ -566,6 +571,7 @@ const I18N={
     'god.confidedTo':'已託付 {n} 人','god.secretIntact':'未洩漏','god.secretLeaked':'已洩漏 · {who}',
     socialTitle:'祕密','social.secretsHead':'祕密','social.rumorsHead':'謠言',
     'social.knownToNoOne':'無人知曉','social.confidedTo':'已託付','social.leaked':'⚠️ 已洩漏 · {who}',
+    'social.resolved':'✓ 已釋懷',
     'social.becameRumor':'→ 已成謠言','social.origin':'起頭','social.expandHint':'點擊追溯傳話過程',
     'away.title':'你不在的時候…',
     'away.gap':'離開 {mins} · {from} → {to}',
@@ -1500,8 +1506,13 @@ function renderSocialSecrets(secrets, rumors){
         ? '→ '+s.confided_to.map(c=>c.name).join(sep)
         : t('social.knownToNoOne');
       const badge=card.querySelector('.soc-badge');
-      if(s.leaked){ badge.textContent=t('social.leaked').replace('{who}',s.leaked_by_name||'?'); badge.classList.add('leaked'); }
+      if(s.resolved){ card.classList.add('resolved'); badge.textContent=t('social.resolved'); badge.classList.add('resolved'); }
+      else if(s.leaked){ badge.textContent=t('social.leaked').replace('{who}',s.leaked_by_name||'?'); badge.classList.add('leaked'); }
       else { badge.textContent=t('god.secretIntact'); badge.classList.add('intact'); }
+      if(s.resolved && s.resolution){                                             // the "laid to rest" note, translated
+        const rr=document.createElement('div'); rr.className='soc-resolution'; rr.textContent=s.resolution;
+        card.appendChild(rr); trP.push({el:rr,en:s.resolution});
+      }
       if(s.leaked && leakedIds.has(s.id)){
         const link=document.createElement('div'); link.className='soc-rumorlink';
         link.textContent=t('social.becameRumor'); card.appendChild(link);

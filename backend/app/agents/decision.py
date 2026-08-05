@@ -642,21 +642,34 @@ class DecisionEngine:
 
     # ---- secrets: confiding & leaking --------------------------------
 
+    def _resolve_secret(self, owner: Agent, secret, now: int, resolution: str) -> bool:
+        """Lay a secret to rest and leave the owner a memory of it (importance 5) --
+        letting go is itself worth remembering and gives later reflection something
+        to grow a 'lighter lately' impression from. Idempotent (once per secret)."""
+        if not self.secrets.resolve(secret.id, now, resolution):
+            return False
+        owner.memory.add(MemoryItem(minute=now, text=resolution, importance=5, kind="reflection"))
+        return True
+
     def _maybe_confide(self, a: Agent, b: Agent, now: int) -> dict | None:
         """Decide whether ``a`` confides one of their OWN secrets in ``b`` -- pure
         Python, no LLM. Gated on trust vs. the secret's sensitivity (more private ->
         higher bar); each secret is confided to a person at most once; a low mood
-        makes confiding likelier. Returns a descriptor (for the prompt + a confide
-        event) or None (the common case)."""
+        makes confiding likelier. Resolved secrets are never confided. Confiding a
+        worry straight to the person it is *about* resolves it. Returns a descriptor
+        (for the prompt + a confide event) or None (the common case)."""
         rel = a.rel(b.id)
         eligible = [
-            s for s in self.secrets.secrets_of(a.id)
+            s for s in self.secrets.active_secrets_of(a.id)           # resolved secrets are laid to rest
             if not self.secrets.knows(s.id, b.id)                      # b isn't owner and hasn't been told
             and rel.trust >= CONFIDE_TRUST_BASE + s.sensitivity * 30
         ]
         if not eligible:
             return None
-        secret = max(eligible, key=lambda s: s.sensitivity)            # the weightiest one they can share
+        # If a worry is *about* the listener, opening up to them is the whole point --
+        # prefer it over a merely weightier unrelated secret.
+        about_matches = [s for s in eligible if s.about and s.about == b.id]
+        secret = max(about_matches or eligible, key=lambda s: s.sensitivity)
         p = min(CONFIDE_MAX_P,
                 0.15 + rel.trust / 200 + (0.1 if a.state.mood in ("worried", "upset") else 0.0))
         seed = int(hashlib.sha256(f"confide|{a.id}|{b.id}|{secret.id}|{now}".encode()).hexdigest()[:8], 16)
@@ -669,6 +682,11 @@ class DecisionEngine:
         self.secrets.record_confide(secret.id, b.id, now)
         rel.trust += 3; rel.clamp()                                    # confiding deepens the confider's trust
         br = b.rel(a.id); br.friendship += 4; br.clamp()              # being trusted feels good
+        # Confiding to the very person the worry is about closes it out.
+        if secret.about and secret.about == b.id:
+            self._resolve_secret(
+                a, secret, now,
+                f"{a.id.capitalize()} finally found the courage to open up to {b.id.capitalize()}.")
         return {"secret_id": secret.id, "text": secret.text, "from": a.id, "to": b.id}
 
     async def _maybe_leak(self, b: Agent, c: Agent, world: World, now: int) -> dict | None:
@@ -680,7 +698,8 @@ class DecisionEngine:
         share_rumor -- the world only sees a rumor appear, never the leak itself)."""
         candidates = [
             s for s in self.secrets.secrets.values()
-            if not s.leaked and s.owner != b.id and b.id in s.confided_to
+            if not s.leaked and not s.resolved                        # a resolved worry is no longer leak-worthy
+            and s.owner != b.id and b.id in s.confided_to
             and s.owner != c.id and not self.secrets.knows(s.id, c.id)
         ]
         if not candidates:
@@ -990,9 +1009,12 @@ class DecisionEngine:
             return [], [], False
         day_start = now - (now % (24 * 60))
         events = _resolve_mems(agent.memory.today(day_start), world)
+        # The agent's own still-open worries ride into the reflection so it can judge
+        # which, if any, recent experience has laid to rest.
+        open_secrets = self.secrets.active_secrets_of(agent.id)
         res = await self.router.generate(
             task="reflection",
-            messages=builders.reflection_prompt(agent, events),
+            messages=builders.reflection_prompt(agent, events, open_secrets),
             agent_id=agent.id,
             sim_minute=now,
             schema={"type": "object"},
@@ -1005,10 +1027,25 @@ class DecisionEngine:
             insights = [str(x) for x in res.parsed.get("insights", [])]
             belief_events = self._form_beliefs(agent, world, res.parsed.get("beliefs", []), now)
             secret_born = self._maybe_new_secret(agent, world, res.parsed.get("new_secret"), now)
+            self._resolve_reflected_secrets(agent, res.parsed.get("resolved_secret_ids"), open_secrets, now)
         for ins in insights:
             agent.memory.add(MemoryItem(minute=now, text=ins, importance=5, kind="reflection"))
         agent.memory.importance_since_reflection = 0
         return insights, belief_events, secret_born
+
+    def _resolve_reflected_secrets(self, agent: Agent, raw: object, open_secrets: list, now: int) -> None:
+        """Resolve the secrets reflection judged settled. Only ids that were actually
+        offered to this reflection (the agent's own open secrets) are honoured, so a
+        hallucinated id can't touch someone else's secret."""
+        if not isinstance(raw, list):
+            return
+        by_id = {s.id: s for s in open_secrets}
+        for sid in raw:
+            secret = by_id.get(str(sid))
+            if secret is not None:
+                self._resolve_secret(
+                    agent, secret, now,
+                    f"{agent.id.capitalize()} has come to terms with this; it no longer weighs on them.")
 
     def _maybe_new_secret(self, agent: Agent, world: World, raw: object, now: int) -> bool:
         """Add a private matter surfaced by reflection (owner = the reflecting

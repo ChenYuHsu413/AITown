@@ -725,6 +725,10 @@ async def secrets() -> JSONResponse:
             ],
             "leaked": s.leaked,
             "leaked_by": s.leaked_by, "leaked_by_name": name_of(s.leaked_by) if s.leaked_by else "",
+            "about": s.about, "about_name": name_of(s.about) if s.about else "",
+            "resolved": s.resolved,
+            "resolution": s.resolution,
+            "resolved_clock": fmt_time(s.resolved_minute) if s.resolved else "",
         })
     return JSONResponse({"secrets": out})
 
@@ -956,6 +960,80 @@ async def prune_beliefs(body: dict = Body(default={})) -> JSONResponse:
         "dry_run": False, "archive_id": archive_id,
         "removed_beliefs": len(doomed_beliefs), "removed_secrets": len(doomed_secrets),
     })
+
+
+@app.post("/api/admin/resolve-stale-secrets")
+async def resolve_stale_secrets(body: dict = Body(default={})) -> JSONResponse:
+    """Retire secrets whose underlying worry has plainly already been acted on but
+    that predate the resolution lifecycle (e.g. Xixi's 'too shy to ask Aisi' after
+    he has confided in and repeatedly sought out Aisi).
+
+    SAFE BY DEFAULT: a dry run -- it only REPORTS the candidates and changes
+    nothing. Heuristic per unresolved secret: find who it is *about* (the seeded
+    `about`, else a resident named in the text) and flag it when the owner has
+    already confided it to that person OR has spoken with them >= 3 times. Send
+    {"dry_run": false} to apply (writes a pre-op archive, resolves + leaves each
+    owner a 'laid to rest' memory, then snapshots)."""
+    assert sim is not None
+    dry_run = bool(body.get("dry_run", True)) if isinstance(body, dict) else True
+    world = sim.world
+    reg = sim.engine.decisions.secrets
+    now = sim.engine.now
+
+    def name_of(aid: str) -> str:
+        return world.agents[aid].name if aid in world.agents else aid
+
+    def infer_about(s) -> str:
+        if s.about:
+            return s.about
+        for a in world.agents.values():            # fall back to a resident named in the text
+            if a.id != s.owner and re.search(rf"\b{re.escape(a.id.capitalize())}\b", s.text):
+                return a.id
+        return ""
+
+    candidates = []
+    for s in reg.secrets.values():
+        if s.resolved:
+            continue
+        about = infer_about(s)
+        if not about:
+            continue
+        owner = world.agents.get(s.owner)
+        talk = sum(1 for m in owner.memory.items
+                   if m.kind == "conversation" and f"{{agent:{about}}}" in m.text) if owner else 0
+        confided = about in s.confided_to
+        if confided or talk >= 3:
+            candidates.append({
+                "id": s.id, "owner": s.owner, "owner_name": name_of(s.owner),
+                "about": about, "about_name": name_of(about), "text": s.text,
+                "reason": (f"already confided to {name_of(about)}" if confided
+                           else f"spoke with {name_of(about)} {talk}x"),
+            })
+
+    if dry_run:
+        return JSONResponse({
+            "dry_run": True,
+            "count": len(candidates),
+            "would_resolve": candidates,
+            "hint": 'nothing changed -- re-send with {"dry_run": false} to apply',
+        })
+
+    archive_id = None
+    if sim.persistence is not None:
+        payload = snapshot_mod.capture(sim.engine, sim.world, sim.engine.decisions)
+        archive_id = await sim.persistence.archive_snapshot(payload, reason="resolve-stale-secrets")
+    resolved = 0
+    for c in candidates:
+        s = reg.secrets.get(c["id"])
+        owner = world.agents.get(c["owner"])
+        if s is None or owner is None:
+            continue
+        resolution = f"{c['owner'].capitalize()} has long since acted on this and moved past it."
+        if sim.engine.decisions._resolve_secret(owner, s, now, resolution):
+            resolved += 1
+    if sim.persistence is not None:
+        sim._take_snapshot()
+    return JSONResponse({"dry_run": False, "archive_id": archive_id, "resolved": resolved})
 
 
 @app.get("/api/admin/archives")

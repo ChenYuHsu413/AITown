@@ -36,7 +36,9 @@ if TYPE_CHECKING:
 #             it only overlays agents/locations present in the payload, so an old
 #             5-agent snapshot loads with the new 5 residents kept at seed state.
 #   v5 -> v6: the rolling chronicle (town history) rides along; absent -> empty.
-SCHEMA_VERSION = 6
+#   v6 -> v7: secret resolution lifecycle (about/resolved/resolved_minute/resolution).
+#             Restore is additive, so a v6 snapshot loads with every secret unresolved.
+SCHEMA_VERSION = 7
 
 
 # ---- capture -------------------------------------------------------------
@@ -202,8 +204,9 @@ def _restore_secrets(sdata: dict) -> dict:
         if not isinstance(data, dict):
             continue
         secret = Secret(id=data.get("id", sid), owner=data.get("owner", ""), text=data.get("text", ""))
-        for key in ("sensitivity", "created_minute", "leaked", "leaked_by"):
-            if key in data:
+        for key in ("sensitivity", "created_minute", "leaked", "leaked_by",
+                    "about", "resolved", "resolved_minute", "resolution"):
+            if key in data:                          # about/resolution absent on pre-v7 snapshots -> defaults
                 setattr(secret, key, data[key])
         confided = data.get("confided_to")
         if isinstance(confided, dict):

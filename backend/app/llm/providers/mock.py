@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import random
+import re
 
 from .base import LLMProvider, LLMResult
 
@@ -176,6 +177,19 @@ class MockProvider(LLMProvider):
                     "I should pay more attention to how my friends are doing.",
                 ]
             }
+            # Deterministic secret-resolution stand-in (mirrors the real model's
+            # judgement so the reflection path is testable without a live LLM): if
+            # today's events mention the person an open worry concerns, that worry
+            # is judged settled. Only fires when the reflection listed open worries.
+            raw = " ".join(m.get("content", "") for m in messages)
+            events_part = raw.split("Your still-open private worries:", 1)[0].lower()
+            resolved = [
+                sid for sid, about in re.findall(
+                    r"\[([0-9a-f]{6,})\][^\[\n]*concerns ([A-Za-z]+)\)", raw)
+                if about.lower() in events_part
+            ]
+            if resolved:
+                parsed["resolved_secret_ids"] = resolved
         elif "decision" in prompt:
             if "people are saying" in prompt:
                 parsed = {"action": "seek_out", "reason": "wants to find out who is spreading this"}

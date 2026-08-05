@@ -35,6 +35,30 @@ curl -X POST localhost:8000/api/admin/prune-beliefs \
 Always review the dry-run output first. The apply response returns the
 `archive_id` of the backup taken just before the delete.
 
+### `POST /api/admin/resolve-stale-secrets`
+
+Retires secrets whose worry has plainly already been acted on but that predate the
+resolution lifecycle (e.g. Xixi's *"too shy to ask Aisi"* after he has confided in
+and repeatedly sought out Aisi). Per unresolved secret it finds who the worry is
+*about* (the seeded `about`, else a resident named in the text) and flags it when
+the owner has already confided it to that person **or** has spoken with them ≥ 3
+times. Applying resolves each (and leaves the owner a "laid to rest" memory).
+
+```bash
+# 1) DRY RUN (default): list the candidates with the reason each was flagged
+curl -X POST localhost:8000/api/admin/resolve-stale-secrets
+# -> {"dry_run": true, "count": 3, "would_resolve": [{"owner_name": "希希", "about_name": "艾斯",
+#     "reason": "spoke with 艾斯 14x", "text": "..."}, ...]}
+
+# 2) APPLY: archives the pre-op state first, then resolves + snapshots
+curl -X POST localhost:8000/api/admin/resolve-stale-secrets \
+     -H 'Content-Type: application/json' -d '{"dry_run": false}'
+# -> {"dry_run": false, "archive_id": 8, "resolved": 3}
+```
+
+Non-destructive (it only marks secrets resolved — nothing is deleted), but it still
+archives first and is fully reversible via the recovery flow below.
+
 ### `GET /api/admin/archives`
 
 Lists recent pre-operation backups (newest first), without the heavy payloads:

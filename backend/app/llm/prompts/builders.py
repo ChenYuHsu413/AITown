@@ -322,7 +322,19 @@ def decision_prompt(agent: "Agent", observation: str, memories: list[str], actio
     ]
 
 
-def reflection_prompt(agent: "Agent", day_events: list[str]) -> list[dict]:
+def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list | None = None) -> list[dict]:
+    # The character's own still-open worries, offered back so reflection can retire
+    # the ones today's experience has settled. Ids are opaque handles the sim maps
+    # back to secrets; the model only judges which are done.
+    secrets_block = ""
+    resolved_key = ""
+    if open_secrets:
+        lines = "\n".join(
+            f"  [{s.id}] {s.text}" + (f" (this worry concerns {s.about.capitalize()})" if s.about else "")
+            for s in open_secrets
+        )
+        secrets_block = "\nYour still-open private worries:\n" + lines
+        resolved_key = '"resolved_secret_ids": ["<id>", ...], '
     return [
         {
             "role": "system",
@@ -330,6 +342,7 @@ def reflection_prompt(agent: "Agent", day_events: list[str]) -> list[dict]:
                 "You produce end-of-day reflection for a life-sim character. Respond ONLY with JSON: "
                 '{"insights": ["...", "..."], '
                 '"beliefs": [{"subject": "<name>", "text": "...", "confidence": 0.0-1.0, "sentiment": -1.0-1.0}], '
+                + resolved_key +
                 '"new_secret": {"text": "...", "sensitivity": 0.0-1.0} | null}. '
                 '"insights" are 1-2 short takeaways from today. '
                 '"beliefs" are 0-2 LASTING impressions about a specific person or place -- formed ONLY when '
@@ -342,7 +355,11 @@ def reflection_prompt(agent: "Agent", day_events: list[str]) -> list[dict]:
                 '"new_secret" is a private matter this character is quietly keeping from others -- return one '
                 "ONLY if today surfaced a clear unspoken worry or hidden truth of their own; otherwise null "
                 '(be sparing). "sensitivity" is how private it is. '
-                "Write all text in English (this is internal knowledge, translated for display separately). "
+                + ('"resolved_secret_ids" are the ids of any listed open worry that TODAY has clearly '
+                   "settled or acted on -- you finally did the thing, spoke to the person it concerns, or "
+                   "it plainly stopped weighing on you. Include an id ONLY with clear evidence in today's "
+                   "events; when in doubt leave it out (prefer an empty list). " if open_secrets else "")
+                + "Write all text in English (this is internal knowledge, translated for display separately). "
                 "Task: reflection."
                 + roster_directive(english_only=True)
             ),
@@ -354,6 +371,7 @@ def reflection_prompt(agent: "Agent", day_events: list[str]) -> list[dict]:
                 # come back with roster names the sim can resolve.
                 f"{character_card(agent, name=agent.id.capitalize())}\n"
                 "Events today:\n" + "\n".join(f"- {e}" for e in day_events[-15:])
+                + secrets_block
             ),
         },
     ]

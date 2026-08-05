@@ -337,12 +337,15 @@ def build_agents() -> list[Agent]:
 # Initial private matters, tied to the new personalities. Seeded into the
 # SecretRegistry at boot; they only surface if an agent trusts someone enough to
 # confide (see decision._maybe_confide). Kept in English (internal rule).
+# Optional 4th field `about` = the agent this worry concerns; confiding straight to
+# that person resolves the secret (the "opening up" was the whole point).
 SEED_SECRETS = [
     ("xue", "I've been interviewing at a company in Taipei.", 0.8),                       # the resignation line
     ("ange", "I check Jiji's cafe menu every week to keep my prices lower.", 0.7),        # the quiet price war
     ("jiji", "The cafe barely breaks even; I put on a confident face every day.", 0.7),
     ("aisi", "I'm secretly worried my installation is too ambitious to finish.", 0.5),    # a creator's self-doubt
-    ("xixi", "I want to ask Aisi to teach me programming but I freeze every time.", 0.4), # the admiration line
+    ("xixi", "I want to ask Aisi to teach me programming but I freeze every time.", 0.4,  # the admiration line
+     "aisi"),                                                                             # -> resolves once he opens up to Aisi
     ("azong", "I've been undercharging clients because I'm afraid to lose them.", 0.55),  # the freelancer's fear
     # long's quiet generosity and kuaizheng's inner life are left for reflection to grow.
 ]
@@ -351,5 +354,7 @@ SEED_SECRETS = [
 def seed_secrets(registry, minute: int = 0) -> None:
     """Plant the initial secrets into a SecretRegistry (fresh start only; a
     resumed run restores its own from the snapshot)."""
-    for owner, text, sensitivity in SEED_SECRETS:
-        registry.add(owner, text, sensitivity, minute)
+    for owner, text, sensitivity, *rest in SEED_SECRETS:
+        s = registry.add(owner, text, sensitivity, minute)
+        if rest and rest[0]:
+            s.about = rest[0]
