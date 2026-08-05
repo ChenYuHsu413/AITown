@@ -252,12 +252,15 @@ class Sim:
         before = len(self._tr_inflight)
         texts: list[str] = []
         for c in self.engine.chronicle:                      # the town's living history
-            for key in ("text", "detail"):
+            # chronicle entries carry the free text as "speech" (=ev.text) plus "detail";
+            # a belief/insight beat's impression lives in "speech", NOT "text".
+            for key in ("speech", "detail"):
                 v = c.get(key)
                 if isinstance(v, str):
                     texts.append(v)
         for s in self.engine.decisions.secrets.secrets.values():
             texts.append(s.text)                             # currently-held secrets
+            texts.append(s.resolution)                       # ...and the "laid to rest" note
         for a in self.world.agents.values():
             for b in a.semantic.beliefs:                     # lasting impressions
                 texts.append(getattr(b, "text", ""))

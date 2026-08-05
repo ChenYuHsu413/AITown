@@ -414,10 +414,15 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
 def translate_prompt(text: str) -> list[dict]:
     """Display-layer only: render a piece of English knowledge text into
     Traditional Chinese, with the name roster as a hard mapping so residents keep
-    their canonical zh names (Lengyue -> 冷月)."""
+    their canonical zh names (Lengyue -> 冷月), and the gender roster so a pronoun
+    is fixed to the resident's canonical gender (historical text may say "her" for a
+    male resident -- the roster wins)."""
     pairs = roster_pairs()
     mapping = "; ".join(f"{en}={zh}" for en, zh in pairs if zh and zh != en)
     guide = f" Use these exact name translations: {mapping}." if mapping else ""
+    # Gender roster -> correct 他/她/牠. The source English can be mis-gendered
+    # (pre-roster generations), so the roster is authoritative, not the source pronoun.
+    gender = roster_gender_directive()
     return [
         {
             "role": "system",
@@ -425,6 +430,11 @@ def translate_prompt(text: str) -> list[dict]:
                 "You translate short life-sim gossip/impression text from English into natural "
                 "Traditional Chinese (zh-TW). Keep it one line, same meaning, no notes or quotes."
                 + guide
+                + gender
+                + " Pronouns (他/她) must follow that gender roster, not the English source"
+                  " (which may be mis-gendered)."
+                + " Output ONLY the Traditional Chinese translation -- never repeat or append the"
+                  " original English."
                 + ' Respond ONLY with JSON: {"text": "..."}. Task: translate.'
             ),
         },

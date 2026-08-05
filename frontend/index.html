@@ -2413,6 +2413,21 @@ function awayEvLabel(e){                                        // shared by the
   if(e.verb==='secret_born') return t('chron.secret').replace('{who}',agentName(e.actor,e.actor_name));
   return evText(e);                                             // confide / confronted / landmark_done / belief / broke / world
 }
+// Render + translate a chronicle/away label WITHOUT the mixed-string echo: the zh
+// template is composed locally; only the PURE free text (e.speech, e.g. a belief
+// impression) goes to the translator, then the label is recomposed with the zh text.
+// Mirrors renderEventText (the feed's echo-free pattern). Verbs whose "speech" is a
+// code (confronted/milestone/...) aren't in TR_SPEECH_VERBS, so they stay templated.
+function trChronLabel(el, e){
+  el.textContent=awayEvLabel(e);                               // composed now (English free text)
+  if(LANG!=='zh'||!TR_SPEECH_VERBS.has(e.verb)) return;
+  const sp=String(e.speech||''); if(!sp.trim()||!/[A-Za-z]/.test(sp)) return;
+  trFetch([sp]).then(()=>{
+    if(LANG!=='zh') return;                                    // switched away mid-flight
+    const zh=TR_CACHE[sp]; if(zh===undefined||zh===sp) return;
+    el.textContent=awayEvLabel({...e,speech:zh});              // recompose: zh template + zh free text
+  });
+}
 function showAwaySummary(s){ AWAY=s; renderAwayCard(); $('#away-card').hidden=false; }
 function renderAwayCard(){
   const s=AWAY; if(!s) return;
@@ -2425,15 +2440,12 @@ function renderAwayCard(){
   const box=$('#away-events'); box.innerHTML='';
   if(!s.events||!s.events.length){ box.innerHTML=`<div class="away-empty">${t('away.none')}</div>`; return; }
   const h=document.createElement('div'); h.className='away-hl'; h.textContent=t('away.highlights'); box.appendChild(h);
-  const trP=[];
   s.events.forEach(e=>{                                         // DOM (not innerHTML) -> free text needs no escaping
     const b=document.createElement('button'); b.className='away-ev'; b.title=t('away.jump');
     const tm=document.createElement('time'); tm.textContent=awayShort(e.minute);
-    const lab=awayEvLabel(e); const sp=document.createElement('span'); sp.textContent=lab;
+    const sp=document.createElement('span'); trChronLabel(sp, e);   // pure free text -> zh, no echo
     b.appendChild(tm); b.appendChild(sp); b.onclick=()=>jumpToReplay(e.minute); box.appendChild(b);
-    trP.push({el:sp,en:lab});                                   // zh: swap English free text (belief/leak) to Chinese
   });
-  trSwap(trP);
 }
 $('#away-close').onclick=()=>{ $('#away-card').hidden=true; AWAY=null; };
 
@@ -2441,18 +2453,16 @@ $('#away-close').onclick=()=>{ $('#away-card').hidden=true; AWAY=null; };
 function renderChronPreview(){
   const p=$('#chron-preview'); if(!p) return;
   if(!CHRON.length){ p.textContent=t('chron.empty'); return; }
-  const last=CHRON[CHRON.length-1], lab=awayEvLabel(last); p.textContent=lab;
-  trSwap([{el:p,en:lab}]);
+  trChronLabel(p, CHRON[CHRON.length-1]);                      // pure free text -> zh, no echo
 }
 function renderChronList(){
   const box=$('#chron-list'); if(!box) return; box.innerHTML='';
   if(!CHRON.length){ box.innerHTML=`<div class="chron-empty">${t('chron.empty')}</div>`; return; }
-  const trP=[];
   CHRON.slice(-30).reverse().forEach(e=>{                       // newest first, expandable
     const row=document.createElement('div'); row.className='chron-row';
     const line=document.createElement('div'); line.className='chron-line';
     const tm=document.createElement('time'); tm.textContent=(e.clock||fmtMinute(e.minute)).replace('Day ','D');
-    const lab=awayEvLabel(e); const msg=document.createElement('span'); msg.className='chron-msg'; msg.textContent=lab;
+    const msg=document.createElement('span'); msg.className='chron-msg'; trChronLabel(msg, e);  // pure free text -> zh, no echo
     const caret=document.createElement('span'); caret.className='chron-rowcaret'; caret.textContent='▸';
     line.appendChild(tm); line.appendChild(msg); line.appendChild(caret);
     const det=document.createElement('div'); det.className='chron-detail'; det.hidden=true;
@@ -2461,9 +2471,7 @@ function renderChronList(){
       if(open && !det.dataset.filled){ det.dataset.filled='1'; fillChronDetail(e, det); }
     };
     row.appendChild(line); row.appendChild(det); box.appendChild(row);
-    trP.push({el:msg,en:lab});
   });
-  trSwap(trP);
 }
 // Fill an expanded chronicle row: detail text (translated) + the actual dialogue
 // said around a confide/confront (from /api/history) + a jump-to-replay button.
