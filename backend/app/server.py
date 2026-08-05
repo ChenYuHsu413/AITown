@@ -26,6 +26,7 @@ from .agents.core import MemoryItem
 from .agents.decision import DecisionEngine, belief_text_ok
 from .llm.factory import build_router
 from .llm.prompts import builders
+from .llm.router import _is_garbage_text
 from .simulation import snapshot as snapshot_mod
 from .simulation.engine import DAY_MIN, Event, SimulationEngine, fmt_time
 
@@ -143,18 +144,23 @@ class Sim:
                 task="translate", messages=builders.translate_prompt(src),
                 agent_id="-", sim_minute=self.engine.now,
                 schema={"type": "object"}, max_tokens=200,
-                # A "text" that isn't a real string (Qwen occasionally emits a bare
-                # number for this constrained JSON) fails the gate and falls through
-                # to the next provider instead of putting junk on screen.
+                # The router's universal gate already rejects a junk "text" (a bare
+                # number, an "ok" dodge) and falls through; this local validate is a
+                # thin echo of it for the same-provider retry.
                 validate=lambda r: isinstance(r.parsed, dict)
-                and isinstance(r.parsed.get("text"), str) and bool(r.parsed["text"].strip()),
+                and not _is_garbage_text(r.parsed.get("text")),
             )
             if isinstance(res.parsed, dict):
-                zh = str(res.parsed.get("text") or "").strip()
+                cand = str(res.parsed.get("text") or "").strip()
+                if not _is_garbage_text(cand):   # never let a dodge ("ok") reach the display
+                    zh = cand
         except Exception:
             zh = ""
-        out = self._apply_name_subs(zh or src)   # belt-and-suspenders + English fallback
-        self._translate_cache[text] = out
+        out = self._apply_name_subs(zh or src)   # English original is the fallback, never junk
+        if zh:
+            # Only cache a REAL translation. A fallback (English) stays uncached so a
+            # later call retries the model instead of pinning junk/English forever.
+            self._translate_cache[text] = out
         return out
 
     async def attach_persistence(self) -> None:

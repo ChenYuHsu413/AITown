@@ -1370,7 +1370,11 @@ class DecisionEngine:
         secret_born = False
         romance_events: list[dict] = []
         if isinstance(res.parsed, dict):
-            insights = [str(x) for x in res.parsed.get("insights", [])]
+            # Insights land straight in memory, so gate them like beliefs -- a dodge
+            # ("ok") or filler must never become a remembered reflection. (The router
+            # already rejects a junk reflection; this is the belt-and-suspenders for a
+            # floor result that slipped through.)
+            insights = [str(x) for x in res.parsed.get("insights", []) if belief_text_ok(str(x), world)]
             belief_events = self._form_beliefs(agent, world, res.parsed.get("beliefs", []), now)
             secret_born = self._maybe_new_secret(agent, world, res.parsed.get("new_secret"), now)
             self._resolve_reflected_secrets(agent, res.parsed.get("resolved_secret_ids"), open_secrets, now)

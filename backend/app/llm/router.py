@@ -25,6 +25,56 @@ from .usage import LLMCall, UsageTracker
 
 SOFT_RETRIES = 1  # extra attempts on the same provider after an empty/garbled result
 
+# Universal free-text quality gate (the "no provider ships garbage" rule). Every
+# model has its own way of dodging a hard prompt -- the classic is a bare "ok" --
+# so this runs at the ROUTER for every call, on top of any task-specific validate,
+# and a result that trips it is treated as a provider failure (chain falls through).
+# Adding a new provider to any chain inherits this automatically; the gate lives here,
+# not scattered across task call-sites.
+_GARBAGE = {
+    "ok", "okay", "o.k.", "o.k", "k", "none", "n/a", "na", "n a", "good", "fine",
+    "bad", "nothing", "idk", "unknown", "yes", "no", "true", "false", "null", "nil",
+    "nan", "...", "…", "-", "--",
+}
+
+
+def _is_garbage_text(s: object) -> bool:
+    """True if a free-text value is a model's throwaway dodge (a junk word, or too
+    short to be a real answer)."""
+    t = str(s or "").strip().lower().strip(" .!?\"'…、。").replace("/", " ").strip()
+    if not t:
+        return True
+    if t in _GARBAGE:
+        return True
+    return len(t) < 2
+
+
+def _baseline_reject(parsed: object, task: str) -> str | None:
+    """Router-level free-text quality gate keyed by task. Returns a short reason to
+    reject, or None. Only inspects the free-text field(s) each task produces, so
+    structured tasks (should_talk {talk:bool}, importance {importance:int}) are
+    untouched. This is what stops a 'ok' dodge from any provider reaching the reader
+    (a dialogue turn, a translation, a reflection insight/belief)."""
+    if not isinstance(parsed, dict):
+        return None  # schema/None handling stays with the caller
+    if task in ("translate", "distort", "leak", "summary"):
+        if "text" in parsed and _is_garbage_text(parsed.get("text")):
+            return "garbage text"
+    if task == "dialogue":
+        turns = parsed.get("turns")
+        if isinstance(turns, list):
+            for t in turns:
+                if isinstance(t, dict) and _is_garbage_text(t.get("text")):
+                    return "garbage dialogue turn"
+    if task == "reflection":
+        for ins in (parsed.get("insights") or []):
+            if _is_garbage_text(ins):
+                return "garbage insight"
+        for b in (parsed.get("beliefs") or []):
+            if isinstance(b, dict) and _is_garbage_text(b.get("text")):
+                return "garbage belief"
+    return None
+
 TASK_TIERS: dict[str, str] = {
     "should_talk": "cheap",
     "importance": "cheap",
@@ -184,7 +234,7 @@ class LLMRouter:
                 finally:
                     if self.on_call_end is not None:
                         self.on_call_end()
-                reason = self._reject_reason(result, schema, validate)
+                reason = self._reject_reason(result, schema, validate, task)
                 if reason is None:
                     break  # good output
 
@@ -209,12 +259,18 @@ class LLMRouter:
 
     @staticmethod
     def _reject_reason(
-        result: LLMResult, schema: dict | None, validate: Callable[[LLMResult], bool] | None
+        result: LLMResult, schema: dict | None,
+        validate: Callable[[LLMResult], bool] | None, task: str = "",
     ) -> str | None:
         """None if the result is acceptable, else a short reason it should be
-        rejected (so the chain retries / falls through)."""
+        rejected (so the chain retries / falls through). The universal free-text
+        gate runs first -- every provider is held to it -- then any task-specific
+        validate."""
         if schema is not None and result.parsed is None:
             return "invalid/truncated JSON"
+        garbage = _baseline_reject(result.parsed, task)
+        if garbage is not None:
+            return garbage
         if validate is not None and not validate(result):
             return "failed sanity check"
         return None
