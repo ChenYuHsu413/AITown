@@ -1132,6 +1132,55 @@ async def rewrite_stale_goals(body: dict = Body(default={})) -> JSONResponse:
     return JSONResponse({"dry_run": False, "archive_id": archive_id, "rewritten": applied})
 
 
+@app.post("/api/admin/resolve-completed-landmark-worries")
+async def resolve_completed_landmark_worries(body: dict = Body(default={})) -> JSONResponse:
+    """Lay to rest a creator's 'will I ever finish it?' worry once the landmark is
+    actually done -- for pieces completed before the world-fact hook existed (e.g.
+    Aisi's finished installation vs her still-open 'too ambitious to finish' secret).
+    Dry-run by default; {"dry_run": false} archives then resolves."""
+    assert sim is not None
+    dry_run = bool(body.get("dry_run", True)) if isinstance(body, dict) else True
+    world = sim.world
+    dec = sim.engine.decisions
+    now = sim.engine.now
+    words = sim.engine._LANDMARK_WORDS
+
+    candidates = []
+    for loc in world.locations.values():
+        for lm in loc.landmarks:
+            if lm.get("state") != "completed":
+                continue
+            creator = world.agents.get(lm.get("created_by", ""))
+            if creator is None:
+                continue
+            for s in dec.secrets.active_secrets_of(creator.id):
+                sw = {w.strip(".,;:!?'\"").lower() for w in s.text.split()}
+                if any(k in sw for k in words):
+                    candidates.append({"owner": creator.id, "owner_name": creator.name,
+                                       "landmark": lm.get("name"), "secret_id": s.id, "text": s.text})
+
+    if dry_run:
+        return JSONResponse({
+            "dry_run": True, "count": len(candidates), "would_resolve": candidates,
+            "hint": 'nothing changed -- re-send with {"dry_run": false} to apply',
+        })
+
+    archive_id = None
+    if sim.persistence is not None:
+        payload = snapshot_mod.capture(sim.engine, sim.world, sim.engine.decisions)
+        archive_id = await sim.persistence.archive_snapshot(payload, reason="resolve-landmark-worries")
+    resolved = 0
+    for c in candidates:
+        s = dec.secrets.secrets.get(c["secret_id"])
+        owner = world.agents.get(c["owner"])
+        if s is not None and owner is not None and dec._resolve_secret(
+                owner, s, now, f"{c['owner'].capitalize()} finished it -- the worry never came true."):
+            resolved += 1
+    if sim.persistence is not None:
+        sim._take_snapshot()
+    return JSONResponse({"dry_run": False, "archive_id": archive_id, "resolved": resolved})
+
+
 @app.get("/api/admin/archives")
 async def admin_archives() -> JSONResponse:
     """List recent pre-operation backups (newest first) so a mistaken admin op can

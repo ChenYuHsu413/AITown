@@ -521,6 +521,8 @@ class SimulationEngine:
                     )
                     # Finishing the installation opens Aisi up a little (romance hook).
                     agent.profile.romantic_inclination = max(agent.profile.romantic_inclination, 0.50)
+                    # The world fact settles the "will I ever finish it?" worry.
+                    self._resolve_landmark_worries(agent, done.get("text", ""))
             if decision.action == "move":
                 self._interrupt_colocated(agent)
 
@@ -636,6 +638,22 @@ class SimulationEngine:
                     and other.state.current_action != "sleep"):
                 cp = agent.state.copresence
                 cp[other.id] = cp.get(other.id, 0) + elapsed
+
+    _LANDMARK_WORDS = ("installation", "mural", "artwork", "project", "sculpture")
+
+    def _resolve_landmark_worries(self, creator: Agent, landmark_text: str) -> int:
+        """A finished landmark lays to rest the creator's worry about finishing it --
+        a generic world-fact resolution (not an Aisi special-case). Matches an active
+        secret that names the piece (installation/mural/...). Returns how many settled."""
+        n = 0
+        for s in self.decisions.secrets.active_secrets_of(creator.id):
+            words = {w.strip(".,;:!?'\"").lower() for w in s.text.split()}
+            if any(k in words for k in self._LANDMARK_WORDS):
+                if self.decisions._resolve_secret(
+                        creator, s, self.now,
+                        f"{creator.id.capitalize()} finished it -- the worry never came true."):
+                    n += 1
+        return n
 
     def _publish_romance(self, ev: dict) -> None:
         """A public romance beat: dating / rejection / partnership. (A crush stays

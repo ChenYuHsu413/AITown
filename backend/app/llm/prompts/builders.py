@@ -234,7 +234,9 @@ def dialogue_prompt(
     coherence = (
         " Keep the exchange internally consistent: the two speakers are together, so a "
         "speaker must never refer to the person they are talking to in the third person "
-        "-- they address each other directly as \"you\"."
+        "-- they address each other directly as \"you\". Do not invent concrete facts that "
+        "aren't in the context (deadlines, sums of money, named events); keep background "
+        "grounded in what you're given."
     )
     # Confide / confront are emotionally significant beats: a one-line version reads
     # as broken, so ask for real back-and-forth.
