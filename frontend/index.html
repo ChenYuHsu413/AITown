@@ -396,6 +396,7 @@ footer b{font-weight:500;font-size:14px}
     <button id="btn-pause" data-i18n-title="title.pause" title="Pause simulation">▮▮</button>
     <button id="btn-1" data-i18n-title="title.s1" title="1 sim-minute per second">1×</button>
     <button id="btn-5" class="active" data-i18n-title="title.s5" title="5 sim-minutes per second">5×</button>
+    <button id="btn-10" data-i18n-title="title.s10" title="10 sim-minutes per second">10×</button>
     <button id="btn-20" data-i18n-title="title.s20" title="20 sim-minutes per second">20×</button>
     <button id="btn-lang" title="Switch language">中</button>
     <button id="btn-god" data-i18n-title="title.god" title="World events">⚡</button>
@@ -582,6 +583,7 @@ const I18N={
     'title.pause':'Pause simulation','title.pausing':'Pausing…','llmBusy':'Waiting for AI…',
     'conn.reconnecting':'Connection lost, reconnecting…',
     'title.s1':'1 sim-minute per second','title.s5':'5 sim-minutes per second',
+    'title.s10':'10 sim-minutes per second','title.s10capped':'Capped at 5× in free-quota mode',
     'title.s20':'20 sim-minutes per second','title.s20capped':'Capped at 5× in free-quota mode','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
     'title.god':'World events','god.rain':'Rain · 3h','god.festival':'Park festival · 4h','god.break':'Break equipment',
     'god.rumorHead':'RUMORS','god.startedBy':'Started by','god.presetDefault':'(preset default)',
@@ -632,6 +634,7 @@ const I18N={
     'title.pause':'暫停模擬','title.pausing':'暫停中…','llmBusy':'等待 AI 回應中…',
     'conn.reconnecting':'連線中斷,重連中…',
     'title.s1':'每秒 1 模擬分鐘','title.s5':'每秒 5 模擬分鐘',
+    'title.s10':'每秒 10 模擬分鐘','title.s10capped':'免費額度模式下限速 5×',
     'title.s20':'每秒 20 模擬分鐘','title.s20capped':'免費額度模式下限速 5×','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
     'title.god':'世界事件','god.rain':'下雨 3 小時','god.festival':'公園慶典 4 小時','god.break':'觸發設備故障',
     'god.rumorHead':'謠言','god.startedBy':'由誰起頭','god.presetDefault':'(預設起頭者)',
@@ -1223,7 +1226,7 @@ function updateClock(minute,clock,paused,speed){
   updateClosedSigns(minute);                                   // shops on their weekly day off
   if(paused && pausePending) clearPausePending();              // server confirmed the pause -> drop the transitional state
   $('#btn-pause').classList.toggle('active',paused);
-  ['1','5','20'].forEach(s=>$('#btn-'+s).classList.toggle('active',!paused&&speed==+s));
+  ['1','5','10','20'].forEach(s=>$('#btn-'+s).classList.toggle('active',!paused&&speed==+s));
 }
 // A small "休" / "CLOSED" badge over any shop resting on its weekly day off.
 function updateClosedSigns(minute){
@@ -1507,12 +1510,15 @@ function clearPausePending(){ if(!pausePending) return; pausePending=false; cons
 $('#btn-pause').onclick=()=>{ setPausePending(); ctl({cmd:'pause'}); };
 $('#btn-1').onclick=()=>{ clearPausePending(); ctl({cmd:'speed',speed:1}); };
 $('#btn-5').onclick=()=>{ clearPausePending(); ctl({cmd:'speed',speed:5}); };
+$('#btn-10').onclick=()=>{ if(SIM_LIVE&&!SIM_PAID) return; clearPausePending(); ctl({cmd:'speed',speed:10}); };
 $('#btn-20').onclick=()=>{ if(SIM_LIVE&&!SIM_PAID) return; clearPausePending(); ctl({cmd:'speed',speed:20}); };
 let SIM_LIVE=false, SIM_PAID=false;
-function applySpeedCap(){ const b=$('#btn-20'); if(!b) return;
-  const capped=SIM_LIVE&&!SIM_PAID;                 // free live mode caps at 5x -> show 20x as disabled
-  b.classList.toggle('disabled',capped);
-  b.title=capped?t('title.s20capped'):t('title.s20');
+function applySpeedCap(){                             // free live mode caps at 5x -> show 10x/20x as disabled
+  const capped=SIM_LIVE&&!SIM_PAID;
+  for(const s of ['10','20']){ const b=$('#btn-'+s); if(!b) continue;
+    b.classList.toggle('disabled',capped);
+    b.title=capped?t('title.s'+s+'capped'):t('title.s'+s);
+  }
 }
 $('#btn-lang').onclick=toggleLang;
 applyLang();
