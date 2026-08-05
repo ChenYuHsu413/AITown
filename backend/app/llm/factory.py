@@ -164,6 +164,17 @@ def build_router(live: bool | None = None) -> LLMRouter:
         tr_slug = os.environ.get("AI_TOWN_TRANSLATE_MODEL", "deepseek/deepseek-v4-flash")
         translator = OpenRouterProvider(model=tr_slug,
                                         input_price_per_m=0.14, output_price_per_m=0.28)
+        # Paid SECOND string for the reader-facing zh chains (dialogue/reflection/
+        # translate). A paid user's first fallback must not depend on the free tier's
+        # 20-requests/day quota, so a second paid model sits ahead of the free layer.
+        # Kimi K2.6 wins on zh-TW feel (measured: the most idiomatic Taiwanese
+        # colloquial of the candidates); it is a *thinking* model, so reasoning is
+        # disabled or it burns our token budget on hidden reasoning and truncates the
+        # JSON. Override the slug with AI_TOWN_ZH_SECOND_MODEL (e.g. z-ai/glm-4.6).
+        zh2_slug = os.environ.get("AI_TOWN_ZH_SECOND_MODEL", "moonshotai/kimi-k2.6")
+        zh_second = OpenRouterProvider(model=zh2_slug,
+                                       input_price_per_m=0.589, output_price_per_m=2.48,
+                                       extra_body={"reasoning": {"enabled": False}})
 
         def existing(task: str, tier: str) -> list[LLMProvider]:
             return list(task_chains.get(task) or tiers[tier])
@@ -172,14 +183,16 @@ def build_router(live: bool | None = None) -> LLMRouter:
             # deepseek as a last real provider, kept just before the mock floor.
             return base[:-1] + [deepseek, base[-1]] if base and base[-1] is mock else base + [deepseek]
 
-        task_chains["dialogue"] = [deepseek] + existing("dialogue", "normal")
-        task_chains["reflection"] = [deepseek] + existing("reflection", "smart")
-        task_chains["translate"] = [translator] + existing("translate", "cheap")
+        # deepseek primary -> zh_second (paid) -> free layer -> mock. The two paid
+        # providers carry a paid user before the free 20/day quota is ever touched.
+        task_chains["dialogue"] = [deepseek, zh_second] + existing("dialogue", "normal")
+        task_chains["reflection"] = [deepseek, zh_second] + existing("reflection", "smart")
+        task_chains["translate"] = [translator, zh_second] + existing("translate", "cheap")
         for t in ("should_talk", "importance", "mood", "summary", "appraise", "distort"):
             task_chains[t] = tail(existing(t, "cheap"))
         task_chains["decision"] = tail(existing("decision", "normal"))
-        print(f"[live] paid-first: dialogue/reflection -> deepseek-v4-flash | "
-              f"translate -> {tr_slug} | cheap tasks free-first (deepseek tail)", flush=True)
+        print(f"[live] paid-first: dialogue/reflection -> deepseek-v4-flash -> {zh2_slug} | "
+              f"translate -> {tr_slug} -> {zh2_slug} | cheap tasks free-first (deepseek tail)", flush=True)
 
     # Startup live-status summary: make "am I actually on real models?" a one-line,
     # unmissable fact (a server restarted without .env in scope would show mock-only).

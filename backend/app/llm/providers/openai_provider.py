@@ -27,6 +27,7 @@ class OpenAIProvider(LLMProvider):
         output_price_per_m: float = 0.40,
         api_key: str | None = None,
         base_url: str | None = None,
+        extra_body: dict | None = None,
     ):
         self.model = model
         self.input_price_per_m = input_price_per_m
@@ -34,6 +35,11 @@ class OpenAIProvider(LLMProvider):
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         if base_url is not None:
             self.base_url = base_url
+        # Extra top-level request fields merged into every call. Used to pass
+        # OpenRouter-only knobs (e.g. reasoning:{enabled:false} to stop a thinking
+        # model from spending our token budget on hidden reasoning and truncating the
+        # actual JSON). Empty for plain OpenAI/Groq, so their requests are unchanged.
+        self._extra_body = extra_body or {}
 
     async def generate(
         self,
@@ -52,6 +58,8 @@ class OpenAIProvider(LLMProvider):
         }
         if schema is not None:
             body["response_format"] = {"type": "json_object"}
+        if self._extra_body:
+            body.update(self._extra_body)
 
         t0 = time.perf_counter()
         async with httpx.AsyncClient(timeout=60) as client:

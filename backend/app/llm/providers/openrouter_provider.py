@@ -42,6 +42,7 @@ class OpenRouterProvider(OpenAIProvider):
         input_price_per_m: float = 0.0,
         output_price_per_m: float = 0.0,
         api_key: str | None = None,
+        extra_body: dict | None = None,
     ):
         super().__init__(
             # `... or DEFAULT_MODEL` (not a get-default): an empty OPENROUTER_MODEL=
@@ -51,4 +52,5 @@ class OpenRouterProvider(OpenAIProvider):
             output_price_per_m=output_price_per_m,
             api_key=api_key or os.environ.get("OPENROUTER_API_KEY", ""),
             base_url=OPENROUTER_URL,
+            extra_body=extra_body,
         )
