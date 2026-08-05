@@ -187,6 +187,11 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 /* relationship graph */
 #graph{flex:1;min-height:0;position:relative;overflow:hidden}
 #relsvg{width:100%;height:100%;display:block}
+.rg-ctl{position:absolute;top:8px;z-index:12;font-size:10px;padding:3px 10px;border-radius:999px;
+  border:1px solid var(--line);background:var(--paper);color:var(--faint);cursor:pointer;letter-spacing:.04em}
+#rg-showall{left:8px}
+#rg-showall.active{color:var(--ink);border-color:var(--ink)}
+#rg-ego-clear{right:8px;color:var(--ink);border-color:var(--ink)}
 .rnode{cursor:grab}
 .rnode.dragging{cursor:grabbing}
 .rnode-sh{fill:#000;opacity:.10}
@@ -497,6 +502,8 @@ footer b{font-weight:500;font-size:14px}
       </div>
     </div>
     <div id="graph" hidden>
+      <button id="rg-showall" class="rg-ctl" data-i18n="graph.showAll">All relationships</button>
+      <button id="rg-ego-clear" class="rg-ctl" hidden data-i18n="graph.egoClear">✕ focus</button>
       <svg id="relsvg" viewBox="0 0 300 300" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Relationship graph"></svg>
       <div id="reltip" hidden></div>
     </div>
@@ -531,6 +538,7 @@ const I18N={
   en:{
     subtitle:'FIELD STATION · 10 AGENTS', feedTitle:'EVENT FEED', graphTitle:'RELATIONSHIPS', replayTitle:'REPLAY', inspectorTitle:'AGENT INSPECTOR',
     'feed.all':'All','feed.quiet':'Quiet','feed.newMsgs':'{n} new',
+    'graph.showAll':'All relationships','graph.egoClear':'✕ focus',
     'replay.run':'Run', 'replay.play':'Play', 'replay.pause':'Pause', 'replay.badge':'⏪ REPLAYING',
     'replay.grpCurrent':'Current town', 'replay.grpArchived':'Archived',
     'replay.legacy':'This session is from an older town — text browsing only.',
@@ -579,6 +587,7 @@ const I18N={
   zh:{
     subtitle:'田野觀測站 · 10 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', replayTitle:'回放', inspectorTitle:'智能體檢視器',
     'feed.all':'全部','feed.quiet':'精簡','feed.newMsgs':'{n} 則新訊息',
+    'graph.showAll':'全部關係','graph.egoClear':'✕ 聚焦',
     'replay.run':'場次', 'replay.play':'播放', 'replay.pause':'暫停', 'replay.badge':'⏪ 回放中',
     'replay.grpCurrent':'目前小鎮', 'replay.grpArchived':'封存',
     'replay.legacy':'此場次來自舊版小鎮,僅供文字瀏覽。',
@@ -1739,6 +1748,23 @@ const RG_DAMP=0.66;                 // velocity damping per frame -> springs set
 const RG_MICRO=0.3;                 // sub-pixel motion is zeroed -> the graph truly comes to rest (no micro-jitter)
 const RG_DRAG_TEMP=0.2;             // drag re-heat = 20% of the initial layout temp: small, local nudges only
 let REL_DATA=null, rgRAF=0, rgCool=0, rgFrames=0, rgDrag=null, rgDragMoveT=0;   // RG is declared earlier (near LANG)
+let rgShowAll=false, rgEgoIdx=null;                 // edge filter (friends-only default) + ego focus
+function edgeVisible(e){
+  if(rgEgoIdx!=null) return e.ai===rgEgoIdx||e.bi===rgEgoIdx;   // ego: only edges touching the focused node
+  return rgShowAll || favg(e.data)>=45;                          // default: only real friendships
+}
+function applyEdgeFilter(){
+  if(!RG) return;
+  for(const e of RG.edges){ const v=edgeVisible(e), disp=v?'':'none';
+    [e.line,e.rline,e.rmark,e.hit].forEach(el=>{ if(el) el.style.display=disp; }); }
+  const sa=$('#rg-showall'); if(sa) sa.classList.toggle('active',rgShowAll&&rgEgoIdx==null);
+  const ec=$('#rg-ego-clear'); if(ec) ec.hidden=(rgEgoIdx==null);
+}
+function setEgo(idx){ rgEgoIdx=idx; applyEdgeFilter(); }
+function clearEgo(){ if(rgEgoIdx!=null){ rgEgoIdx=null; applyEdgeFilter(); } }
+$('#rg-showall').onclick=()=>{ rgShowAll=!rgShowAll; clearEgo(); applyEdgeFilter(); };
+$('#rg-ego-clear').onclick=clearEgo;
+$('#relsvg').addEventListener('pointerdown',ev=>{ if(!ev.target.closest('.rnode')) clearEgo(); });  // empty click restores
 const RG_PINS={};                   // id -> {nx,ny} normalized pin positions; session memory, reset on reload
 const favg=e=>(e.friendship_ab+e.friendship_ba)/2;
 const ekey=e=>e.a+'|'+e.b;
@@ -1782,7 +1808,7 @@ function simStep(){
   let move=0; const temp=RG.temp, mx=RG.mx, my=RG.my;
   // While dragging, keep the disturbance local: nodes far from the dragged node
   // barely feel its force (the collision pass still pushes whatever it bumps).
-  const drag=rgDrag, LOC2=(3*RG_COLL_HX)*(3*RG_COLL_HX);
+  const drag=rgDrag, LOC2=(2*RG_COLL_HX)*(2*RG_COLL_HX);   // drag disturbance stays within ~2x the node radius
   for(const n of N){
     if(n.fixed){ n.vx=0; n.vy=0; continue; }                     // pinned/dragged: exert force, receive none
     if(drag && drag!==n){
@@ -1868,6 +1894,7 @@ function renderEdgeStyles(){                                       // visual att
       } else { e.rline.setAttribute('stroke','none'); e.rmark.textContent=''; }
     }
   }
+  applyEdgeFilter();                                              // re-apply friends-only / ego visibility
 }
 function newEdgeEl(ed){
   const g=document.createElementNS(SVGNS,'g'); g.setAttribute('class','redge-g');
@@ -1918,6 +1945,7 @@ function attachNodePointer(n){
       try{ g.releasePointerCapture(id); }catch(e){}
       g.removeEventListener('pointermove',onMove); g.removeEventListener('pointerup',onUp); g.removeEventListener('pointercancel',onUp);
       if(moved){ endDrag(n); return; }
+      setEgo(RG.idx[n.id]);                                       // focus: show only this node's edges
       if(n.pinned){                                               // defer so a double-click (unpin) can cancel it
         if(n._ct){ clearTimeout(n._ct); n._ct=0; } else { n._ct=setTimeout(()=>{ n._ct=0; inspect(n.id); },220); }
       } else inspect(n.id);                                       // plain click opens the inspector
