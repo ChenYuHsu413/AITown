@@ -49,14 +49,20 @@ except ValueError:
 # re-run. With 2 extra rounds that is 3 whole-chain attempts (9 provider tries) before
 # the mock floor is the last resort. The non-blocking engine means only these two
 # freeze; the town keeps moving.
+#
+# Brew = 30s (not 20s): the only floors seen in acceptance were 429-saturation bursts
+# where the whole chain was cooling at once. A provider's 429 cooldown is >= 30s
+# (Retry-After, clamped to [10, 90]); a brew shorter than that re-runs into the same
+# cooldown and can't recover. 30s lets a typical cooldown lapse so the retry actually
+# rescues the turn -- which is the whole point. Env-overridable.
 try:
     DIALOGUE_RETRY_ROUNDS = int(os.environ.get("AI_TOWN_DIALOGUE_RETRY_ROUNDS", "2"))
 except ValueError:
     DIALOGUE_RETRY_ROUNDS = 2
 try:
-    DIALOGUE_RETRY_WAIT_S = float(os.environ.get("AI_TOWN_DIALOGUE_RETRY_WAIT", "20") or "20")
+    DIALOGUE_RETRY_WAIT_S = float(os.environ.get("AI_TOWN_DIALOGUE_RETRY_WAIT", "30") or "30")
 except ValueError:
-    DIALOGUE_RETRY_WAIT_S = 20.0
+    DIALOGUE_RETRY_WAIT_S = 30.0
 REFLECT_TIMEOUT_S = 45.0       # wall-clock: a reflection past this is abandoned (retried, see below)
 # Reflection patient retry (task 3, mirrors dialogue): belief/secret/life_decision
 # quality must never be a canned mock line, so a whole-chain failure brews a pause and
@@ -732,7 +738,9 @@ class SimulationEngine:
                         self.dialogue_retry_stats["recovered"] += 1  # a retry rescued this from mock
                     break  # a real, gate-passing exchange
                 except (ProvidersExhausted, asyncio.TimeoutError) as err:
-                    cause = "timeout" if isinstance(err, asyncio.TimeoutError) else "gate"
+                    # "exhausted" = every real provider failed (429-cooled or gate-rejected);
+                    # "timeout" = the whole chain overran the backstop.
+                    cause = "timeout" if isinstance(err, asyncio.TimeoutError) else "exhausted"
                     if attempt < rounds - 1:
                         if not retried:
                             retried = True
