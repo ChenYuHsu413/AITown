@@ -95,12 +95,18 @@ class Sim:
         self.router.on_call_start = self._on_llm_start
         self.router.on_call_end = self._on_llm_end
         # Display-layer translation (zh): cache English->zh by text, and a
-        # deterministic pinyin->zh name substitution applied to every result and
-        # fallback, so resident names are always right even if a translation slips.
+        # deterministic substitution applied to every result and fallback, so
+        # resident names AND place names are always the canonical zh even if a
+        # translation slips. Places longest-first so "Ferry Crossing Market" wins
+        # before any shorter substring.
         self._translate_cache: dict[str, str] = {}
         self._name_subs = [
             (re.compile(rf"\b{re.escape(a.id.capitalize())}\b", re.IGNORECASE), a.name)
             for a in self.world.agents.values()
+        ] + [
+            (re.compile(rf"\b{re.escape(l.name)}\b", re.IGNORECASE), l.name_zh)
+            for l in sorted(self.world.locations.values(), key=lambda loc: -len(loc.name))
+            if l.name_zh
         ]
         self.engine.bootstrap(START_MINUTE)
 

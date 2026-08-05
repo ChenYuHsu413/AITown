@@ -109,7 +109,7 @@ def roster_pairs() -> list[tuple[str, str]]:
 def dialogue_locale_directive() -> str:
     """zh runs only: tell the model to speak people's and places' Chinese names,
     never the English/pinyin sign-name form (a weak model otherwise copies
-    "Sunrise Bakery"/"Ange" straight into the spoken line). Empty in English, so
+    "Hearth Bakery"/"Ange" straight into the spoken line). Empty in English, so
     en/mock runs are byte-for-byte unchanged. The display layer substitutes these
     deterministically regardless, so this is a soft steer, not the guarantee."""
     if not lang_is_zh():
