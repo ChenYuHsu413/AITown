@@ -1071,6 +1071,64 @@ async def resolve_stale_secrets(body: dict = Body(default={})) -> JSONResponse:
     })
 
 
+@app.post("/api/admin/rewrite-stale-goals")
+async def rewrite_stale_goals(body: dict = Body(default={})) -> JSONResponse:
+    """Move forward any goal that was about a now-resolved secret but never got
+    rewritten (e.g. Xixi's 'work up the courage to ask Aisi...' after his worry was
+    laid to rest). SAFE BY DEFAULT (dry run reports only). {"dry_run": false}
+    archives first, then rewrites + leaves each owner a memory of the shift."""
+    assert sim is not None
+    dry_run = bool(body.get("dry_run", True)) if isinstance(body, dict) else True
+    world = sim.world
+    dec = sim.engine.decisions
+    now = sim.engine.now
+
+    candidates, seen = [], set()
+    for s in dec.secrets.secrets.values():
+        if not s.resolved:
+            continue
+        owner = world.agents.get(s.owner)
+        if owner is None:
+            continue
+        for g in owner.profile.goals:
+            old = str(g.get("goal", ""))
+            key = (s.owner, old)
+            if key in seen or not dec.goal_matches_secret(old, s):
+                continue
+            new = dec.forward_goal(old, s)
+            if new and new != old:
+                seen.add(key)
+                candidates.append({"owner": s.owner, "owner_name": owner.name,
+                                   "secret": s.text, "old_goal": old, "new_goal": new})
+
+    if dry_run:
+        return JSONResponse({
+            "dry_run": True, "count": len(candidates), "would_rewrite": candidates,
+            "hint": 'nothing changed -- re-send with {"dry_run": false} to apply',
+        })
+
+    archive_id = None
+    if sim.persistence is not None:
+        payload = snapshot_mod.capture(sim.engine, sim.world, sim.engine.decisions)
+        archive_id = await sim.persistence.archive_snapshot(payload, reason="rewrite-stale-goals")
+    applied = 0
+    for c in candidates:
+        owner = world.agents.get(c["owner"])
+        if owner is None:
+            continue
+        for g in owner.profile.goals:
+            if str(g.get("goal", "")) == c["old_goal"]:
+                g["goal"] = c["new_goal"]
+                owner.memory.add(MemoryItem(
+                    minute=now, importance=4, kind="reflection",
+                    text=f"That old worry is behind me now -- my focus is on the next chapter: {c['new_goal']}."))
+                applied += 1
+                break
+    if sim.persistence is not None:
+        sim._take_snapshot()
+    return JSONResponse({"dry_run": False, "archive_id": archive_id, "rewritten": applied})
+
+
 @app.get("/api/admin/archives")
 async def admin_archives() -> JSONResponse:
     """List recent pre-operation backups (newest first) so a mistaken admin op can

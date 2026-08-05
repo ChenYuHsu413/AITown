@@ -673,7 +673,60 @@ class DecisionEngine:
         if not self.secrets.resolve(secret.id, now, resolution):
             return False
         owner.memory.add(MemoryItem(minute=now, text=resolution, importance=5, kind="reflection"))
+        self.rewrite_goals_on_resolve(owner, secret, now)   # the worry's goal moves forward too
         return True
+
+    # Common short words to ignore when matching a goal to a secret's theme.
+    _GOAL_STOP = {"want", "have", "been", "that", "this", "with", "from", "they", "them",
+                  "their", "about", "every", "time", "work", "just", "keep", "make", "your",
+                  "into", "will", "would", "could", "should", "there", "when", "what"}
+
+    @staticmethod
+    def goal_matches_secret(goal_text: str, secret) -> bool:
+        """A goal is 'about' a secret when it names the secret's subject or shares
+        enough distinctive words with it."""
+        g = {w.strip(".,;:!?'\"").lower() for w in goal_text.split()}
+        about = (secret.about or "").lower()
+        if about and about in g:
+            return True
+        kw = {w.strip(".,;:!?'\"").lower() for w in secret.text.split()
+              if len(w) > 3} - DecisionEngine._GOAL_STOP
+        if about:
+            kw.add(about)
+        return len(kw & g) >= 2
+
+    @staticmethod
+    def forward_goal(goal_text: str, secret) -> str:
+        """Rewrite an anxious goal into a moving-forward one (story advances, not
+        erased). Handles the "ask X to teach me Y" shape precisely; otherwise a
+        gentle generic reframe toward the secret's subject."""
+        m = re.search(r"ask (\w+) to teach me (.+?)(?:\.|$| but| every)", goal_text, re.I)
+        if m:
+            return f"Keep learning {m.group(2).strip()} from {m.group(1).capitalize()}"
+        about = (secret.about or "").capitalize()
+        if not about:
+            for w in secret.text.split():           # else pull a name out of the secret text
+                if w.istitle() and len(w) > 2:
+                    about = w
+                    break
+        return f"Keep building on things with {about}" if about else ""
+
+    def rewrite_goals_on_resolve(self, owner: Agent, secret, now: int) -> list[tuple[str, str]]:
+        """Rewrite any of the owner's goals that were about this now-settled worry.
+        Returns (old, new) pairs; leaves an importance-4 memory of the shift."""
+        changed: list[tuple[str, str]] = []
+        for g in owner.profile.goals:
+            old = str(g.get("goal", ""))
+            if not self.goal_matches_secret(old, secret):
+                continue
+            new = self.forward_goal(old, secret)
+            if new and new != old:
+                g["goal"] = new
+                owner.memory.add(MemoryItem(
+                    minute=now, importance=4, kind="reflection",
+                    text=f"That old worry is behind me now -- my focus is on the next chapter: {new}."))
+                changed.append((old, new))
+        return changed
 
     def _maybe_confide(self, a: Agent, b: Agent, now: int) -> dict | None:
         """Decide whether ``a`` confides one of their OWN secrets in ``b`` -- pure
