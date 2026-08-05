@@ -37,7 +37,7 @@ class MockEmbedding(EmbeddingProvider):
         return [x / n for x in v]
 
     async def embed(self, text: str) -> list[float]:
-        words = [w for w in text.lower().split() if len(w) > 2]
+        words = [w for w in text.lower().split() if len(w) >= 2]
         if not words:
             words = ["empty"]
         acc = [0.0] * self.dim

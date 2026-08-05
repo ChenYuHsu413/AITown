@@ -306,7 +306,7 @@ class DecisionEngine:
             )
             if partner_free and now - last >= TALK_COOLDOWN_MIN and agent.state.current_action != "sleep" \
                     and self._social_gate(agent, partner_id, now):
-                memories = await agent.memory.retrieve_async(f"{partner.name} {obs.location}", k=5)
+                memories = await agent.memory.retrieve_async(f"{partner.id.capitalize()} {obs.location}", k=5)
                 res = await self.router.generate(
                     task="should_talk",
                     messages=builders.should_talk_prompt(agent, partner.name, _resolve_mems(memories, world)),
@@ -807,8 +807,10 @@ class DecisionEngine:
         elif b.state.pending_confession == a.id:
             confession = {"from": b.id, "to": a.id, "from_name": b.name, "to_name": a.name,
                           "accepted": a.rel(b.id).romance >= romance_mod.ACCEPT_ROMANCE}
-        a_mem = await a.memory.retrieve_async(b.name, k=3)
-        b_mem = await b.memory.retrieve_async(a.name, k=3)
+        # Query by the English/pinyin name, matching how memories are stored (a 2-char
+        # zh name gets filtered to noise by the bag-of-words embedder -- see MockEmbedding).
+        a_mem = await a.memory.retrieve_async(b.id.capitalize(), k=3)
+        b_mem = await b.memory.retrieve_async(a.id.capitalize(), k=3)
         # A held impression of the other person rides into the dialogue context, so
         # the model naturally carries the weight of the relationship's history.
         a_imp = self._impression_of(a, b.id)
