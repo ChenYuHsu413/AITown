@@ -51,6 +51,7 @@ header{display:flex;align-items:center;gap:20px;padding:10px 18px;border-bottom:
 .controls button{font-family:var(--mono);font-size:12px;padding:6px 12px;background:var(--panel);
   border:1px solid var(--line);border-radius:4px;color:var(--ink);cursor:pointer}
 .controls button.active{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.controls button.disabled{opacity:.4;cursor:not-allowed}
 .controls button:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
 
 /* layout */
@@ -555,7 +556,7 @@ const I18N={
     'title.pause':'Pause simulation','title.pausing':'Pausing…','llmBusy':'Waiting for AI…',
     'conn.reconnecting':'Connection lost, reconnecting…',
     'title.s1':'1 sim-minute per second','title.s5':'5 sim-minutes per second',
-    'title.s20':'20 sim-minutes per second','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
+    'title.s20':'20 sim-minutes per second','title.s20capped':'Capped at 5× in free-quota mode','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
     'title.god':'World events','god.rain':'Rain · 3h','god.festival':'Park festival · 4h','god.break':'Break equipment',
     'god.rumorHead':'RUMORS','god.startedBy':'Started by','god.presetDefault':'(preset default)',
     'god.preset.cafe':'Cafe crisis','god.preset.xue':'Xue quitting','god.preset.aisi':"Aisi's award",'god.preset.azong':'Azong moving',
@@ -604,7 +605,7 @@ const I18N={
     'title.pause':'暫停模擬','title.pausing':'暫停中…','llmBusy':'等待 AI 回應中…',
     'conn.reconnecting':'連線中斷,重連中…',
     'title.s1':'每秒 1 模擬分鐘','title.s5':'每秒 5 模擬分鐘',
-    'title.s20':'每秒 20 模擬分鐘','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
+    'title.s20':'每秒 20 模擬分鐘','title.s20capped':'免費額度模式下限速 5×','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
     'title.god':'世界事件','god.rain':'下雨 3 小時','god.festival':'公園慶典 4 小時','god.break':'觸發設備故障',
     'god.rumorHead':'謠言','god.startedBy':'由誰起頭','god.presetDefault':'(預設起頭者)',
     'god.preset.cafe':'咖啡館危機','god.preset.xue':'雪要離職','god.preset.aisi':'艾斯得獎','god.preset.azong':'阿總搬遷',
@@ -820,6 +821,7 @@ function applyLang(){
   if(!$('#away-card').hidden) renderAwayCard();        // "while you were away" card follows the language
   renderChron();                                        // chronicle preview/list follow the language
   if(typeof updateFeedPill==='function') updateFeedPill();  // "N new" pill follows the language
+  if(typeof applySpeedCap==='function') applySpeedCap();    // 20x tooltip (capped vs not) follows the language
 }
 function toggleLang(){ LANG=LANG==='en'?'zh':'en'; localStorage.setItem('lang',LANG); applyLang(); }
 
@@ -833,7 +835,8 @@ const WS_BACKOFF=[1000,2000,5000];                       // then 10s cap, foreve
 function setConnLost(lost){ const el=$('#conn-dot'); if(el) el.hidden=!lost; }
 function handleWSMessage(e){
   const msg=JSON.parse(e.data);
-  if(msg.type==='snapshot') buildMap(msg.locations);   // locations are static -> always safe (sets LOCS)
+  if(msg.type==='snapshot'){ buildMap(msg.locations);   // locations are static -> always safe (sets LOCS)
+    if('live' in msg) SIM_LIVE=msg.live; if('paid' in msg) SIM_PAID=msg.paid; applySpeedCap(); }
   if(msg.type==='snapshot' && msg.away_summary) showAwaySummary(msg.away_summary);  // unattended recap on reconnect
   if(REPLAY.on) return;                                // in replay: keep receiving, but don't paint over it
   if(msg.type==='snapshot') msg.events.forEach(addEvent);
@@ -1473,7 +1476,13 @@ function clearPausePending(){ if(!pausePending) return; pausePending=false; cons
 $('#btn-pause').onclick=()=>{ setPausePending(); ctl({cmd:'pause'}); };
 $('#btn-1').onclick=()=>{ clearPausePending(); ctl({cmd:'speed',speed:1}); };
 $('#btn-5').onclick=()=>{ clearPausePending(); ctl({cmd:'speed',speed:5}); };
-$('#btn-20').onclick=()=>{ clearPausePending(); ctl({cmd:'speed',speed:20}); };
+$('#btn-20').onclick=()=>{ if(SIM_LIVE&&!SIM_PAID) return; clearPausePending(); ctl({cmd:'speed',speed:20}); };
+let SIM_LIVE=false, SIM_PAID=false;
+function applySpeedCap(){ const b=$('#btn-20'); if(!b) return;
+  const capped=SIM_LIVE&&!SIM_PAID;                 // free live mode caps at 5x -> show 20x as disabled
+  b.classList.toggle('disabled',capped);
+  b.title=capped?t('title.s20capped'):t('title.s20');
+}
 $('#btn-lang').onclick=toggleLang;
 applyLang();
 

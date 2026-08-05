@@ -62,6 +62,9 @@ class Sim:
 
         self.router = build_router()
         self.live = any(p.name != "mock" for chain in self.router.tiers.values() for p in chain)
+        # Paid mode lifts the live speed clamp (paid providers aren't on a free-tier
+        # rate limit), so 20x is honest instead of silently capped to 5x.
+        self.paid = os.environ.get("AI_TOWN_PAID") == "1"
         self.world = World(build_locations(), build_agents())
         self.engine = SimulationEngine(self.world, DecisionEngine(self.router))
         seed_secrets(self.engine.decisions.secrets)   # fresh start; a resume overwrites from the snapshot
@@ -481,6 +484,7 @@ class Sim:
             "speed": self.speed,
             "unattended": self.unattended,
             "cruising": self._cruising,
+            "live": self.live, "paid": self.paid,   # frontend gates the 20x button on these
             "locations": [
                 {"id": l.id, "name": l.name, "kind": l.kind, "x": l.x, "y": l.y,
                  "owner": l.owner, "landmarks": l.landmarks, "closed_days": l.closed_days,
@@ -635,7 +639,7 @@ async def control(body: dict) -> JSONResponse:
         sim.paused = False
     elif cmd == "speed":
         want = float(body.get("speed", 5))
-        want = min(want, MAX_LIVE_SPEED) if sim.live else want   # live: don't burst rate limits
+        want = min(want, MAX_LIVE_SPEED) if (sim.live and not sim.paid) else want   # free live: don't burst rate limits
         sim._user_speed = want                                   # remember it across unattended cruise
         if not sim._cruising:                                    # while cruising, keep the slow speed
             sim.speed = want
