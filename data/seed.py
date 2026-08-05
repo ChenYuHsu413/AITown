@@ -12,22 +12,48 @@ from backend.app.agents.routine import Routine, RoutineEntry, hm
 from backend.app.world.world import Location
 
 
+# ---- speech style (2026-08 formal-server decision) -------------------------
+# One line per resident: WRITE THE BEHAVIOUR, not an adjective; one locked tell
+# each; complements (never repeats) their traits. English (internal rule) and
+# wired into the dialogue prompt by build_agents (see Profile.speech_style).
+# Oula carries the only literal verbal tic ("跟你說——"), kept in zh so it surfaces
+# verbatim in Chinese dialogue.
+SPEECH_STYLE = {
+    "jiji": "Waves off questions about herself with a joke and flips it back on you, "
+            "fishing for your news (partly to keep the cafe's troubles covered).",
+    "ange": "Short, matter-of-fact sentences; measures everything against how it's done at the bakery.",
+    "oula": "Talks fast, always half-way to the next stop; drops news in headlines; "
+            "opens with the verbal tic \"跟你說——\" (his alone).",
+    "lengyue": "Slow and precise; names the state she reads in you before getting to the point.",
+    "azong": "Unhurried; reaches for vivid, picture-painting metaphors.",
+    "xixi": "Hesitant, starts a sentence and pulls it back -- until a technical topic "
+            "flips a switch and he turns instantly, fluently articulate.",
+    "aisi": "Spare wording, answers the literal question; frames everything as a problem to be solved.",
+    "xue": "Softens the ground before she speaks, says \"it's nothing\" when it isn't, "
+           "apologizes even when it isn't her fault.",
+    "long": "Says whatever comes to mind on the spot, unpolished, heedless of where it lands.",
+    "kuaizheng": "Few words and slow, brief and mild, almost never asks a question back.",
+}
+
+
 def build_locations() -> list[Location]:
     # 7 places on the 800x520 canvas (river hugs the left edge < x=60): two homes
     # at the top corners, the two shops mid-band as economic rivals, park + office
     # anchoring the lower corners, market on the right as the second social pole.
     return [
-        Location("home_a", "Riverside House", "home", name_zh="河畔之家", x=120, y=120),
-        Location("home_b", "Hillside Apartment", "home", name_zh="山丘公寓", x=685, y=105),
+        # "水岸光影" place-name set (2026-08 formal-server decision). ids never change.
+        Location("home_a", "Rainlisten House", "home", name_zh="聽雨居", x=120, y=120),
+        Location("home_b", "Slopeview Flats", "home", name_zh="望坡樓", x=685, y=105),
         # Two shops open 7 days but each takes one weekly day off, staggered so the
         # town always has one open: the cafe rests Monday, the bakery Wednesday.
-        Location("cafe", "Moonlight Cafe", "cafe", name_zh="月光咖啡館", x=340, y=185, owner="jiji", price=5.0,
+        # Tide × Hearth (water/fire) carries the old Moonlight × Sunrise rivalry mirror.
+        Location("cafe", "Tide Cafe", "cafe", name_zh="潮汐咖啡館", x=340, y=185, owner="jiji", price=5.0,
                  closed_days=[0]),   # Monday
-        Location("bakery", "Sunrise Bakery", "bakery", name_zh="日出烘焙坊", x=400, y=405, owner="ange", price=4.0,
+        Location("bakery", "Hearth Bakery", "bakery", name_zh="爐心烘焙坊", x=400, y=405, owner="ange", price=4.0,
                  closed_days=[2]),   # Wednesday
-        Location("market", "Old Street Market", "market", name_zh="老街市場", x=610, y=215),
-        Location("office", "Townsend Office", "office", name_zh="湯森辦公室", x=690, y=375),
-        Location("park", "Old Oak Park", "park", name_zh="老橡樹公園", x=155, y=330, landmarks=[
+        Location("market", "Ferry Crossing Market", "market", name_zh="渡口市場", x=610, y=215),
+        Location("office", "Riverrun Office", "office", name_zh="川流事務所", x=690, y=375),
+        Location("park", "Firefly Park", "park", name_zh="螢火公園", x=155, y=330, landmarks=[
             # Aisi's interactive light installation, seeded a third done -- an
             # engineering piece she builds up over afternoons in the park until
             # it lights up completely.
@@ -271,32 +297,31 @@ def build_agents() -> list[Agent]:
     xue.memory.add(MemoryItem(0, "Argued with the manager last week.", importance=7))
     xue.memory.add(MemoryItem(0, "{loc:cafe} feels like a safe place.", importance=4))
 
-    # long (Market Vendor) -- inherits Mei: frugal, wise, quietly generous.
+    # long (Repair Technician) -- 2026-08 rewrite: blunt tradesman, the town's second
+    # high-mobility character. Takes jobs at home, then criss-crosses town to fix
+    # things. The market stall is released (market stays a public space); once the
+    # breakdown mechanism lands, the roaming below is swapped for repair dispatch.
     long = Agent(
         profile=Profile(
-            id="long", name="瓏", age=52, occupation="Market Vendor",
-            personality={"extraversion": 0.5, "agreeableness": 0.7, "openness": 0.5, "neuroticism": 0.3},
-            gender="male", traits=["observant", "frugal", "wise"],
-            goals=[{"goal": "Quietly save enough to retire in peace", "priority": 0.7}],
-            daily_wage=40.0,
+            id="long", name="瓏", age=52, occupation="Repair Technician",
+            personality={"extraversion": 0.5, "agreeableness": 0.25, "openness": 0.5, "neuroticism": 0.3},
+            gender="male", traits=["blunt", "self-assured", "abrasive"],
+            goals=[{"goal": "Keep the town's machines running -- and get paid what I'm owed", "priority": 0.7}],
+            daily_wage=40.0,                      # base from odd jobs; repair fees add on top
             reflection_threshold=35,              # a background character -> reflects less often
         ),
         state=AgentState(location="home_b"),
-        routine=_routine([
-            (hm(6, 0), "eat", "home_b"),
-            (hm(7, 0), "work", "market"),
-            (hm(12, 30), "eat", "market"),
-            (hm(13, 30), "work", "market"),
-            (hm(18, 0), "eat", "home_b"),
-            (hm(20, 0), "rest", "home_b"),
-            (hm(22, 0), "sleep", "home_b"),
-        ], weekend=[                              # weekend: the market's busiest -- open earlier, close later
-            (hm(6, 0), "eat", "home_b"),
-            (hm(6, 30), "work", "market"),
-            (hm(12, 0), "eat", "market"),
-            (hm(12, 45), "work", "market"),       # short lunch, back to a busy stall
-            (hm(19, 30), "eat", "home_b"),
-            (hm(21, 0), "rest", "home_b"),
+        routine=_routine([                        # take jobs at home, then out around town
+            (hm(6, 30), "eat", "home_b"),
+            (hm(8, 0), "work", "home_b"),         # sizing up jobs / prepping tools
+            (hm(10, 0), "rest", "market"),
+            (hm(11, 30), "rest", "office"),
+            (hm(13, 0), "eat", "market"),
+            (hm(14, 30), "rest", "park"),
+            (hm(16, 0), "rest", "bakery"),
+            (hm(17, 30), "rest", "cafe"),
+            (hm(19, 0), "eat", "home_b"),
+            (hm(21, 30), "rest", "home_b"),
             (hm(22, 30), "sleep", "home_b"),
         ]),
     )
