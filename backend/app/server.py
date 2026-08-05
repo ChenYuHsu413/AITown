@@ -140,6 +140,11 @@ class Sim:
                 task="translate", messages=builders.translate_prompt(src),
                 agent_id="-", sim_minute=self.engine.now,
                 schema={"type": "object"}, max_tokens=200,
+                # A "text" that isn't a real string (Qwen occasionally emits a bare
+                # number for this constrained JSON) fails the gate and falls through
+                # to the next provider instead of putting junk on screen.
+                validate=lambda r: isinstance(r.parsed, dict)
+                and isinstance(r.parsed.get("text"), str) and bool(r.parsed["text"].strip()),
             )
             if isinstance(res.parsed, dict):
                 zh = str(res.parsed.get("text") or "").strip()

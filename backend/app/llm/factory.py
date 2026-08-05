@@ -44,11 +44,11 @@ def _make_console_safe() -> None:
 
 
 def _budget_from_env() -> float | None:
-    raw = os.environ.get("AI_TOWN_BUDGET_USD", "1.0").strip()
+    raw = os.environ.get("AI_TOWN_BUDGET_USD", "5.0").strip()
     try:
         value = float(raw)
     except ValueError:
-        return 1.0
+        return 5.0
     return None if value <= 0 else value
 
 
@@ -145,6 +145,37 @@ def build_router(live: bool | None = None) -> LLMRouter:
         # English chains -- no zh routing.)
         task_chains["dialogue"] = zh_reliable
         task_chains["translate"] = zh_reliable
+
+    # ---- paid-first config (AI_TOWN_PAID=1) ---------------------------
+    # Put a cheap-but-strong paid model at the FRONT of the reader-facing free-text
+    # chains (dialogue/reflection), a fast paid translator at the front of translate,
+    # and the paid model only as a TAIL on cheap structured tasks (they stay free in
+    # the common case). Everything still falls through to the existing free chain +
+    # mock floor, so a paid 429/outage degrades exactly as before.
+    paid = os.environ.get("AI_TOWN_PAID") == "1"
+    if paid and openrouter is not None:
+        from .providers.openrouter_provider import OpenRouterProvider
+        deepseek = OpenRouterProvider(model="deepseek/deepseek-v4-flash",
+                                      input_price_per_m=0.14, output_price_per_m=0.28)
+        tr_slug = os.environ.get("AI_TOWN_TRANSLATE_MODEL", "qwen/qwen3.5-flash-02-23")
+        translator = OpenRouterProvider(model=tr_slug,
+                                        input_price_per_m=0.065, output_price_per_m=0.26)
+
+        def existing(task: str, tier: str) -> list[LLMProvider]:
+            return list(task_chains.get(task) or tiers[tier])
+
+        def tail(base: list[LLMProvider]) -> list[LLMProvider]:
+            # deepseek as a last real provider, kept just before the mock floor.
+            return base[:-1] + [deepseek, base[-1]] if base and base[-1] is mock else base + [deepseek]
+
+        task_chains["dialogue"] = [deepseek] + existing("dialogue", "normal")
+        task_chains["reflection"] = [deepseek] + existing("reflection", "smart")
+        task_chains["translate"] = [translator] + existing("translate", "cheap")
+        for t in ("should_talk", "importance", "mood", "summary", "appraise", "distort"):
+            task_chains[t] = tail(existing(t, "cheap"))
+        task_chains["decision"] = tail(existing("decision", "normal"))
+        print(f"[live] paid-first: dialogue/reflection -> deepseek-v4-flash | "
+              f"translate -> {tr_slug} | cheap tasks free-first (deepseek tail)", flush=True)
 
     # Startup live-status summary: make "am I actually on real models?" a one-line,
     # unmissable fact (a server restarted without .env in scope would show mock-only).
