@@ -920,11 +920,13 @@ class DecisionEngine:
         if rel_ab.friendship < romance_mod.GROW_FRIEND_MIN or rel_ba.friendship < romance_mod.GROW_FRIEND_MIN:
             return
         setting = self._romantic_setting(world, a.state.location, now)
-        gain = romance_mod.growth(a, b, sentiment, setting, confided)
-        if gain <= 0:
+        base = romance_mod.growth(a, b, sentiment, setting, confided)
+        if base <= 0:
             return
-        for r in (rel_ab, rel_ba):
-            r.romance = min(100.0, r.romance + gain)
+        # Directional: each side's gain is scaled by their own orientation toward the
+        # other's gender, so an asymmetric attraction is expressible.
+        rel_ab.romance = min(100.0, rel_ab.romance + base * romance_mod.orientation_coeff(a, b))
+        rel_ba.romance = min(100.0, rel_ba.romance + base * romance_mod.orientation_coeff(b, a))
         self._maybe_crush(a, b, now)
         self._maybe_crush(b, a, now)
 
@@ -1299,7 +1301,8 @@ class DecisionEngine:
             if day - agent.state.ignite_day.get(other.id, -100) < romance_mod.IGNITE_COOLDOWN_DAYS:
                 continue
             seed = int(hashlib.sha256(f"ignite|{agent.id}|{other.id}|{day}".encode()).hexdigest()[:8], 16)
-            if random.Random(seed).random() >= romance_mod.IGNITE_PROB:
+            # The spark is likelier toward a gender this agent leans to (orientation).
+            if random.Random(seed).random() >= romance_mod.IGNITE_PROB * romance_mod.orientation_coeff(agent, other):
                 continue
             agent.state.ignite_day[other.id] = day
             # The spark itself: time-together turns into the first flicker of romance,

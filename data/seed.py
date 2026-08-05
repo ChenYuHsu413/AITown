@@ -47,6 +47,17 @@ ROMANTIC_INCLINATION = {
 }
 
 
+# Orientation bias (2026-08 user decision, per person). Coefficient (0-1) for a
+# romance by the other's gender: {"same": ..., "other": ...}. Directional, so an
+# unrequited cross-orientation attraction is expressible. Unlisted -> the default
+# {"same": 0.2, "other": 1.0}.
+ORIENTATION_BIAS = {
+    "lengyue": {"same": 1.0, "other": 0.2},
+    "oula":    {"same": 1.0, "other": 0.2},
+    "xue":     {"same": 0.5, "other": 0.5},
+}
+
+
 def build_locations() -> list[Location]:
     # 7 places on the 800x520 canvas (river hugs the left edge < x=60): two homes
     # at the top corners, the two shops mid-band as economic rivals, park + office
@@ -376,6 +387,8 @@ def build_agents() -> list[Agent]:
     for a in residents:                       # attach each resident's locked speech style + inclination
         a.profile.speech_style = SPEECH_STYLE.get(a.id, "")
         a.profile.romantic_inclination = ROMANTIC_INCLINATION.get(a.id, 0.45)
+        if a.id in ORIENTATION_BIAS:
+            a.profile.orientation_bias = dict(ORIENTATION_BIAS[a.id])
     return residents
 
 

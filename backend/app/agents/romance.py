@@ -54,6 +54,18 @@ def stage_rank(stage: str) -> int:
     return STAGES.index(stage) if stage in STAGES else 0
 
 
+def orientation_coeff(a: "Agent", b: "Agent") -> float:
+    """A's directional propensity for a romance with B, by B's gender (0..1).
+    Missing/partial bias falls back to the defaults."""
+    bias = getattr(a.profile, "orientation_bias", None) or {}
+    key = "same" if a.profile.gender and a.profile.gender == b.profile.gender else "other"
+    default = 0.2 if key == "same" else 1.0
+    try:
+        return float(bias.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def eligible_pair(a: "Agent", b: "Agent") -> bool:
     """Both willing to a degree, and not an absurd age gap. inclination 0 opts a
     character out of the romance line entirely."""

@@ -21,6 +21,9 @@ class Profile:
     gender: str = ""                         # "male" | "female" -- steers dialogue pronouns only
     speech_style: str = ""                   # one-line "how they talk", injected into dialogue prompts
     romantic_inclination: float = 0.0        # 0..1 openness to romance (0 = opts out of the line)
+    # Directional propensity for a romance by the other person's gender (0..1). A's
+    # coefficient toward B = orientation_bias["same" if same gender else "other"].
+    orientation_bias: dict = field(default_factory=lambda: {"same": 0.2, "other": 1.0})
     traits: list[str] = field(default_factory=list)
     goals: list[dict] = field(default_factory=list)  # {"goal": str, "priority": float}
     daily_wage: float = 0.0                 # flat daily income paid at each day boundary
