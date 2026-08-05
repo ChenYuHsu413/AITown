@@ -29,6 +29,10 @@ header{display:flex;align-items:center;gap:20px;padding:10px 18px;border-bottom:
 #llm-dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--amber);
   box-shadow:0 0 0 0 var(--amber);animation:llmpulse 1.5s ease-in-out infinite;cursor:default}
 @keyframes llmpulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
+/* connection-lost hint: a quiet grey dot beside the clock while the ws reconnects */
+#conn-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--faint);
+  opacity:.6;animation:connpulse 1.6s ease-in-out infinite;cursor:default}
+@keyframes connpulse{0%,100%{opacity:.25}50%{opacity:.7}}
 /* pending pause: instant button feedback while the server finishes an in-flight call */
 .controls #btn-pause.pending{animation:pausepulse 1s ease-in-out infinite}
 @keyframes pausepulse{0%,100%{opacity:1}50%{opacity:.4}}
@@ -342,6 +346,7 @@ footer b{font-weight:500;font-size:14px}
   <div class="wordmark">AI TOWN<small data-i18n="subtitle">FIELD STATION · 5 AGENTS</small></div>
   <div class="clockwrap">
     <div id="clock">— —:—</div>
+    <span id="conn-dot" hidden data-i18n-title="conn.reconnecting" title="Connection lost, reconnecting…" role="status"></span>
     <span id="llm-dot" hidden data-i18n-title="llmBusy" title="Waiting for AI…" role="status"></span>
   </div>
   <div id="daystrip"><div id="sun" style="left:25%"></div></div>
@@ -511,6 +516,7 @@ const I18N={
     'footer.calls':'LLM CALLS','footer.cache':'CACHE HITS','footer.tokens':'TOKENS IN/OUT',
     'footer.cost':'EST. COST','footer.rules':'DECISIONS BY RULES',
     'title.pause':'Pause simulation','title.pausing':'Pausing…','llmBusy':'Waiting for AI…',
+    'conn.reconnecting':'Connection lost, reconnecting…',
     'title.s1':'1 sim-minute per second','title.s5':'5 sim-minutes per second',
     'title.s20':'20 sim-minutes per second','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
     'title.god':'World events','god.rain':'Rain · 3h','god.festival':'Park festival · 4h',
@@ -555,6 +561,7 @@ const I18N={
     'footer.calls':'LLM 呼叫','footer.cache':'快取命中','footer.tokens':'輸入/輸出 Token',
     'footer.cost':'預估成本','footer.rules':'規則決策佔比',
     'title.pause':'暫停模擬','title.pausing':'暫停中…','llmBusy':'等待 AI 回應中…',
+    'conn.reconnecting':'連線中斷,重連中…',
     'title.s1':'每秒 1 模擬分鐘','title.s5':'每秒 5 模擬分鐘',
     'title.s20':'每秒 20 模擬分鐘','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
     'title.god':'世界事件','god.rain':'下雨 3 小時','god.festival':'公園慶典 4 小時',
@@ -754,9 +761,15 @@ function applyLang(){
 }
 function toggleLang(){ LANG=LANG==='en'?'zh':'en'; localStorage.setItem('lang',LANG); applyLang(); }
 
-/* ---------- websocket ---------- */
-const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
-ws.onmessage=e=>{
+/* ---------- websocket (auto-reconnecting) ----------
+   A dropped socket (server restart, network blip) reconnects on its own with a
+   1s→2s→5s→10s backoff, retrying forever. On reconnect the server's fresh snapshot
+   rebuilds the whole view (map, agents, clock, effects) through the same handler,
+   so no reload is ever needed. A quiet grey dot by the clock shows while we're down. */
+let ws=null, wsRetry=0, wsReconnectTimer=null;
+const WS_BACKOFF=[1000,2000,5000];                       // then 10s cap, forever
+function setConnLost(lost){ const el=$('#conn-dot'); if(el) el.hidden=!lost; }
+function handleWSMessage(e){
   const msg=JSON.parse(e.data);
   if(msg.type==='snapshot') buildMap(msg.locations);   // locations are static -> always safe (sets LOCS)
   if(msg.type==='snapshot' && msg.away_summary) showAwaySummary(msg.away_summary);  // unattended recap on reconnect
@@ -769,8 +782,25 @@ ws.onmessage=e=>{
   if(msg.landmarks) updateLandmarks(msg.landmarks);  // mural fill climbs as Emma paints
   if(msg.effects) renderEffects(msg.effects);      // rain/festival visuals switch in real time
   if(msg.type==='tick') msg.events.forEach(ev=>{addEvent(ev); maybeBubble(ev); chronPush(ev);});
-};
-setInterval(()=>{ if(ws.readyState===1) ws.send('ping'); },15000);
+}
+function connectWS(){
+  clearTimeout(wsReconnectTimer);
+  const sock=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
+  ws=sock;
+  sock.onopen=()=>{ if(ws!==sock) return; wsRetry=0; setConnLost(false); };  // fresh snapshot repaints everything
+  sock.onmessage=e=>{ if(ws===sock) handleWSMessage(e); };
+  sock.onclose=()=>{ if(ws===sock) scheduleReconnect(); };
+  sock.onerror=()=>{ try{ sock.close(); }catch(_){}}; // -> onclose -> reconnect
+}
+function scheduleReconnect(){
+  setConnLost(true);
+  const wait=wsRetry<WS_BACKOFF.length?WS_BACKOFF[wsRetry]:10000;
+  wsRetry++;
+  clearTimeout(wsReconnectTimer);
+  wsReconnectTimer=setTimeout(connectWS,wait);
+}
+connectWS();
+setInterval(()=>{ if(ws && ws.readyState===1) ws.send('ping'); },15000);
 
 /* ---------- map ---------- */
 const SVGNS='http://www.w3.org/2000/svg';
