@@ -18,6 +18,7 @@ class Profile:
     age: int
     occupation: str
     personality: dict[str, float]           # big-five-ish, 0..1
+    gender: str = ""                         # "male" | "female" -- steers dialogue pronouns only
     traits: list[str] = field(default_factory=list)
     goals: list[dict] = field(default_factory=list)  # {"goal": str, "priority": float}
     daily_wage: float = 0.0                 # flat daily income paid at each day boundary

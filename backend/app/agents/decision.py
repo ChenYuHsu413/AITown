@@ -761,6 +761,19 @@ class DecisionEngine:
         # the model naturally carries the weight of the relationship's history.
         a_imp = self._impression_of(a, b.id)
         b_imp = self._impression_of(b, a.id)
+        # Confide/confront are the emotionally weighty beats: a 1-line version is a
+        # failure, so gate them at >=3 turns. A short result then triggers the
+        # router's same-provider retry and, failing that, the fallback chain (the
+        # mock floor always emits >=4 for these) -- better a model swap than a
+        # one-line heart-to-heart. Ordinary chat keeps the base structural gate.
+        intimate = is_confront or bool(confide_fwd or confide_rev)
+        def _validate(r: object) -> bool:
+            if not _dialogue_ok(r):
+                return False
+            if not intimate:
+                return True
+            turns = r.parsed.get("turns") if isinstance(r.parsed, dict) else None
+            return isinstance(turns, list) and len(turns) >= 3
         res = await self.router.generate(
             task="dialogue",
             messages=builders.dialogue_prompt(
@@ -780,7 +793,7 @@ class DecisionEngine:
             # Chinese runs ~2-3x the tokens/char of English; 4 turns + JSON needs
             # more headroom or the last turn truncates.
             max_tokens=600 if builders.lang_is_zh() else 400,
-            validate=_dialogue_ok,
+            validate=_validate,
         )
         self._roll_day(now)
         self._dialogues_today += 1   # count every conversation against the daily budget

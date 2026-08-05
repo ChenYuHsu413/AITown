@@ -108,19 +108,30 @@ class MockProvider(LLMProvider):
             # Chinese lines and drop the English mention.
             zh = os.environ.get("AI_TOWN_LANG", "en").strip().lower().startswith("zh")
             is_confront = ("did this come from you" in prompt) or ("confrontation" in prompt)
+            is_confide = "open up to" in prompt          # the confide injection's tell
+            small_talk, concerns, closer = (
+                (_SMALL_TALK_ZH, _CONCERNS_ZH, _CLOSER_ZH) if zh
+                else (_SMALL_TALK, _CONCERNS, "I'm here if you want to talk about it.")
+            )
             if is_confront:
                 admit = rng.random() < 0.6                    # ~60% own up, deterministic per seed
+                # Confront/confide are gated at >=4 turns (decision._validate); the
+                # mock is the guaranteed floor, so it must clear that itself -- build
+                # a real back-and-forth that ends on B's admit/deny.
                 if zh:
+                    opener = "我聽說有人在背後傳我的閒話，我得當面問你——這話是不是你說出去的？"
+                    deflect = "你怎麼會這樣想？這種話你是從哪裡聽來的？"
+                    press = "我不想拐彎抹角，我只想聽你親口說清楚。"
                     verdict = "…對，那句話是我說的，對不起。" if admit else "那不是我，我發誓。"
-                    opener = "我聽說有人在傳我的閒話，是你說的嗎？"
                 else:
-                    verdict = (
-                        "...Yes, I did say that. I'm sorry."
-                        if admit else "That wasn't me, I swear."
-                    )
-                    opener = mention or "I heard people are saying something. Did this come from you?"
+                    opener = "I've heard people repeating something about me, and I need to ask you to your face — did it come from you?"
+                    deflect = "Whoa. Where is this even coming from?"
+                    press = "I'm not trying to corner you. I just need to hear it straight."
+                    verdict = ("...Yes, I did say that. I'm sorry." if admit else "That wasn't me, I swear.")
                 turns = [
                     {"speaker": a, "text": opener},
+                    {"speaker": b, "text": deflect},
+                    {"speaker": a, "text": press},
                     {"speaker": b, "text": verdict},          # B's admit/deny is the last word
                 ]
                 parsed = {
@@ -131,16 +142,21 @@ class MockProvider(LLMProvider):
                     "admitted": admit,
                 }
             else:
-                small_talk, concerns, closer = (
-                    (_SMALL_TALK_ZH, _CONCERNS_ZH, _CLOSER_ZH) if zh
-                    else (_SMALL_TALK, _CONCERNS, "I'm here if you want to talk about it.")
-                )
                 opener, reply = rng.choice(small_talk)
                 turns = [
                     {"speaker": a, "text": opener},
                     {"speaker": b, "text": reply},
                 ]
-                if rng.random() < 0.5:
+                # A confide ALWAYS deepens (A opens up, B supports) so the floor never
+                # yields a 1-2 line heart-to-heart; ordinary chat deepens on a coin flip.
+                if is_confide:
+                    turns = [
+                        {"speaker": a, "text": rng.choice(concerns)},
+                        {"speaker": b, "text": reply},
+                        {"speaker": a, "text": opener},
+                        {"speaker": b, "text": closer},
+                    ]
+                elif rng.random() < 0.5:
                     turns.append({"speaker": b, "text": rng.choice(concerns)})
                     turns.append({"speaker": a, "text": closer})
                 # If A brought something up (a rumor), have A actually say it -- but

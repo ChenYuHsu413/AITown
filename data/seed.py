@@ -56,7 +56,7 @@ def build_agents() -> list[Agent]:
         profile=Profile(
             id="jiji", name="ㄐㄐ", age=27, occupation="Cafe Owner",
             personality={"extraversion": 0.8, "agreeableness": 0.7, "openness": 0.6, "neuroticism": 0.3},
-            traits=["curious", "friendly", "gossipy"],
+            gender="male", traits=["curious", "friendly", "gossipy"],
             goals=[{"goal": "Make the cafe popular", "priority": 0.8}],
             daily_wage=0.0,   # income is the cafe's revenue
         ),
@@ -79,7 +79,7 @@ def build_agents() -> list[Agent]:
         profile=Profile(
             id="ange", name="安哥", age=38, occupation="Baker",
             personality={"extraversion": 0.6, "agreeableness": 0.5, "openness": 0.6, "neuroticism": 0.4},
-            traits=["hardworking", "proud", "competitive"],
+            gender="male", traits=["hardworking", "proud", "competitive"],
             goals=[{"goal": "Make the bakery more popular than the cafe", "priority": 0.85}],
             daily_wage=0.0,   # income is the bakery's revenue
         ),
@@ -99,7 +99,7 @@ def build_agents() -> list[Agent]:
         profile=Profile(
             id="oula", name="歐拉", age=34, occupation="Postman",
             personality={"extraversion": 0.9, "agreeableness": 0.7, "openness": 0.6, "neuroticism": 0.3},
-            traits=["cheerful", "gossipy", "restless"],
+            gender="male", traits=["cheerful", "gossipy", "restless"],
             goals=[{"goal": "Get to know every single person in town", "priority": 0.8}],
             daily_wage=55.0,
             off_days=[6],   # postman rests Sunday -> the gossip engine idles, a weekly rumor lull
@@ -124,7 +124,7 @@ def build_agents() -> list[Agent]:
         profile=Profile(
             id="lengyue", name="冷月", age=36, occupation="Doctor",
             personality={"extraversion": 0.6, "agreeableness": 0.8, "openness": 0.7, "neuroticism": 0.2},
-            traits=["calm", "observant", "helpful"],
+            gender="female", traits=["calm", "observant", "helpful"],
             goals=[{"goal": "Keep the town healthy", "priority": 0.7}],
             daily_wage=80.0,
         ),
@@ -154,7 +154,7 @@ def build_agents() -> list[Agent]:
         profile=Profile(
             id="azong", name="阿總", age=35, occupation="Freelance Designer",
             personality={"extraversion": 0.65, "agreeableness": 0.7, "openness": 0.8, "neuroticism": 0.4},
-            traits=["easygoing", "creative", "sociable"],
+            gender="female", traits=["easygoing", "creative", "sociable"],
             goals=[{"goal": "Build a steady freelance client base without losing balance", "priority": 0.75}],
             daily_wage=50.0,   # irregular freelance income, flattened
         ),
@@ -184,7 +184,7 @@ def build_agents() -> list[Agent]:
         profile=Profile(
             id="xixi", name="希希", age=19, occupation="Student",
             personality={"extraversion": 0.4, "agreeableness": 0.6, "openness": 0.8, "neuroticism": 0.5},
-            traits=["shy", "curious", "technical"],
+            gender="male", traits=["shy", "curious", "technical"],
             goals=[{"goal": "Work up the courage to ask Aisi to teach me programming", "priority": 0.75}],
             daily_wage=15.0,   # part-time
         ),
@@ -215,7 +215,7 @@ def build_agents() -> list[Agent]:
         profile=Profile(
             id="aisi", name="艾斯", age=24, occupation="Engineer",
             personality={"extraversion": 0.5, "agreeableness": 0.6, "openness": 0.95, "neuroticism": 0.5},
-            traits=["creative", "focused", "night-owl"],
+            gender="female", traits=["creative", "focused", "night-owl"],
             goals=[{"goal": "Finish the interactive light installation in the park", "priority": 0.85}],
             daily_wage=30.0,
         ),
@@ -245,7 +245,7 @@ def build_agents() -> list[Agent]:
         profile=Profile(
             id="xue", name="雪", age=31, occupation="Office Worker",
             personality={"extraversion": 0.4, "agreeableness": 0.6, "openness": 0.5, "neuroticism": 0.6},
-            traits=["quiet", "loyal", "stressed"],
+            gender="female", traits=["quiet", "loyal", "stressed"],
             goals=[{"goal": "Figure out whether to quit her job", "priority": 0.9}],
             daily_wage=60.0,
         ),
@@ -276,7 +276,7 @@ def build_agents() -> list[Agent]:
         profile=Profile(
             id="long", name="瓏", age=52, occupation="Market Vendor",
             personality={"extraversion": 0.5, "agreeableness": 0.7, "openness": 0.5, "neuroticism": 0.3},
-            traits=["observant", "frugal", "wise"],
+            gender="male", traits=["observant", "frugal", "wise"],
             goals=[{"goal": "Quietly save enough to retire in peace", "priority": 0.7}],
             daily_wage=40.0,
             reflection_threshold=35,              # a background character -> reflects less often
@@ -306,7 +306,7 @@ def build_agents() -> list[Agent]:
         profile=Profile(
             id="kuaizheng", name="蒯政", age=61, occupation="Retired",
             personality={"extraversion": 0.3, "agreeableness": 0.8, "openness": 0.5, "neuroticism": 0.3},
-            traits=["quiet", "kind", "private"],
+            gender="male", traits=["quiet", "kind", "private"],
             goals=[{"goal": "Tend his garden well", "priority": 0.6}],
             daily_wage=42.0,   # pension
             reflection_threshold=35,

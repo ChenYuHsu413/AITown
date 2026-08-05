@@ -58,13 +58,15 @@ def time_of_day(minute: int) -> str:
 # ---- name roster (anti-hallucination) --------------------------------------
 # The town's full cast, set once at startup. Every free-text prompt lists it and
 # forbids inventing other names -- so a weak model can't turn "Lengyue" into a
-# hallucinated "楊鈺瑩". Stored as (english_pinyin, zh) pairs.
-_ROSTER: list[tuple[str, str]] = []
+# hallucinated "楊鈺瑩". Stored as (english_pinyin, zh, gender) triples; gender is
+# "" when unknown and only steers dialogue pronouns.
+_ROSTER: list[tuple[str, str, str]] = []
 
 
-def set_roster(pairs: list[tuple[str, str]]) -> None:
+def set_roster(pairs: list) -> None:
+    """Accepts (en, zh) or (en, zh, gender); missing gender is stored as ''."""
     global _ROSTER
-    _ROSTER = list(pairs)
+    _ROSTER = [(p[0], p[1], p[2] if len(p) > 2 else "") for p in pairs]
 
 
 # The town's places, (english_name, zh_name), set once at startup alongside the
@@ -80,7 +82,7 @@ def set_places(pairs: list[tuple[str, str]]) -> None:
 def roster_directive(english_only: bool = False) -> str:
     if not _ROSTER:
         return ""
-    names = ", ".join(f"{en} ({zh})" if zh and zh != en else en for en, zh in _ROSTER)
+    names = ", ".join(f"{en} ({zh})" if zh and zh != en else en for en, zh, _g in _ROSTER)
     out = (f" The only people who exist in this town are: {names}. "
            f"Refer to a person by exactly one of these names and never invent any other name.")
     if english_only:
@@ -88,8 +90,20 @@ def roster_directive(english_only: bool = False) -> str:
     return out
 
 
+def roster_gender_directive() -> str:
+    """List each resident's fixed gender so the model uses the right pronouns --
+    the sim can't fix a mis-gendered 'he'/'she' at the display layer. Empty when
+    no genders are set (older callers), so English/mock runs are unaffected."""
+    genders = [(en, zh, g) for en, zh, g in _ROSTER if g]
+    if not genders:
+        return ""
+    parts = ", ".join(f"{zh or en} is {g}" for en, zh, g in genders)
+    return (f" Each resident has a fixed gender -- use the correct pronoun and never "
+            f"call a woman 'he' or a man 'she': {parts}.")
+
+
 def roster_pairs() -> list[tuple[str, str]]:
-    return list(_ROSTER)
+    return [(en, zh) for en, zh, _g in _ROSTER]
 
 
 def dialogue_locale_directive() -> str:
@@ -100,7 +114,7 @@ def dialogue_locale_directive() -> str:
     deterministically regardless, so this is a soft steer, not the guarantee."""
     if not lang_is_zh():
         return ""
-    names = "; ".join(f"{en}={zh}" for en, zh in _ROSTER if zh and zh != en)
+    names = "; ".join(f"{en}={zh}" for en, zh, _g in _ROSTER if zh and zh != en)
     places = "; ".join(f"{en}={zh}" for en, zh in _PLACES if zh and zh != en)
     parts = []
     if names:
@@ -174,15 +188,41 @@ def dialogue_prompt(
     if b_impression:
         user += f"\n{b.profile.name}'s lasting impression of {a.profile.name}: \"{b_impression}\""
     if a_wants_to_mention:
-        user += f"\n{a.profile.name} wants to bring up: {a_wants_to_mention}"
+        # A confrontation opener is a private worry raised to someone's face, not a
+        # line to recite: ask for it in the confronter's own words.
+        if is_confrontation:
+            user += (f"\n{a.profile.name} wants to raise this with {b.profile.name} to their face, "
+                     f"in their own words as a direct question/accusation (do NOT read it out "
+                     f"verbatim): {a_wants_to_mention}")
+        else:
+            user += f"\n{a.profile.name} wants to bring up: {a_wants_to_mention}"
     if b_wants_to_mention:
         user += f"\n{b.profile.name} wants to bring up: {b_wants_to_mention}"
-    # Confiding is private and vulnerable, not gossip -- the model should play the
-    # trust in the moment, not just state the fact.
+    # Confiding is private and vulnerable, not gossip. Feed the secret only as
+    # BACKGROUND: the character must voice it themselves, in the first person and
+    # addressing the listener directly -- never quote the third-person description.
     if a_confide:
-        user += f"\n{a.profile.name} trusts {b.profile.name} enough to quietly confide something personal: {a_confide}"
+        user += (f"\n{a.profile.name} has decided to open up to {b.profile.name} about a private "
+                 f"worry. The secret (background, do NOT quote verbatim): {a_confide}. "
+                 f"{a.profile.name} should express this in the first person, in their own words, "
+                 f"naturally addressing {b.profile.name} directly.")
     if b_confide:
-        user += f"\n{b.profile.name} trusts {a.profile.name} enough to quietly confide something personal: {b_confide}"
+        user += (f"\n{b.profile.name} has decided to open up to {a.profile.name} about a private "
+                 f"worry. The secret (background, do NOT quote verbatim): {b_confide}. "
+                 f"{b.profile.name} should express this in the first person, in their own words, "
+                 f"naturally addressing {a.profile.name} directly.")
+    # A general coherence rule for every conversation: the two speakers are
+    # face-to-face, so neither may talk about the other in the third person.
+    coherence = (
+        " Keep the exchange internally consistent: the two speakers are together, so a "
+        "speaker must never refer to the person they are talking to in the third person "
+        "-- they address each other directly as \"you\"."
+    )
+    # Confide / confront are emotionally significant beats: a one-line version reads
+    # as broken, so ask for real back-and-forth.
+    intimate = bool(a_confide or b_confide or is_confrontation)
+    depth = (" This is an emotionally significant exchange: write at least 4 turns so it "
+             "builds naturally and never lands as a single line.") if intimate else ""
     system = (
         "You write short, natural conversations for a life simulation. "
         "Ground it in the time of day, the place, each character's current mood and "
@@ -208,7 +248,8 @@ def dialogue_prompt(
         )
     return [
         {"role": "system",
-         "content": system + roster_directive() + _lang_directive() + dialogue_locale_directive()},
+         "content": (system + coherence + roster_directive() + roster_gender_directive()
+                     + depth + _lang_directive() + dialogue_locale_directive())},
         {"role": "user", "content": user},
     ]
 
