@@ -224,10 +224,16 @@ class LLMRouter:
         # ---- no_floor: withhold the mock so failure RAISES ------
         # The caller (dialogue/reflection) wants an exception it can wait-and-retry on,
         # not a canned mock line. Drop the mock provider so a total chain failure falls
-        # through to ProvidersExhausted below. Skipped when the budget guard already
-        # collapsed us to the mock floor -- out of money, mock is the only option left.
+        # through to ProvidersExhausted below. Only do this when a REAL provider remains:
+        # in mock-only mode (no keys) there is nothing to retry, so serve mock as before
+        # -- otherwise every call would spin the caller's retry loop for nothing. Also
+        # skipped under budget exhaustion (mock is the only affordable option left).
+        withhold_floor = False
         if no_floor and not budget_hit:
-            chain = [p for p in chain if p.name != "mock"]
+            real = [p for p in chain if p.name != "mock"]
+            if real:
+                chain = real
+                withhold_floor = True
 
         last_err: Exception | None = None
         floor: tuple[LLMProvider, LLMResult] | None = None  # best-effort output if all gates fail
@@ -274,8 +280,9 @@ class LLMRouter:
 
         # Nothing cleared the gates. A no_floor caller wants to wait and retry the
         # whole chain rather than serve canned filler, so signal exhaustion instead
-        # of returning the soft floor.
-        if no_floor and not budget_hit:
+        # of returning the soft floor (only when we actually withheld a real chain's
+        # mock -- never in mock-only mode, which has no floor to withhold).
+        if withhold_floor:
             raise ProvidersExhausted(
                 f"all real providers failed the gate for task '{task}': {last_err}")
 

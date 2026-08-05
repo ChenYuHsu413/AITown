@@ -57,7 +57,20 @@ try:
     DIALOGUE_RETRY_WAIT_S = float(os.environ.get("AI_TOWN_DIALOGUE_RETRY_WAIT", "20") or "20")
 except ValueError:
     DIALOGUE_RETRY_WAIT_S = 20.0
-REFLECT_TIMEOUT_S = 45.0       # wall-clock: a reflection past this is abandoned (no insight this round)
+REFLECT_TIMEOUT_S = 45.0       # wall-clock: a reflection past this is abandoned (retried, see below)
+# Reflection patient retry (task 3, mirrors dialogue): belief/secret/life_decision
+# quality must never be a canned mock line, so a whole-chain failure brews a pause and
+# re-runs the chain. If every round is still exhausted, the reflection is simply SKIPPED
+# this round (no mock floor) -- unlike a dialogue, a missed reflection just happens again
+# once weight re-accumulates, so "no reflection" beats "a canned one".
+try:
+    REFLECT_RETRY_ROUNDS = int(os.environ.get("AI_TOWN_REFLECT_RETRY_ROUNDS", "2"))
+except ValueError:
+    REFLECT_RETRY_ROUNDS = 2
+try:
+    REFLECT_RETRY_WAIT_S = float(os.environ.get("AI_TOWN_REFLECT_RETRY_WAIT", "20") or "20")
+except ValueError:
+    REFLECT_RETRY_WAIT_S = 20.0
 # Sim-minutes the two parties are held while the exchange generates. Also the
 # self-heal window on resume: a snapshot taken mid-conversation restores the pair
 # as busy_until = init + this, so they free themselves within it after a restart
@@ -807,18 +820,33 @@ class SimulationEngine:
 
     async def _reflect_task(self, agent: Agent, at_minute: int) -> None:
         """Background reflection: generate insights/beliefs/new-secret/life-decision,
-        then publish them (stamped at ``at_minute``). Bounded and timeout-guarded;
-        always clears the per-agent in-flight guard."""
+        then publish them (stamped at ``at_minute``). Patient retry (task 3): reflection
+        runs no_floor, so a whole-chain failure raises ``ProvidersExhausted``; rather
+        than accept a canned mock, brew ``REFLECT_RETRY_WAIT_S`` and re-run the chain,
+        up to ``REFLECT_RETRY_ROUNDS`` extra rounds. If every round is still exhausted,
+        the reflection is SKIPPED this round -- no mock floor -- since a missed
+        reflection simply recurs once weight re-accumulates. Always clears the per-agent
+        in-flight guard."""
         insights: list[str] = []
         beliefs: list[dict] = []
         secret_born = False
         romance_events: list[dict] = []
+        rounds = 1 + max(0, REFLECT_RETRY_ROUNDS)
         try:
-            async with self._reflect_sem:
-                insights, beliefs, secret_born, romance_events = await asyncio.wait_for(
-                    self.decisions.reflect(agent, self.world, at_minute), timeout=REFLECT_TIMEOUT_S)
-        except Exception:
-            pass  # a hiccup/timeout just means no reflection this round
+            for attempt in range(rounds):
+                try:
+                    async with self._reflect_sem:
+                        insights, beliefs, secret_born, romance_events = await asyncio.wait_for(
+                            self.decisions.reflect(agent, self.world, at_minute), timeout=REFLECT_TIMEOUT_S)
+                    break  # a real, gate-passing reflection
+                except (ProvidersExhausted, asyncio.TimeoutError):
+                    if attempt < rounds - 1:
+                        await asyncio.sleep(REFLECT_RETRY_WAIT_S)   # brew, then re-run the chain
+                        continue
+                    print(f"[reflect] chain exhausted after {rounds} rounds; skipping "
+                          f"{agent.id}'s reflection this round (no canned floor)", flush=True)
+                except Exception:
+                    break  # unexpected error -> no reflection this round, don't spin
         finally:
             self._reflecting.discard(agent.id)
         for ev in romance_events:      # a proposal that just settled into partnership

@@ -1435,6 +1435,10 @@ class DecisionEngine:
             sim_minute=now,
             schema={"type": "object"},
             max_tokens=300 if builders.lang_is_zh() else 200,
+            # belief/secret/life_decision quality must never be a canned mock line:
+            # a total chain failure raises ProvidersExhausted so the engine can brew a
+            # pause and retry rather than settle for the floor (task 3).
+            no_floor=True,
         )
         insights: list[str] = []
         belief_events: list[dict] = []
