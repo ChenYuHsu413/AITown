@@ -836,11 +836,17 @@ async def relationships() -> JSONResponse:
                 continue  # never interacted -> no edge
             f_ab, t_ab, c_ab = (rab.friendship, rab.trust, rab.conflict) if rab else (30.0, 30.0, 0.0)
             f_ba, t_ba, c_ba = (rba.friendship, rba.trust, rba.conflict) if rba else (30.0, 30.0, 0.0)
+            r_ab = rab.romance if rab else 0.0
+            r_ba = rba.romance if rba else 0.0
+            stage = (rab.romance_stage if rab and rab.romance_stage != "none"
+                     else rba.romance_stage if rba else "none")
             edges.append({
                 "a": aid, "b": bid,
                 "friendship_ab": round(f_ab), "friendship_ba": round(f_ba),
                 "trust_ab": round(t_ab), "trust_ba": round(t_ba),
                 "conflict_max": round(max(c_ab, c_ba)),
+                "romance_ab": round(r_ab), "romance_ba": round(r_ba),
+                "romance_stage": stage,
             })
     return JSONResponse({"nodes": nodes, "edges": edges})
 
@@ -896,6 +902,8 @@ async def agent_detail(agent_id: str) -> JSONResponse:
                     "friendship": round(r.friendship),
                     "trust": round(r.trust),
                     "conflict": round(r.conflict),
+                    "romance": round(r.romance),
+                    "romance_stage": r.romance_stage,
                 }
                 for k, r in a.relationships.items()
             ],

@@ -92,6 +92,9 @@ _EN_TEMPLATES = {
     "week_close": "The week's books were settled",
     "transition": "{actor}'s life took a turn: {text}",
     "milestone": "{actor} and {target} — {text}",
+    "romance_dating": "{actor} and {target} are together now",
+    "romance_rejected": "{actor} confessed to {target}, but it wasn't mutual",
+    "romance_partners": "{actor} and {target} made it official",
 }
 
 # The town's living history: the notable beats worth remembering (see Sim.chronicle
@@ -101,12 +104,14 @@ CHRONICLE_VERBS = {
     "confide", "confronted", "landmark_done", "belief", "broke",
     "rain_start", "rain_end", "festival_start", "festival_end",
     "leak", "secret_born", "week_close", "transition", "milestone",
+    "romance_dating", "romance_rejected", "romance_partners",
 }
 CHRONICLE_ICONS = {
     "confide": "🤫", "confronted": "⚖️", "landmark_done": "🎨", "belief": "💭",
     "broke": "💸", "rain_start": "🌧️", "rain_end": "🌤️", "festival_start": "🎉",
     "festival_end": "🎏", "leak": "🕳️", "secret_born": "🔒", "week_close": "📅",
     "transition": "🔀", "milestone": "🤝",
+    "romance_dating": "💕", "romance_rejected": "💔", "romance_partners": "💍",
 }
 
 
@@ -352,6 +357,9 @@ class SimulationEngine:
             self._publish("system", "week_close", detail=detail)
         # Staged life changes take effect now, on the clean day boundary.
         self._apply_pending_transitions()
+        # Romance spark judged once per day per resident (see decision._maybe_ignite).
+        for agent in self.world.agents.values():
+            self.decisions._maybe_ignite(agent, self.world, self.now)
 
     _TRANSITION_RIPPLE = {                        # third person, for friends' memories
         "quit_job": "quit their job",
@@ -384,6 +392,8 @@ class SimulationEngine:
             if tmpl is None or not tmpl.precondition(agent, self.world):
                 continue                                  # conditions changed overnight -> drop it
             tmpl.effects(agent, self.world)
+            if tid == "quit_job":   # a fresh start opens them up a little (romance hook)
+                agent.profile.romantic_inclination = max(agent.profile.romantic_inclination, 0.55)
             # Goal rewrite: drop the goals this change makes moot, install the new one.
             agent.profile.goals = [
                 g for g in agent.profile.goals
@@ -429,6 +439,7 @@ class SimulationEngine:
         since = self._last_decision_at.get(agent.id, self.now - 1)
         obs = self.world.observe(agent, since_minute=since, now=self.now)
         self._last_decision_at[agent.id] = self.now
+        self._accrue_copresence(agent, self.now - since)   # romance-spark fuel
 
         decision = await self.decisions.decide(agent, self.world, obs, self.now)
 
@@ -459,12 +470,16 @@ class SimulationEngine:
                         "action", "landmark_done", actor=agent,
                         location_id=done["location"], text=done["text"],
                     )
+                    # Finishing the installation opens Aisi up a little (romance hook).
+                    agent.profile.romantic_inclination = max(agent.profile.romantic_inclination, 0.50)
             if decision.action == "move":
                 self._interrupt_colocated(agent)
 
         # Reflection check (Level 3) fires only on accumulated importance. It also
         # distills lasting beliefs from repeated experience (semantic memory).
-        insights, beliefs, secret_born = await self.decisions.maybe_reflect(agent, self.world, self.now)
+        insights, beliefs, secret_born, romance_events = await self.decisions.maybe_reflect(agent, self.world, self.now)
+        for ev in romance_events:      # a proposal that just settled into partnership
+            self._publish_romance(ev)
         if secret_born:  # content-free beat: the town notes they're holding something back
             self._publish("reflection", "secret_born", actor=agent, location_id=agent.state.location)
         for ins in insights:
@@ -492,10 +507,11 @@ class SimulationEngine:
             # Partner got occupied since the decision; retry shortly.
             self.scheduler.schedule(a.id, self.now + 5)
             return
-        turns, signals, shared_rumors, confrontation, confided, milestone = await self.decisions.run_conversation(
-            a, b, self.world, self.now,
-            confront_text=confront_text or None, confront_rumor_id=confront_rumor_id,
-        )
+        turns, signals, shared_rumors, confrontation, confided, milestone, romance_events = \
+            await self.decisions.run_conversation(
+                a, b, self.world, self.now,
+                confront_text=confront_text or None, confront_rumor_id=confront_rumor_id,
+            )
         a.state.current_action = "talk"
         b.state.current_action = "talk"
         duration = max(6, len(turns) * 2)
@@ -556,7 +572,29 @@ class SimulationEngine:
             )
         if milestone is not None:  # a friendship crossed a stage boundary -> a visible beat
             self._publish_milestone(a, b, milestone)
+        for ev in romance_events:  # a confession that just resolved (accepted -> dating, or turned down)
+            self._publish_romance(ev)
         self.scheduler.schedule(b.id, self.now + duration)
+
+    def _accrue_copresence(self, agent: Agent, elapsed: int) -> None:
+        """Credit the time this agent just spent co-located with other awake residents
+        toward the romance spark (see decision._maybe_ignite). A soft proxy: cheap and
+        good enough to surface pairs who are always around each other."""
+        if elapsed <= 0 or agent.state.current_action == "sleep":
+            return
+        for other in self.world.agents.values():
+            if (other.id != agent.id and other.state.location == agent.state.location
+                    and other.state.current_action != "sleep"):
+                cp = agent.state.copresence
+                cp[other.id] = cp.get(other.id, 0) + elapsed
+
+    def _publish_romance(self, ev: dict) -> None:
+        """A public romance beat: dating / rejection / partnership. (A crush stays
+        private -- it plants a secret, never a chronicle line.)"""
+        a = self.world.agents.get(ev["a"])
+        b = self.world.agents.get(ev["b"])
+        self._publish("system", ev["verb"], actor=a, target=b,
+                      location_id=a.state.location if a else "")
 
     def _publish_milestone(self, a: Agent, b: Agent, m: dict) -> None:
         """A relationship stage-change: one chronicle beat + a memory for each side.

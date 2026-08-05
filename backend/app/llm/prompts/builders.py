@@ -177,6 +177,7 @@ def dialogue_prompt(
     a_impression: str | None = None, b_impression: str | None = None,
     a_confide: str | None = None, b_confide: str | None = None,
     nearby_landmark: str | None = None,
+    confession: dict | None = None,
 ) -> list[dict]:
     scene = f"Scene: {time_hint + ' ' if time_hint else ''}at {a.state.location}.\n"
     if nearby_landmark:
@@ -216,6 +217,18 @@ def dialogue_prompt(
                  f"worry. The secret (background, do NOT quote verbatim): {b_confide}. "
                  f"{b.profile.name} should express this in the first person, in their own words, "
                  f"naturally addressing {a.profile.name} directly.")
+    # A confession scene: the outcome is already decided by the rules; the model just
+    # plays it. First-person, sincere, and it lands the way it's going to land.
+    if confession:
+        fn, tn = confession["from_name"], confession["to_name"]
+        if confession.get("accepted"):
+            user += (f"\n{fn} has decided this is the moment to confess romantic feelings to {tn}. "
+                     f"{fn} opens up in the first person -- sincere, a little nervous. {tn} feels the same "
+                     f"way and, across the exchange, happily says yes. Let it land warmly.")
+        else:
+            user += (f"\n{fn} has decided this is the moment to confess romantic feelings to {tn}. "
+                     f"{fn} opens up in the first person -- sincere and nervous. But {tn} does not feel the "
+                     f"same and gently, awkwardly turns {fn} down. Keep it kind, never cruel.")
     # A general coherence rule for every conversation: the two speakers are
     # face-to-face, so neither may talk about the other in the third person.
     coherence = (
@@ -225,7 +238,7 @@ def dialogue_prompt(
     )
     # Confide / confront are emotionally significant beats: a one-line version reads
     # as broken, so ask for real back-and-forth.
-    intimate = bool(a_confide or b_confide or is_confrontation)
+    intimate = bool(a_confide or b_confide or is_confrontation or confession)
     depth = (" This is an emotionally significant exchange: write at least 4 turns so it "
              "builds naturally and never lands as a single line.") if intimate else ""
     system = (

@@ -184,6 +184,8 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 .rnode-pin{fill:var(--amber);stroke:var(--paper);stroke-width:1;display:none}
 .rnode.pinned .rnode-pin{display:block}
 .redge{stroke-linecap:round}
+.rromance{stroke-linecap:round;fill:none;pointer-events:none}   /* romance overlay: pink, atop friendship */
+.rmark{font-size:11px;text-anchor:middle;dominant-baseline:central;pointer-events:none}
 .redge-hit{stroke:transparent;stroke-width:12;fill:none;cursor:pointer}
 #reltip{position:absolute;pointer-events:none;background:var(--ink);color:var(--paper);font-family:var(--mono);
   font-size:10px;line-height:1.55;padding:5px 8px;border-radius:5px;white-space:nowrap;z-index:5}
@@ -240,6 +242,8 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 .bar{height:7px;background:var(--paper);border:1px solid var(--line);border-radius:4px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--moss)}
 .bar.amber i{background:var(--amber)}
+.bar.pink i{background:#E86A9A}
+.rom-lbl{font-weight:400}
 .kv{display:grid;grid-template-columns:86px 1fr 34px;gap:8px;align-items:center;padding:3px 14px;font-size:12px}
 .kv b{font-weight:500}
 .mem{padding:4px 14px;font-size:12px;border-bottom:1px dashed var(--line)}
@@ -498,7 +502,7 @@ let LOCS={}, AGENTS={}, selected=null, LOC_LIST=[], ECON=null, AWAY=null;
 let CHRON=[], chronOpen=false;      // chronicle state (declared early: applyLang() renders it during init)
 const CHRON_VERBS=new Set(['confide','confronted','landmark_done','belief','broke',
   'rain_start','rain_end','festival_start','festival_end','leak','secret_born','week_close',
-  'transition','milestone']);
+  'transition','milestone','romance_dating','romance_rejected','romance_partners']);
 
 /* ---------- i18n ---------- */
 const I18N={
@@ -633,6 +637,15 @@ const MILESTONE_EN={acquaintance:'are getting to know each other',friend:'became
   close:'became close friends',distant:'grew distant'};
 const MILESTONE_ZH={acquaintance:'開始互相熟識',friend:'成為了朋友',
   close:'成了摯友',distant:'漸漸疏遠了'};
+// Romance chronicle beats (ev.verb) + the inspector row icon.
+const ROMANCE_EN={romance_dating:'{a} and {b} are together now',
+  romance_rejected:'{a} confessed to {b}, but it wasn’t mutual',
+  romance_partners:'{a} and {b} made it official'};
+const ROMANCE_ZH={romance_dating:'{a} 和 {b} 在一起了',
+  romance_rejected:'{a} 向 {b} 告白,卻沒能兩情相悅',
+  romance_partners:'{a} 和 {b} 決定定下來了'};
+const ROMANCE_ICON={romance_dating:'💕',romance_rejected:'💔',romance_partners:'💍'};
+function romanceIcon(stage){ return ({crushing:'💗',dating:'💕',partners:'💍'})[stage]||'💗'; }
 // Memory-placeholder resolution: {agent:id}/{loc:id}/{landmark:id} -> current-language
 // names. Landmarks keyed by id here (memory text uses ids). Unknown ids fall through.
 const LANDMARK_DISP={installation:{zh:'互動燈光裝置',en:'the interactive light installation'}};
@@ -687,6 +700,9 @@ const EV_TMPL={
     say:(a,l,tg,sp)=>`💬 ${a}: ${sp}`, insight:(a,l,tg,sp)=>`💭 ${a}: ${sp}`,
     transition:(a,l,tg,sp)=>`🔀 ${a} ${TRANSITION_EN[sp]||sp}`,
     milestone:(a,l,tg,sp)=>`${sp==='distant'?'💔':'🤝'} ${a} and ${tg} ${MILESTONE_EN[sp]||sp}`,
+    romance_dating:(a,l,tg)=>`💕 ${ROMANCE_EN.romance_dating.replace('{a}',a).replace('{b}',tg)}`,
+    romance_rejected:(a,l,tg)=>`💔 ${ROMANCE_EN.romance_rejected.replace('{a}',a).replace('{b}',tg)}`,
+    romance_partners:(a,l,tg)=>`💍 ${ROMANCE_EN.romance_partners.replace('{a}',a).replace('{b}',tg)}`,
   },
   zh:{
     sleep:(a,l)=>`${a} 在 ${l} 就寢`, eat:(a,l)=>`${a} 在 ${l} 用餐`,
@@ -706,6 +722,9 @@ const EV_TMPL={
     say:(a,l,tg,sp)=>`💬 ${a}：${dialogueSubst(sp)}`, insight:(a,l,tg,sp)=>`💭 ${a}：${sp}`,
     transition:(a,l,tg,sp)=>`🔀 ${a} ${TRANSITION_ZH[sp]||sp}`,
     milestone:(a,l,tg,sp)=>`${sp==='distant'?'💔':'🤝'} ${a} 與 ${tg} ${MILESTONE_ZH[sp]||sp}`,
+    romance_dating:(a,l,tg)=>`💕 ${ROMANCE_ZH.romance_dating.replace('{a}',a).replace('{b}',tg)}`,
+    romance_rejected:(a,l,tg)=>`💔 ${ROMANCE_ZH.romance_rejected.replace('{a}',a).replace('{b}',tg)}`,
+    romance_partners:(a,l,tg)=>`💍 ${ROMANCE_ZH.romance_partners.replace('{a}',a).replace('{b}',tg)}`,
   },
 };
 let LANG=localStorage.getItem('lang')||(navigator.language&&navigator.language.startsWith('zh')?'zh':'en');
@@ -1291,7 +1310,8 @@ async function refreshInspector(id,scroll){
     <div class="kv"><b>${t('doing')}</b><span>${actName(a.state.action)} @ ${locByEn(a.state.location)}</span><span></span></div>
     <div class="eyebrow">${t('relationships')}</div>
     ${a.relationships.map(r=>`
-      <div class="kv"><b>${agentName(r.id,r.name)}</b><div class="bar amber"><i style="width:${r.friendship}%"></i></div><span>${r.friendship}</span></div>`).join('')||`<div class="placeholder">${t('noRelationships')}</div>`}
+      <div class="kv"><b>${agentName(r.id,r.name)}</b><div class="bar amber"><i style="width:${r.friendship}%"></i></div><span>${r.friendship}</span></div>`
+      +((r.romance||0)>0?`<div class="kv"><b class="rom-lbl">${romanceIcon(r.romance_stage)}</b><div class="bar pink"><i style="width:${r.romance}%"></i></div><span>${r.romance}</span></div>`:'')).join('')||`<div class="placeholder">${t('noRelationships')}</div>`}
     <div class="eyebrow">${t('beliefsTitle')}</div>
     ${(a.beliefs&&a.beliefs.length)?a.beliefs.map(b=>{const c=Math.round(b.confidence*100);return `
       <div class="blf"><div class="blf-top"><b></b><span class="blf-conf">${c}%</span></div>
@@ -1729,10 +1749,12 @@ function renderPositions(){
     let dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy)||1, ux=dx/d, uy=dy/d;
     const r=Math.max(0,Math.min(RG_EDGE_R, d/2-1));               // retract endpoints to the node body
     const x1=a.x+ux*r, y1=a.y+uy*r, x2=b.x-ux*r, y2=b.y-uy*r;
-    for(const ln of [e.line,e.hit]){
+    for(const ln of [e.line,e.hit,e.rline]){
+      if(!ln) continue;
       ln.setAttribute('x1',x1.toFixed(1)); ln.setAttribute('y1',y1.toFixed(1));
       ln.setAttribute('x2',x2.toFixed(1)); ln.setAttribute('y2',y2.toFixed(1));
     }
+    if(e.rmark){ e.rmark.setAttribute('x',((x1+x2)/2).toFixed(1)); e.rmark.setAttribute('y',((y1+y2)/2-1).toFixed(1)); }
   }
 }
 function renderEdgeStyles(){                                       // visual attrs from live values
@@ -1746,12 +1768,27 @@ function renderEdgeStyles(){                                       // visual att
     e.line.setAttribute('stroke',conflict?'#C0503A':(f>=55?'#5F7D5B':'#9aa89b'));
     e.line.setAttribute('stroke-dasharray',asym?'4 3':'none');     // dashed = lopsided relationship
     e.line.setAttribute('stroke-opacity','.85');
+    // Romance overlay (pink): solid + 💕/💍 once dating/partners; a one-sided crush
+    // shows as a faint dashed pink (the god's-eye sees it; the town doesn't).
+    if(e.rline){
+      const stg=d.romance_stage||'none', rmax=Math.max(d.romance_ab||0,d.romance_ba||0);
+      if(stg==='dating'||stg==='partners'){
+        e.rline.setAttribute('stroke','#E86A9A'); e.rline.setAttribute('stroke-opacity','.9');
+        e.rline.setAttribute('stroke-width',(1.8+rmax/100*3).toFixed(2)); e.rline.setAttribute('stroke-dasharray','none');
+        e.rmark.textContent=stg==='partners'?'💍':'💕';
+      } else if(stg==='crushing'||rmax>=20){
+        e.rline.setAttribute('stroke','#E86A9A'); e.rline.setAttribute('stroke-opacity','.45');
+        e.rline.setAttribute('stroke-width','1.6'); e.rline.setAttribute('stroke-dasharray','2 4');
+        e.rmark.textContent='';
+      } else { e.rline.setAttribute('stroke','none'); e.rmark.textContent=''; }
+    }
   }
 }
 function newEdgeEl(ed){
   const g=document.createElementNS(SVGNS,'g'); g.setAttribute('class','redge-g');
-  g.innerHTML=`<line class="redge"/><line class="redge-hit"/>`;
-  const e={ai:RG.idx[ed.a],bi:RG.idx[ed.b],data:ed,line:g.querySelector('.redge'),hit:g.querySelector('.redge-hit')};
+  g.innerHTML=`<line class="redge"/><line class="rromance"/><line class="redge-hit"/><text class="rmark"></text>`;
+  const e={ai:RG.idx[ed.a],bi:RG.idx[ed.b],data:ed,line:g.querySelector('.redge'),hit:g.querySelector('.redge-hit'),
+    rline:g.querySelector('.rromance'),rmark:g.querySelector('.rmark')};
   const tip=ev=>showRelTip(e,ev);
   e.hit.addEventListener('mousemove',tip); e.hit.addEventListener('mouseenter',tip);
   e.hit.addEventListener('mouseleave',hideRelTip);

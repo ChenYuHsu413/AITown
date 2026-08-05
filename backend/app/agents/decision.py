@@ -31,6 +31,7 @@ from ..llm.router import LLMRouter
 from ..social.rumors import RumorRegistry
 from ..social.secrets import SecretRegistry
 from ..world.world import Observation, World
+from . import romance as romance_mod
 from . import transitions as transitions_mod
 from .agent import Agent
 from .core import Belief, MemoryItem
@@ -492,6 +493,9 @@ class DecisionEngine:
         p = 1.0 if f >= SOCIAL_TIER_FRIEND else 0.6 if f >= SOCIAL_TIER_ACQUAINT else 0.3
         if agent.profile.extraversion < INTROVERT_EXTRAVERSION:
             p *= 0.7
+        # Post-rejection awkwardness: for a week the pair can barely face each other.
+        if agent.state.awkward_until.get(partner_id, -1) >= now // (24 * 60):
+            p *= romance_mod.AWKWARD_TALK_MULT
         if p >= 1.0:
             return True
         seed = int(hashlib.sha256(f"talk|{agent.id}|{partner_id}|{now}".encode()).hexdigest()[:8], 16)
@@ -780,6 +784,15 @@ class DecisionEngine:
         confide_fwd = self._maybe_confide(a, b, now)
         confide_rev = self._maybe_confide(b, a, now)
         confided = [c for c in (confide_fwd, confide_rev) if c]
+        # Confession: if either has resolved to confess to the other, this solo scene
+        # becomes it. The outcome is settled by the rules now; the scene just plays it.
+        confession = None
+        if a.state.pending_confession == b.id:
+            confession = {"from": a.id, "to": b.id, "from_name": a.name, "to_name": b.name,
+                          "accepted": b.rel(a.id).romance >= romance_mod.ACCEPT_ROMANCE}
+        elif b.state.pending_confession == a.id:
+            confession = {"from": b.id, "to": a.id, "from_name": b.name, "to_name": a.name,
+                          "accepted": a.rel(b.id).romance >= romance_mod.ACCEPT_ROMANCE}
         a_mem = await a.memory.retrieve_async(b.name, k=3)
         b_mem = await b.memory.retrieve_async(a.name, k=3)
         # A held impression of the other person rides into the dialogue context, so
@@ -791,7 +804,7 @@ class DecisionEngine:
         # router's same-provider retry and, failing that, the fallback chain (the
         # mock floor always emits >=4 for these) -- better a model swap than a
         # one-line heart-to-heart. Ordinary chat keeps the base structural gate.
-        intimate = is_confront or bool(confide_fwd or confide_rev)
+        intimate = is_confront or bool(confide_fwd or confide_rev) or confession is not None
         def _validate(r: object) -> bool:
             if not _dialogue_ok(r):
                 return False
@@ -811,6 +824,7 @@ class DecisionEngine:
                 a_confide=confide_fwd["text"] if confide_fwd else None,
                 b_confide=confide_rev["text"] if confide_rev else None,
                 nearby_landmark=self._nearby_landmark(world, a.state.location),
+                confession=confession,
             ),
             agent_id=a.id,
             sim_minute=now,
@@ -846,10 +860,99 @@ class DecisionEngine:
         b.state.last_talk_minute[a.id] = now
         milestone = self._detect_milestone(a, b, f_before, now)
 
+        # Romance: a confession settles by rule (its own scene just played); any
+        # other warm exchange nudges the track and may tip a side into crushing.
+        romance_events: list[dict] = []
+        if confession is not None:
+            romance_events.append(self._settle_confession(world, confession, now))
+        else:
+            self._grow_romance(a, b, world, signals["sentiment"], bool(confided), now)
+
         confrontation = None
         if is_confront:
             confrontation = self._settle_confrontation(a, b, world, confront_rumor_id, parsed, now)
-        return turns, signals, shared_rumors, confrontation, confided, milestone
+        return turns, signals, shared_rumors, confrontation, confided, milestone, romance_events
+
+    # ---- romance (an independent track; see romance.py) --------------
+
+    @staticmethod
+    def _romantic_setting(world: World, location_id: str, now: int) -> bool:
+        """A festival anywhere, or the park after dark -- settings that amplify romance."""
+        if world.effect_active("festival"):
+            return True
+        loc = world.locations.get(location_id)
+        if loc is None or loc.kind != "park":
+            return False
+        h = (now % (24 * 60)) // 60
+        return h >= 19 or h < 6
+
+    @staticmethod
+    def _set_pair_stage(a: Agent, b: Agent, stage: str, now: int) -> None:
+        for x, y in ((a, b), (b, a)):
+            r = x.rel(y.id)
+            r.romance_stage = stage
+            r.romance_stage_minute = now
+
+    def _grow_romance(self, a: Agent, b: Agent, world: World, sentiment: float,
+                      confided: bool, now: int) -> None:
+        """Warm exchanges between people already friends nudge romance up (symmetric),
+        independent of the friendship number itself. A side crossing the crush line
+        quietly enters 'crushing'."""
+        if not romance_mod.eligible_pair(a, b):
+            return
+        rel_ab, rel_ba = a.rel(b.id), b.rel(a.id)
+        if not (sentiment >= romance_mod.GROW_SENTIMENT_MIN or confided):
+            return
+        if rel_ab.friendship < romance_mod.GROW_FRIEND_MIN or rel_ba.friendship < romance_mod.GROW_FRIEND_MIN:
+            return
+        setting = self._romantic_setting(world, a.state.location, now)
+        gain = romance_mod.growth(a, b, sentiment, setting, confided)
+        if gain <= 0:
+            return
+        for r in (rel_ab, rel_ba):
+            r.romance = min(100.0, r.romance + gain)
+        self._maybe_crush(a, b, now)
+        self._maybe_crush(b, a, now)
+
+    def _maybe_crush(self, x: Agent, y: Agent, now: int) -> None:
+        """x's romance for y past the crush line -> the pair enters 'crushing' (once)
+        and x starts quietly keeping the feeling -- a real secret (about=y) that can
+        be confided, leaked into a rumor, and find its way back to y."""
+        rel = x.rel(y.id)
+        if rel.romance < romance_mod.CRUSH or rel.romance_stage != "none":
+            return
+        self._set_pair_stage(x, y, "crushing", now)
+        if not any(s.about == y.id and not s.resolved and "feelings" in s.text.lower()
+                   for s in self.secrets.secrets_of(x.id)):
+            s = self.secrets.add(x.id, romance_mod.crush_secret_text(y.id.capitalize()), 0.7, now)
+            s.about = y.id
+
+    def _settle_confession(self, world: World, conf: dict, now: int) -> dict:
+        """Apply a confession's rule-decided outcome. Accept -> the pair starts dating;
+        reject -> the confessor's romance takes a hit, a sour mood, and a week of
+        awkwardness dampening their talk rate. Returns a chronicle descriptor."""
+        a = world.agents[conf["from"]]
+        b = world.agents[conf["to"]]
+        a.state.pending_confession = ""
+        day = now // (24 * 60)
+        if conf["accepted"]:
+            self._set_pair_stage(a, b, "dating", now)
+            a.rel(b.id).romance = max(a.rel(b.id).romance, romance_mod.CONFESS_ROMANCE)
+            a.memory.add(MemoryItem(minute=now, importance=8, kind="reflection",
+                text=f"I confessed to {{agent:{b.id}}} -- and we're together now."))
+            b.memory.add(MemoryItem(minute=now, importance=8, kind="reflection",
+                text=f"{{agent:{a.id}}} confessed to me, and I said yes."))
+            return {"verb": "romance_dating", "a": a.id, "b": b.id}
+        rel = a.rel(b.id)
+        rel.romance = max(0.0, rel.romance - romance_mod.REJECT_ROMANCE_HIT)
+        a.state.mood = "upset"
+        a.state.awkward_until[b.id] = day + romance_mod.AWKWARD_DAYS
+        b.state.awkward_until[a.id] = day + romance_mod.AWKWARD_DAYS
+        a.memory.add(MemoryItem(minute=now, importance=7, kind="reflection",
+            text=f"I confessed to {{agent:{b.id}}}, but the feeling wasn't mutual."))
+        b.memory.add(MemoryItem(minute=now, importance=8, kind="reflection",
+            text=f"{{agent:{a.id}}} confessed to me; I had to turn them down as gently as I could."))
+        return {"verb": "romance_rejected", "a": a.id, "b": b.id}
 
     def _detect_milestone(self, a: Agent, b: Agent, f_before: float, now: int) -> dict | None:
         """A conversation that moves ``a``'s friendship for ``b`` across a stage
@@ -1033,18 +1136,19 @@ class DecisionEngine:
         # Individualized: quiet background characters (Grace, Mei) reflect less
         # often, trimming their smart-tier spend without silencing the leads.
         if agent.memory.importance_since_reflection < agent.profile.reflection_threshold:
-            return [], [], False
+            return [], [], False, []
         day_start = now - (now % (24 * 60))
         events = _resolve_mems(agent.memory.today(day_start), world)
         # The agent's own still-open worries ride into the reflection so it can judge
         # which, if any, recent experience has laid to rest.
         open_secrets = self.secrets.active_secrets_of(agent.id)
-        # Life changes are only offered when the cooldown has lapsed and none is
-        # already staged -- so reflection can't queue two at once.
+        # Life decisions (a transition, a confession, a proposal) are offered only
+        # when nothing is already staged -- reflection can't queue two at once.
         offer = []
-        if (not agent.state.pending_transition
-                and now // (24 * 60) - agent.state.last_transition_day >= transitions_mod.TRANSITION_COOLDOWN_DAYS):
-            offer = [(t.id, t.label) for t in transitions_mod.available_for(agent, world)]
+        if not agent.state.pending_transition and not agent.state.pending_confession:
+            if now // (24 * 60) - agent.state.last_transition_day >= transitions_mod.TRANSITION_COOLDOWN_DAYS:
+                offer += [(t.id, t.label) for t in transitions_mod.available_for(agent, world)]
+            offer += self._romance_options(agent, world, now)
         res = await self.router.generate(
             task="reflection",
             messages=builders.reflection_prompt(agent, events, open_secrets, offer or None),
@@ -1056,17 +1160,18 @@ class DecisionEngine:
         insights: list[str] = []
         belief_events: list[dict] = []
         secret_born = False
+        romance_events: list[dict] = []
         if isinstance(res.parsed, dict):
             insights = [str(x) for x in res.parsed.get("insights", [])]
             belief_events = self._form_beliefs(agent, world, res.parsed.get("beliefs", []), now)
             secret_born = self._maybe_new_secret(agent, world, res.parsed.get("new_secret"), now)
             self._resolve_reflected_secrets(agent, res.parsed.get("resolved_secret_ids"), open_secrets, now)
             if offer:
-                self._stage_transition(agent, world, res.parsed.get("life_decision"), now)
+                romance_events = self._stage_life_decision(agent, world, res.parsed.get("life_decision"), now)
         for ins in insights:
             agent.memory.add(MemoryItem(minute=now, text=ins, importance=5, kind="reflection"))
         agent.memory.importance_since_reflection = 0
-        return insights, belief_events, secret_born
+        return insights, belief_events, secret_born, romance_events
 
     def _resolve_reflected_secrets(self, agent: Agent, raw: object, open_secrets: list, now: int) -> None:
         """Resolve the secrets reflection judged settled. Only ids that were actually
@@ -1082,19 +1187,115 @@ class DecisionEngine:
                     agent, secret, now,
                     f"{agent.id.capitalize()} has come to terms with this; it no longer weighs on them.")
 
-    def _stage_transition(self, agent: Agent, world: World, raw: object, now: int) -> None:
-        """Record a reflection's life decision for the engine to apply at the next
-        day boundary. Re-verifies the template exists and its precondition still
-        holds; the cooldown was already checked when the option was offered."""
+    def _stage_life_decision(self, agent: Agent, world: World, raw: object, now: int) -> list[dict]:
+        """Route a reflection's life decision: a transition (staged for the next day
+        boundary), a confession (armed for the next solo talk), or a proposal (settled
+        now). Returns chronicle descriptors for anything settled immediately."""
         if not isinstance(raw, dict):
-            return
+            return []
         tid = str(raw.get("action", "")).strip()
+        reason = str(raw.get("reason", "")).strip()
         tmpl = transitions_mod.REGISTRY.get(tid)
-        if tmpl is None or agent.state.pending_transition or not tmpl.precondition(agent, world):
+        if tmpl is not None:
+            if agent.state.pending_transition or not tmpl.precondition(agent, world):
+                return []
+            agent.state.pending_transition = tid
+            agent.state.pending_transition_reason = reason
+            print(f"[transition] {agent.id} decided '{tid}' (applies next settlement)", flush=True)
+            return []
+        if tid.startswith("confess_to_"):
+            target = world.agents.get(tid[len("confess_to_"):])
+            if target is None or agent.state.pending_confession:
+                return []
+            rel = agent.rel(target.id)
+            if rel.romance < romance_mod.CONFESS_ROMANCE or rel.friendship < romance_mod.CONFESS_FRIEND:
+                return []
+            agent.state.pending_confession = target.id
+            agent.state.last_confess_day = now // (24 * 60)
+            print(f"[romance] {agent.id} resolved to confess to {target.id}", flush=True)
+            return []
+        if tid.startswith("propose_to_"):
+            return self._settle_proposal(agent, world.agents.get(tid[len("propose_to_"):]), now)
+        return []
+
+    def _romance_options(self, agent: Agent, world: World, now: int) -> list[tuple[str, str]]:
+        """Life-decision options on the romance track: confess (own romance & friendship
+        high enough, off cooldown) or propose (dating long enough)."""
+        opts: list[tuple[str, str]] = []
+        day = now // (24 * 60)
+        can_confess = (not agent.state.pending_confession
+                       and day - agent.state.last_confess_day >= romance_mod.CONFESS_COOLDOWN_DAYS)
+        for other in world.agents.values():
+            if other.id == agent.id or not romance_mod.eligible_pair(agent, other):
+                continue
+            rel = agent.rel(other.id)
+            if (can_confess and rel.romance_stage in ("none", "crushing")
+                    and rel.romance >= romance_mod.CONFESS_ROMANCE
+                    and rel.friendship >= romance_mod.CONFESS_FRIEND):
+                opts.append((f"confess_to_{other.id}", f"confess your feelings to {other.id.capitalize()}"))
+            elif (rel.romance_stage == "dating"
+                    and day - rel.romance_stage_minute // (24 * 60) >= romance_mod.DATING_TO_PARTNER_DAYS):
+                opts.append((f"propose_to_{other.id}", f"ask {other.id.capitalize()} to make it permanent"))
+        return opts
+
+    def _settle_proposal(self, a: Agent, b: Agent | None, now: int) -> list[dict]:
+        """A proposal is accepted when the other side is deep enough in (romance >= 70)
+        and they've been dating long enough. Success -> partners + a small weekend
+        together-time tweak."""
+        if b is None or a.rel(b.id).romance_stage != "dating":
+            return []
+        if b.rel(a.id).romance < romance_mod.PARTNER_ROMANCE:
+            return []
+        self._set_pair_stage(a, b, "partners", now)
+        for x, y in ((a, b), (b, a)):
+            x.memory.add(MemoryItem(minute=now, importance=8, kind="reflection",
+                text=f"{{agent:{y.id}}} and I decided to make it permanent."))
+        self._partner_routine_tweak(a, b)
+        return [{"verb": "romance_partners", "a": a.id, "b": b.id}]
+
+    @staticmethod
+    def _partner_routine_tweak(a: Agent, b: Agent) -> None:
+        """Partners drift together in the evenings: add a shared weekend park hour to
+        both (once)."""
+        from .routine import Routine, RoutineEntry
+        for x in (a, b):
+            we = list(x.routine._weekend)
+            if any(e.start == 20 * 60 + 30 and e.location == "park" for e in we):
+                continue
+            we.append(RoutineEntry(20 * 60 + 30, "rest", "park"))
+            x.routine = Routine(list(x.routine.entries), we)
+
+    def _maybe_ignite(self, agent: Agent, world: World, now: int) -> None:
+        """Organic spark: once a pair has spent enough waking time together and both
+        are open to romance, a low chance drops a 'you keep noticing them' nudge into
+        the agent's memory -- material for the next reflection and warmer talks.
+        Deterministic per (pair, day); one spark per reflection; 14-day cooldown."""
+        if agent.profile.romantic_inclination < romance_mod.IGNITE_INCL_MIN:
             return
-        agent.state.pending_transition = tid
-        agent.state.pending_transition_reason = str(raw.get("reason", "")).strip()
-        print(f"[transition] {agent.id} decided '{tid}' (applies next settlement)", flush=True)
+        day = now // (24 * 60)
+        for other in world.agents.values():
+            if (other.id == agent.id or not romance_mod.eligible_pair(agent, other)
+                    or other.profile.romantic_inclination < romance_mod.IGNITE_INCL_MIN):
+                continue
+            rel = agent.rel(other.id)
+            if rel.romance_stage != "none":
+                continue
+            if agent.state.copresence.get(other.id, 0) < romance_mod.IGNITE_MINUTES:
+                continue
+            if day - agent.state.ignite_day.get(other.id, -100) < romance_mod.IGNITE_COOLDOWN_DAYS:
+                continue
+            seed = int(hashlib.sha256(f"ignite|{agent.id}|{other.id}|{day}".encode()).hexdigest()[:8], 16)
+            if random.Random(seed).random() >= romance_mod.IGNITE_PROB:
+                continue
+            agent.state.ignite_day[other.id] = day
+            # The spark itself: time-together turns into the first flicker of romance,
+            # independent of how deep the friendship is. Conversations grow it from here.
+            rel.romance = min(100.0, rel.romance + romance_mod.IGNITE_ROMANCE_KICK)
+            self._maybe_crush(agent, other, now)
+            agent.memory.add(MemoryItem(
+                minute=now, importance=4, kind="reflection",
+                text=f"Lately I keep noticing {{agent:{other.id}}}'s presence more than I'd expect."))
+            return
 
     def _maybe_new_secret(self, agent: Agent, world: World, raw: object, now: int) -> bool:
         """Add a private matter surfaced by reflection (owner = the reflecting

@@ -36,6 +36,17 @@ SPEECH_STYLE = {
 }
 
 
+# ---- romantic inclination (2026-08 formal-server decision) ------------------
+# A single 0-1 scalar per resident = openness to a romantic relationship (NOT
+# orientation, NOT a fixed pairing -- who falls for whom is left to emerge). 0
+# would opt a character out of the line entirely. Xue/Aisi rise dynamically via
+# the life-transition hooks (quit_job -> Xue 0.55; installation done -> Aisi 0.50).
+ROMANTIC_INCLINATION = {
+    "jiji": 0.60, "azong": 0.60, "oula": 0.55, "lengyue": 0.50, "xue": 0.40,
+    "xixi": 0.35, "ange": 0.30, "aisi": 0.30, "long": 0.15, "kuaizheng": 0.10,
+}
+
+
 def build_locations() -> list[Location]:
     # 7 places on the 800x520 canvas (river hugs the left edge < x=60): two homes
     # at the top corners, the two shops mid-band as economic rivals, park + office
@@ -99,6 +110,11 @@ def build_agents() -> list[Agent]:
     )
     jiji.memory.add(MemoryItem(0, "{agent:xue} mentioned she wants to resign from her job.", importance=6))
     jiji.memory.add(MemoryItem(0, "{agent:xue} likes black coffee.", importance=2))
+    # Romance-emergence seed (the ㄐㄐ×阿總 test the formal-server checklist calls for):
+    # narrative material only, no pre-set romance value -- the mechanism must grow it.
+    jiji.memory.add(MemoryItem(
+        0, "Noticed I look forward to {agent:azong} showing up every morning more than I'd admit.",
+        importance=5, kind="reflection"))
 
     # ange (Baker) -- inherits Rosa: the rivalry with the cafe is built in.
     ange = Agent(
@@ -357,8 +373,9 @@ def build_agents() -> list[Agent]:
     _rel(xixi, "aisi", 45, 40)
 
     residents = [jiji, ange, oula, lengyue, azong, xixi, aisi, xue, long, kuaizheng]
-    for a in residents:                       # attach each resident's locked speech style
+    for a in residents:                       # attach each resident's locked speech style + inclination
         a.profile.speech_style = SPEECH_STYLE.get(a.id, "")
+        a.profile.romantic_inclination = ROMANTIC_INCLINATION.get(a.id, 0.45)
     return residents
 
 

@@ -42,7 +42,10 @@ if TYPE_CHECKING:
 #             state dict) plus the mutable profile (occupation/wage/goals) and the
 #             live routine, so an applied change survives a resume. Older snapshots
 #             keep the seed profile/routine.
-SCHEMA_VERSION = 8
+#   v8 -> v9: romance -- relationship romance/romance_stage + per-agent copresence/
+#             confession/awkward state (ride in the existing dicts) and the mutable
+#             romantic_inclination. Older snapshots load with romance at 0.
+SCHEMA_VERSION = 9
 
 
 # ---- capture -------------------------------------------------------------
@@ -82,6 +85,7 @@ def _capture_agent(agent) -> dict:
             "occupation": agent.profile.occupation,
             "daily_wage": agent.profile.daily_wage,
             "goals": [dict(g) for g in agent.profile.goals],
+            "romantic_inclination": agent.profile.romantic_inclination,   # mutated by life-change hooks
         },
         "routine": {
             "weekday": [[e.start, e.action, e.location] for e in r.entries],
@@ -166,6 +170,8 @@ def _restore_agent(agent, adata: dict) -> None:
         agent.profile.daily_wage = float(prof["daily_wage"])
     if isinstance(prof.get("goals"), list):
         agent.profile.goals = [dict(g) for g in prof["goals"] if isinstance(g, dict)]
+    if "romantic_inclination" in prof:               # v9+; older snapshots keep the seed value
+        agent.profile.romantic_inclination = float(prof["romantic_inclination"])
 
     rt = adata.get("routine") or {}                  # v8+; a transitioned routine rides along
     if isinstance(rt.get("weekday"), list) and rt["weekday"]:

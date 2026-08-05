@@ -20,6 +20,7 @@ class Profile:
     personality: dict[str, float]           # big-five-ish, 0..1
     gender: str = ""                         # "male" | "female" -- steers dialogue pronouns only
     speech_style: str = ""                   # one-line "how they talk", injected into dialogue prompts
+    romantic_inclination: float = 0.0        # 0..1 openness to romance (0 = opts out of the line)
     traits: list[str] = field(default_factory=list)
     goals: list[dict] = field(default_factory=list)  # {"goal": str, "priority": float}
     daily_wage: float = 0.0                 # flat daily income paid at each day boundary
@@ -64,6 +65,13 @@ class AgentState:
     # Relationship milestones: sim-day a stage-change was last recorded per partner,
     # so a pair crossing a threshold back and forth doesn't spam the chronicle.
     rel_stage_day: dict[str, int] = field(default_factory=dict)  # partner_id -> sim-day of last milestone
+    # Romance bookkeeping (see romance.py). co-presence minutes drive the organic
+    # "spark"; the rest are cooldowns/one-shots so the line doesn't thrash.
+    copresence: dict[str, int] = field(default_factory=dict)     # partner_id -> minutes spent co-located
+    ignite_day: dict[str, int] = field(default_factory=dict)     # partner_id -> sim-day of last spark nudge
+    awkward_until: dict[str, int] = field(default_factory=dict)  # partner_id -> sim-day the post-rejection chill lifts
+    pending_confession: str = ""            # partner_id this agent has resolved to confess to (next solo talk)
+    last_confess_day: int = -100            # sim-day of the last confession attempt (cooldown anchor)
 
 
 @dataclass

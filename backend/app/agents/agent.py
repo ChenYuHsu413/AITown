@@ -17,11 +17,17 @@ class Relationship:
     friendship: float = 30.0   # 0..100
     trust: float = 30.0
     conflict: float = 0.0
+    # Romance track -- fully independent of friendship/trust. Directional (a one-sided
+    # crush is real); the stage is pair-level (kept equal both ways). See romance.py.
+    romance: float = 0.0       # 0..100
+    romance_stage: str = "none"          # none | crushing | dating | partners
+    romance_stage_minute: int = -1       # when the current stage began
 
     def clamp(self) -> None:
         self.friendship = max(0.0, min(100.0, self.friendship))
         self.trust = max(0.0, min(100.0, self.trust))
         self.conflict = max(0.0, min(100.0, self.conflict))
+        self.romance = max(0.0, min(100.0, self.romance))
 
 
 @dataclass
