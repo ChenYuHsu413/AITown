@@ -157,9 +157,13 @@ def build_router(live: bool | None = None) -> LLMRouter:
         from .providers.openrouter_provider import OpenRouterProvider
         deepseek = OpenRouterProvider(model="deepseek/deepseek-v4-flash",
                                       input_price_per_m=0.14, output_price_per_m=0.28)
-        tr_slug = os.environ.get("AI_TOWN_TRANSLATE_MODEL", "qwen/qwen3.5-flash-02-23")
+        # Translate primary: DeepSeek too (qwen's bare-number output was retired). A
+        # SEPARATE instance from the dialogue deepseek so a translate 429 cools only
+        # translate, never sidelining dialogue's quality anchor. Translation volume is
+        # small, so the paid cost is negligible and the stability is worth it.
+        tr_slug = os.environ.get("AI_TOWN_TRANSLATE_MODEL", "deepseek/deepseek-v4-flash")
         translator = OpenRouterProvider(model=tr_slug,
-                                        input_price_per_m=0.065, output_price_per_m=0.26)
+                                        input_price_per_m=0.14, output_price_per_m=0.28)
 
         def existing(task: str, tier: str) -> list[LLMProvider]:
             return list(task_chains.get(task) or tiers[tier])

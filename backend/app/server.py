@@ -50,6 +50,19 @@ except ValueError:
     UNATTENDED_SPEED = 2.0
 AWAY_SUMMARY_MIN_SECONDS = 30 * 60.0  # only summarize an absence longer than this real-time gap
 
+# Display-layer translation retry (the "no English left on screen" policy). When a
+# translation fails the whole chain (deepseek -> gemini -> ...), the English original
+# is shown but NOT cached, and the text is queued for a background retry so it turns
+# to zh on a later panel-open without the user lifting a finger.
+try:
+    TRANSLATE_RETRY_WAIT_S = float(os.environ.get("AI_TOWN_TRANSLATE_RETRY_WAIT", "30") or "30")
+except ValueError:
+    TRANSLATE_RETRY_WAIT_S = 30.0
+try:
+    TRANSLATE_RETRY_MAX = int(os.environ.get("AI_TOWN_TRANSLATE_RETRY_MAX", "3"))
+except ValueError:
+    TRANSLATE_RETRY_MAX = 3
+
 
 class Sim:
     """Owns the engine + real-time pacing + fan-out to websockets."""
@@ -104,6 +117,14 @@ class Sim:
         # translation slips. Places longest-first so "Ferry Crossing Market" wins
         # before any shorter substring.
         self._translate_cache: dict[str, str] = {}
+        # Background translation retry/backfill queue: a text that failed to translate
+        # (English shown, uncached) is queued here and re-tried after a delay, up to
+        # TRANSLATE_RETRY_MAX times, so English self-heals to zh without user action.
+        self._tr_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._tr_attempts: dict[str, int] = {}   # text -> failed attempts so far
+        self._tr_inflight: set[str] = set()       # texts queued or awaiting requeue (dedupe)
+        self._tr_worker: asyncio.Task | None = None
+        self._tr_backfill_day: int = -1           # last sim-day the display layer was scanned
         self._name_subs = [
             (re.compile(rf"\b{re.escape(a.id.capitalize())}\b", re.IGNORECASE), a.name)
             for a in self.world.agents.values()
@@ -119,9 +140,32 @@ class Sim:
             text = pat.sub(zh, text)
         return text
 
+    async def _translate_once(self, src: str) -> str:
+        """One translation attempt over the whole chain. Returns the zh text, or ""
+        if it failed the gate / errored (so the caller can fall back + queue a retry)."""
+        try:
+            res = await self.router.generate(
+                task="translate", messages=builders.translate_prompt(src),
+                agent_id="-", sim_minute=self.engine.now,
+                schema={"type": "object"}, max_tokens=200,
+                # The router's universal gate already rejects a junk "text" (a bare
+                # number, an "ok" dodge) and falls through; this local validate is a
+                # thin echo of it for the same-provider retry.
+                validate=lambda r: isinstance(r.parsed, dict)
+                and not _is_garbage_text(r.parsed.get("text")),
+            )
+            if isinstance(res.parsed, dict):
+                cand = str(res.parsed.get("text") or "").strip()
+                if not _is_garbage_text(cand):   # never let a dodge ("ok") reach the display
+                    return cand
+        except Exception:
+            pass
+        return ""
+
     async def translate_text(self, text: str) -> str:
-        """English knowledge text -> Traditional Chinese for display. Cached by
-        text; on any failure falls back to the English original. Either way a
+        """English knowledge text -> Traditional Chinese for display. Cached by text;
+        on failure falls back to the English original AND queues a background retry so
+        the English self-heals to zh on a later panel-open (never pinned). Either way a
         deterministic pinyin->zh name pass guarantees correct resident names."""
         text = (text or "").strip()
         if not text:
@@ -138,30 +182,93 @@ class Sim:
         # Pre-substitute pinyin -> zh names so the model can't phonetically drift
         # them (Aisi -> 阿思); it then translates the English around the fixed names.
         src = self._apply_name_subs(text)
-        zh = ""
-        try:
-            res = await self.router.generate(
-                task="translate", messages=builders.translate_prompt(src),
-                agent_id="-", sim_minute=self.engine.now,
-                schema={"type": "object"}, max_tokens=200,
-                # The router's universal gate already rejects a junk "text" (a bare
-                # number, an "ok" dodge) and falls through; this local validate is a
-                # thin echo of it for the same-provider retry.
-                validate=lambda r: isinstance(r.parsed, dict)
-                and not _is_garbage_text(r.parsed.get("text")),
-            )
-            if isinstance(res.parsed, dict):
-                cand = str(res.parsed.get("text") or "").strip()
-                if not _is_garbage_text(cand):   # never let a dodge ("ok") reach the display
-                    zh = cand
-        except Exception:
-            zh = ""
-        out = self._apply_name_subs(zh or src)   # English original is the fallback, never junk
+        zh = await self._translate_once(src)
         if zh:
-            # Only cache a REAL translation. A fallback (English) stays uncached so a
-            # later call retries the model instead of pinning junk/English forever.
-            self._translate_cache[text] = out
-        return out
+            out = self._apply_name_subs(zh)
+            self._translate_cache[text] = out       # only cache a REAL translation
+            return out
+        self._enqueue_translation(text)             # English shown now, retried in the background
+        return self._apply_name_subs(src)           # English original is the fallback, never junk
+
+    # ---- background translation retry / backfill ----------------------
+    def _enqueue_translation(self, text: str) -> None:
+        """Queue an English text for a background retry (deduped). Lazily starts the
+        worker on the running loop."""
+        text = (text or "").strip()
+        if not text or text in self._translate_cache or text in self._tr_inflight:
+            return
+        if not re.search(r"[A-Za-z]", text):   # nothing to translate
+            return
+        self._tr_inflight.add(text)
+        self._tr_queue.put_nowait(text)
+        if self._tr_worker is None or self._tr_worker.done():
+            self._tr_worker = asyncio.ensure_future(self._translation_worker())
+
+    async def _translation_worker(self) -> None:
+        """Drains the retry queue: each text gets another whole-chain attempt; on
+        success it lands in the cache (so the next panel-open shows zh), on failure it
+        is requeued after TRANSLATE_RETRY_WAIT_S, up to TRANSLATE_RETRY_MAX attempts.
+        After that it's dropped -- still uncached, so a fresh panel-open re-queues it."""
+        while True:
+            text = await self._tr_queue.get()
+            try:
+                if text in self._translate_cache:
+                    self._tr_inflight.discard(text)   # already filled in elsewhere
+                    continue
+                src = self._apply_name_subs(text)
+                zh = await self._translate_once(src)
+                if zh:
+                    self._translate_cache[text] = self._apply_name_subs(zh)
+                    self._tr_attempts.pop(text, None)
+                    self._tr_inflight.discard(text)
+                else:
+                    n = self._tr_attempts.get(text, 0) + 1
+                    self._tr_attempts[text] = n
+                    if n < TRANSLATE_RETRY_MAX:
+                        asyncio.ensure_future(self._requeue_after(text, TRANSLATE_RETRY_WAIT_S))
+                    else:  # gave up -> leave uncached; a later panel-open retries fresh
+                        self._tr_attempts.pop(text, None)
+                        self._tr_inflight.discard(text)
+            except Exception:
+                self._tr_inflight.discard(text)
+            finally:
+                self._tr_queue.task_done()
+
+    async def _requeue_after(self, text: str, delay: float) -> None:
+        await asyncio.sleep(delay)
+        if text not in self._translate_cache:
+            self._tr_queue.put_nowait(text)      # stays in _tr_inflight across the wait
+        else:
+            self._tr_inflight.discard(text)
+
+    def backfill_translations(self) -> int:
+        """Scan the current display layer -- chronicle beats, held secrets, agent
+        beliefs, live rumors -- and queue every English string not yet translated, so
+        the user never has to open a panel to trigger the first translation (and any
+        English left from a prior run turns to zh in the background). Returns how many
+        new texts were queued. No-op in en mode."""
+        if not builders.lang_is_zh():
+            return 0
+        before = len(self._tr_inflight)
+        texts: list[str] = []
+        for c in self.engine.chronicle:                      # the town's living history
+            for key in ("text", "detail"):
+                v = c.get(key)
+                if isinstance(v, str):
+                    texts.append(v)
+        for s in self.engine.decisions.secrets.secrets.values():
+            texts.append(s.text)                             # currently-held secrets
+        for a in self.world.agents.values():
+            for b in a.semantic.beliefs:                     # lasting impressions
+                texts.append(getattr(b, "text", ""))
+        for r in self.engine.decisions.rumors.rumors.values():
+            for v in r.versions:
+                texts.append(v.text)                         # every phrasing in circulation
+        for t in texts:
+            t = (t or "").strip()
+            if t and re.search(r"[A-Za-z]", t) and t not in self._translate_cache:
+                self._enqueue_translation(t)
+        return len(self._tr_inflight) - before
 
     async def attach_persistence(self) -> None:
         """Optional: activates when AI_TOWN_DB_URL is set. Without it the
@@ -427,6 +534,12 @@ class Sim:
             await self.engine.run_until(target)
             self.engine.now = max(self.engine.now, target)  # clock advances even in quiet periods
             self.engine.expire_world_effects()  # end rain/festival on time even with no pending decisions
+            # Each sim-day, proactively queue the day's new English knowledge for zh
+            # translation so a panel-open never shows English first (cheap: deduped).
+            day = self.engine.now // DAY_MIN
+            if day != self._tr_backfill_day:
+                self._tr_backfill_day = day
+                self.backfill_translations()
             await self._broadcast_tick()
             # Periodic snapshot: every SNAPSHOT_REAL_SECONDS, but only if the
             # clock actually moved since the last one (a paused/idle town isn't
@@ -553,6 +666,11 @@ async def lifespan(app: FastAPI):
     global sim, _loop_task, _status_task
     sim = Sim()
     await sim.attach_persistence()
+    # Warm the display-layer translation cache at startup: a resumed run carries a
+    # full English chronicle/secrets/beliefs backlog the user shouldn't see in English.
+    queued = sim.backfill_translations()
+    if queued:
+        print(f"[translate] startup backfill queued {queued} English texts for zh", flush=True)
     if sim.unattended:
         print(f"[unattended] enabled -- town keeps running with no viewers; "
               f"cruises at {sim.unattended_speed:g}x while unwatched", flush=True)

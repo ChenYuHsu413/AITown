@@ -1661,8 +1661,12 @@ async function trFetch(texts){
   try{
     const d=await (await fetch('/api/translate',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({texts:need})})).json();
-    const m=d.translations||{}; need.forEach(x=>{ TR_CACHE[x]=(m[x]!==undefined?m[x]:x); });
-  }catch(e){ need.forEach(x=>{ TR_CACHE[x]=x; }); }  // failure -> fall back to English
+    const m=d.translations||{};
+    // Cache ONLY a real zh translation. If the server still returns the English
+    // original (translation not ready), leave it UNcached so the next panel-open
+    // re-requests it -- by then the server's background retry has likely filled it in.
+    need.forEach(x=>{ const zh=m[x]; if(zh!==undefined && zh!==x) TR_CACHE[x]=zh; });
+  }catch(e){}  // network failure -> leave uncached; the element keeps its English, retried next open
 }
 // Swap a batch of {el, en, pre?} to zh in place (zh only, non-blocking).
 function trSwap(pairs){
