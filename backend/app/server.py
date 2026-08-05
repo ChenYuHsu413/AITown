@@ -1245,6 +1245,22 @@ async def usage() -> JSONResponse:
         cost += c.estimated_cost
     total_decisions = len(sim.engine.decisions.traces)
     rules_only = sum(1 for t in sim.engine.decisions.traces if t.decision.level == 0)
+    # Dialogue mock-floor rate: how often a conversation fell all the way to the
+    # canned mock floor (a live-model health signal). Cumulative this process, plus a
+    # recent window (last sim-day) so a fresh outage shows up without the long tail
+    # washing it out. Floors are now always recorded (the timeout path used to bypass
+    # usage), so this is honest.
+    dlg = [c for c in u.calls if c.task_type == "dialogue" and not c.cache_hit]
+    dlg_floor = sum(1 for c in dlg if c.provider == "mock")
+    recent_cut = (max((c.sim_minute for c in dlg), default=0)) - 1440
+    dlg_recent = [c for c in dlg if c.sim_minute >= recent_cut]
+    dlg_recent_floor = sum(1 for c in dlg_recent if c.provider == "mock")
+    dialogue_floor = {
+        "total": len(dlg), "floor": dlg_floor,
+        "rate": round(dlg_floor / len(dlg), 3) if dlg else 0.0,
+        "recent_total": len(dlg_recent), "recent_floor": dlg_recent_floor,
+        "recent_rate": round(dlg_recent_floor / len(dlg_recent), 3) if dlg_recent else 0.0,
+    }
     return JSONResponse(
         {
             "calls": u.total_calls,
@@ -1253,6 +1269,7 @@ async def usage() -> JSONResponse:
             "output_tokens": out_tok,
             "estimated_cost": round(cost, 6),
             "budget_usd": sim.router.budget_usd,
+            "dialogue_floor": dialogue_floor,
             "by_task": [{"task": k, **{**v, "cost": round(v["cost"], 6)}} for k, v in
                         sorted(by_task.items(), key=lambda kv: -kv[1]["calls"])],
             "by_model": [{"model": k, **{**v, "cost": round(v["cost"], 6)}} for k, v in

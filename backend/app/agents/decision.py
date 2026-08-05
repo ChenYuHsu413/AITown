@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 
 from ..llm.prompts import builders
 from ..llm.router import LLMRouter
+from ..llm.usage import LLMCall
 from ..social.rumors import RumorRegistry
 from ..social.secrets import SecretRegistry
 from ..world.world import Observation, World
@@ -43,6 +44,19 @@ RUMOR_DISTORT_CHANCE = 0.35   # probability a shared rumor mutates in the retell
 CONFIDE_TRUST_BASE = 55       # base trust needed to confide; the bar rises with the secret's sensitivity
 CONFIDE_MAX_P = 0.5           # cap on the per-conversation confide probability
 LEAK_MAX_P = 0.35            # cap on the per-conversation leak probability
+
+# Per-PROVIDER timeout for dialogue generation (seconds). A provider slower than
+# this is abandoned and the chain falls through to the next one (recorded normally),
+# so a genuinely hung model hands off instead of dropping the whole conversation to
+# the mock floor. Set ABOVE DeepSeek's full latency tail (measured p95 ~18s, worst-
+# case tail to the low 40s) on purpose: DeepSeek is the quality anchor for zh, and
+# the free fallbacks (Gemma) fail the strict zh gate far more often, so cutting
+# DeepSeek early trades a slow turn for a likely mock floor. Give it the room to
+# answer; hand off only when it truly hangs. Env-overridable.
+try:
+    DIALOGUE_PROVIDER_TIMEOUT_S: float = float(os.environ.get("AI_TOWN_DIALOGUE_PROVIDER_TIMEOUT", "40") or "40")
+except ValueError:
+    DIALOGUE_PROVIDER_TIMEOUT_S = 40.0
 
 TALK_COOLDOWN_MIN = 90        # don't re-approach the same person within 90 sim-minutes
 TALK_DURATION_MIN = 10
@@ -973,19 +987,30 @@ class DecisionEngine:
 
     async def generate_conversation(self, plan: ConvPlan) -> object:
         """The slow half of a conversation: one LLM call produces the whole
-        exchange. Run inside a background task so the town doesn't wait on it."""
+        exchange. Run inside a background task so the town doesn't wait on it. Each
+        provider is bounded by ``DIALOGUE_PROVIDER_TIMEOUT_S`` so a slow model hands
+        off to the fallback (recorded) rather than starving the call to the floor."""
         return await self.router.generate(
             task="dialogue", messages=plan.messages, agent_id=plan.a.id,
             sim_minute=plan.init_minute, schema={"type": "object"},
             max_tokens=plan.max_tokens, validate=plan.validate,
+            per_call_timeout=DIALOGUE_PROVIDER_TIMEOUT_S,
         )
 
     async def mock_dialogue(self, plan: ConvPlan) -> object:
-        """Deterministic floor exchange -- used when the live generation times out or
-        the whole chain errors, so the two participants always unlock with a valid
-        scene rather than hanging. The mock provider is always the chain's last tier."""
-        mock = self.router.tiers["normal"][-1]
-        return await mock.generate(plan.messages, schema={"type": "object"}, max_tokens=plan.max_tokens)
+        """Deterministic floor exchange -- used only when even the router's own chain
+        is abandoned (the outer backstop timeout), so the two participants always
+        unlock with a valid scene rather than hanging. Records the call to usage (it
+        bypasses ``router.generate``) so this floor is visible in /api/usage and
+        llm_calls, not silently invisible."""
+        mock = self.router.tiers["normal"][-1]   # the mock floor is always the chain's last tier
+        res = await mock.generate(plan.messages, schema={"type": "object"}, max_tokens=plan.max_tokens)
+        self.router.usage.record(LLMCall(
+            sim_minute=plan.init_minute, agent_id=plan.a.id, task_type="dialogue",
+            provider=res.provider, model=res.model,
+            input_tokens=res.input_tokens, output_tokens=res.output_tokens,
+            latency_ms=res.latency_ms, estimated_cost=0.0))
+        return res
 
     @staticmethod
     def _warn_stale_world_terms(a: Agent, b: Agent, turns: object, now: int) -> None:

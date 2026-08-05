@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import heapq
+import os
 import random
 from dataclasses import dataclass, field
 from typing import Callable
@@ -32,18 +33,28 @@ DAY_MIN = 24 * 60
 # keeps moving; only the two participants freeze. These bound that.
 DIALOGUE_MAX_CONCURRENT = 3   # in-flight dialogue generations (the design's cap); excess queue
 REFLECT_MAX_CONCURRENT = 4    # in-flight reflections (smart-tier); a soft burst limit
-DIALOGUE_TIMEOUT_S = 20.0     # wall-clock: a generation past this drops to the mock floor
-REFLECT_TIMEOUT_S = 20.0      # wall-clock: a reflection past this is abandoned (no insight this round)
+# Outer BACKSTOP on the whole dialogue generation. The router now bounds each
+# provider individually (DIALOGUE_PROVIDER_TIMEOUT_S) and falls through to the fast
+# fallback, so this only fires if the entire chain is pathologically slow -- keep it
+# generous so it never pre-empts a fallback that would have answered (the too-tight
+# 20s value here used to guillotine DeepSeek's normal tail straight to the mock floor).
+try:
+    DIALOGUE_TIMEOUT_S = float(os.environ.get("AI_TOWN_DIALOGUE_TIMEOUT", "90") or "90")
+except ValueError:
+    DIALOGUE_TIMEOUT_S = 90.0
+REFLECT_TIMEOUT_S = 45.0       # wall-clock: a reflection past this is abandoned (no insight this round)
 # Sim-minutes the two parties are held while the exchange generates. Also the
 # self-heal window on resume: a snapshot taken mid-conversation restores the pair
 # as busy_until = init + this, so they free themselves within it after a restart
 # (the in-flight task is gone; see the design's snapshot/resume note).
 DIALOGUE_LOCK_MIN = 30
 # In-process backstop only: _finish_dialogue always unlocks (it runs in a finally),
-# so this fires solely if that machinery itself wedges. Sized well above the max
-# sim-time a legitimate generation can span even at 20x (20s * 20x = 400 sim-min),
-# so it never force-kills a still-generating conversation.
-WATCHDOG_STUCK_MIN = 720
+# so this fires solely if that machinery itself wedges. Must exceed the max sim-time
+# a legitimate generation can span at the TOP speed, or it would guillotine a still-
+# generating conversation: the outer backstop is 90s wall, and at 20x that is 1800
+# sim-min, so keep this comfortably above that. (The finally is the real guarantee;
+# this is pure paranoia for the case where it somehow doesn't run.)
+WATCHDOG_STUCK_MIN = 3000
 
 # Day 1 = Monday. day_of_week 0=Mon .. 6=Sun.
 _DOW_EN = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -665,19 +676,31 @@ class SimulationEngine:
         settle. The settlement runs in a ``finally`` so the participants ALWAYS unlock,
         even on cancellation or error -- no one can get stuck in ``talk`` forever."""
         res: object | None = None
+        reason: str | None = None   # set when the outer backstop fires (for one clear log line)
         try:
+            async with self._dialogue_sem:
+                res = await asyncio.wait_for(
+                    self.decisions.generate_conversation(plan), timeout=DIALOGUE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            reason = "timeout"
+            print(f"[dialogue] floor: whole chain exceeded the {DIALOGUE_TIMEOUT_S:.0f}s backstop, "
+                  f"degrading to mock ({plan.a.id}/{plan.b.id} @ min {plan.init_minute})", flush=True)
             try:
-                async with self._dialogue_sem:
-                    res = await asyncio.wait_for(
-                        self.decisions.generate_conversation(plan), timeout=DIALOGUE_TIMEOUT_S)
+                res = await self.decisions.mock_dialogue(plan)
             except Exception:
-                res = await self.decisions.mock_dialogue(plan)   # floor: never leave them hanging
-        except Exception:
-            res = None
+                res = None
+        except Exception as err:
+            reason = "error"
+            print(f"[dialogue] floor: generation errored ({err!r}), degrading to mock "
+                  f"({plan.a.id}/{plan.b.id} @ min {plan.init_minute})", flush=True)
+            try:
+                res = await self.decisions.mock_dialogue(plan)
+            except Exception:
+                res = None
         finally:
-            self._finish_dialogue(plan, res)
+            self._finish_dialogue(plan, res, reason)
 
-    def _finish_dialogue(self, plan: ConvPlan, res: object | None) -> None:
+    def _finish_dialogue(self, plan: ConvPlan, res: object | None, reason: str | None = None) -> None:
         """Settlement (synchronous): apply the aftermath and publish the exchange
         (say lines + confronted/milestone/romance beats), stamped at the initiation
         minute. Guarded by the ``_in_dialogue`` token so a late task can't stomp a
@@ -687,6 +710,12 @@ class SimulationEngine:
             return   # superseded / watchdog-cleared -> these two already moved on
         self._in_dialogue.pop(a.id, None)
         self._in_dialogue.pop(b.id, None)
+        # Normal-path chain floor: the router exhausted every live provider and
+        # returned the mock floor (already recorded). One clear line (the outer
+        # backstop paths logged their own already, so only log here when reason=None).
+        if reason is None and getattr(res, "provider", "") == "mock":
+            print(f"[dialogue] floor: all live providers failed the gate, served mock "
+                  f"({a.id}/{b.id} @ min {init})", flush=True)
         duration = 6
         if res is not None:
             turns, _signals, confrontation, milestone, romance_events = \

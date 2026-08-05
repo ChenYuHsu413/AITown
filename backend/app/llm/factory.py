@@ -190,4 +190,16 @@ def build_router(live: bool | None = None) -> LLMRouter:
     print(f"[live] providers: {' '.join(tags) if tags else 'mock-only'} | "
           f"lang={builders.lang_code()} | dialogue: {dchain}", flush=True)
 
+    # Loud, unmissable mode banner: the #1 confusion is "is paid actually on?".
+    # AI_TOWN_PAID=1 only takes effect with an OpenRouter key -- if it's set but the
+    # key is missing, say so here rather than silently running the free config.
+    if paid and openrouter is not None:
+        mode = "PAID  (DeepSeek-first dialogue/reflection; live speed uncapped)"
+    elif paid:
+        mode = "FREE-QUOTA  [!] AI_TOWN_PAID=1 but no OPENROUTER_API_KEY -> paid config NOT active"
+    else:
+        mode = "FREE-QUOTA  (free providers; live speed capped at 5x)"
+    bar = "=" * 72
+    print(f"{bar}\n  AI TOWN MODE: {mode}\n{bar}", flush=True)
+
     return LLMRouter(tiers=tiers, task_chains=task_chains, budget_usd=budget)

@@ -13,6 +13,7 @@ Task -> tier mapping (mirrors the plan):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import time
@@ -99,12 +100,20 @@ class LLMRouter:
         cache_key: str | None = None,
         max_tokens: int = 512,
         validate: Callable[[LLMResult], bool] | None = None,
+        per_call_timeout: float | None = None,
     ) -> LLMResult:
         """``validate`` is an optional quality gate run on each provider's
         output. A result that fails it (or, when ``schema`` was requested,
         parses to None -- i.e. truncated/malformed JSON) is treated as a
         provider failure and the chain falls through to the next provider,
-        so broken content never reaches the caller."""
+        so broken content never reaches the caller.
+
+        ``per_call_timeout`` (seconds), when set, bounds EACH provider call: a
+        provider slower than this is abandoned like any other failure and the
+        chain falls through to the next one (which is recorded normally). This
+        keeps a single slow model -- e.g. DeepSeek on a bad tail -- from starving
+        the whole call; the fast fallback answers instead of dropping to the mock
+        floor. Off (None) preserves the original unbounded per-provider behaviour."""
         tier = TASK_TIERS.get(task, "normal")
 
         # ---- decision cache -------------------------------------
@@ -161,10 +170,12 @@ class LLMRouter:
                 if self.on_call_start is not None:
                     self.on_call_start(provider.name, task)
                 try:
-                    result = await provider.generate(
-                        messages, schema=schema, max_tokens=max_tokens
-                    )
-                except Exception as err:  # 429, timeout, HTTP error...
+                    call = provider.generate(messages, schema=schema, max_tokens=max_tokens)
+                    if per_call_timeout is not None:
+                        result = await asyncio.wait_for(call, timeout=per_call_timeout)
+                    else:
+                        result = await call
+                except Exception as err:  # 429, timeout (incl. per_call_timeout), HTTP error...
                     last_err = err
                     result = None
                     if getattr(getattr(err, "response", None), "status_code", None) == 429:
