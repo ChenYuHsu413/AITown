@@ -53,7 +53,11 @@ curl -X POST localhost:8000/api/admin/resolve-stale-secrets
 # 2) APPLY: archives the pre-op state first, then resolves + snapshots
 curl -X POST localhost:8000/api/admin/resolve-stale-secrets \
      -H 'Content-Type: application/json' -d '{"dry_run": false}'
-# -> {"dry_run": false, "archive_id": 8, "resolved": 3}
+# -> {"dry_run": false, "archive_id": 8, "resolved": 3, "requested": "all-candidates"}
+
+# APPLY ONLY SOME: pass secret_ids (a subset of the dry-run candidates)
+curl -X POST localhost:8000/api/admin/resolve-stale-secrets \
+     -H 'Content-Type: application/json' -d '{"dry_run": false, "secret_ids": ["06ddae6b"]}'
 ```
 
 Non-destructive (it only marks secrets resolved — nothing is deleted), but it still

@@ -976,6 +976,7 @@ async def resolve_stale_secrets(body: dict = Body(default={})) -> JSONResponse:
     owner a 'laid to rest' memory, then snapshots)."""
     assert sim is not None
     dry_run = bool(body.get("dry_run", True)) if isinstance(body, dict) else True
+    wanted = {str(x) for x in (body.get("secret_ids") or [])} if isinstance(body, dict) else set()
     world = sim.world
     reg = sim.engine.decisions.secrets
     now = sim.engine.now
@@ -1022,8 +1023,9 @@ async def resolve_stale_secrets(body: dict = Body(default={})) -> JSONResponse:
     if sim.persistence is not None:
         payload = snapshot_mod.capture(sim.engine, sim.world, sim.engine.decisions)
         archive_id = await sim.persistence.archive_snapshot(payload, reason="resolve-stale-secrets")
+    to_apply = [c for c in candidates if not wanted or c["id"] in wanted]
     resolved = 0
-    for c in candidates:
+    for c in to_apply:
         s = reg.secrets.get(c["id"])
         owner = world.agents.get(c["owner"])
         if s is None or owner is None:
@@ -1033,7 +1035,10 @@ async def resolve_stale_secrets(body: dict = Body(default={})) -> JSONResponse:
             resolved += 1
     if sim.persistence is not None:
         sim._take_snapshot()
-    return JSONResponse({"dry_run": False, "archive_id": archive_id, "resolved": resolved})
+    return JSONResponse({
+        "dry_run": False, "archive_id": archive_id,
+        "resolved": resolved, "requested": sorted(wanted) or "all-candidates",
+    })
 
 
 @app.get("/api/admin/archives")
