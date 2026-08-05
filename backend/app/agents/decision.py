@@ -279,6 +279,20 @@ class DecisionEngine:
         elif agent.state.energy <= LOW_ENERGY and entry.action not in ("sleep", "rest"):
             decision = Decision("rest", duration=30, reason=f"energy {agent.state.energy} <= {LOW_ENERGY}")
 
+        # ---- Repair dispatch: the town's tech drops everything for a fault ----
+        if decision is None and agent.profile.occupation == "Repair Technician" \
+                and agent.state.current_action != "sleep":
+            target = next((lid for lid, l in world.locations.items() if l.broken), None)
+            if target is not None:
+                if agent.state.location != target:
+                    decision = Decision("move", target_location=target, duration=10,
+                                        reason=f"heading to a repair job at {target}",
+                                        narrative_verb="repair_go", narrative_target=target)
+                else:
+                    decision = Decision("work", duration=120,
+                                        reason=f"repairing the equipment at {target}",
+                                        narrative_verb="repair", narrative_target=target)
+
         # ---- Level 1: social trigger (cheap LLM) ----------------------
         # Once the day's dialogue budget is spent, decline by rule -- no should_talk
         # LLM call either. Agents still meet and move; they just chat less.

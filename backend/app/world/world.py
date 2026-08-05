@@ -52,6 +52,7 @@ class Location:
     revenue_today: float = 0.0  # takings since the last day boundary (reset in daily settlement)
     revenue_week: float = 0.0   # takings since the last Sunday (reset in the weekly settlement)
     closed_days: list[int] = field(default_factory=list)  # weekly days off (0=Mon..6=Sun); no takings then
+    broken: bool = False     # equipment fault -> 0.6x takings until Long repairs it (see engine)
     # World objects that live here. Each: {"id", "name", "state": in_progress|completed,
     # "progress": 0.0-1.0, "created_by": agent_id}. Pure Level-0 state; the creator's
     # `work` here nudges progress (see advance_landmark).
@@ -224,13 +225,16 @@ class World:
                     pass  # already settled this meal slot -> fall through to a free eat
                 elif st.money >= loc.price:
                     st.last_meal_slot = slot
-                    st.money -= loc.price
+                    # Broken equipment = a slower, poorer service: the sale rings up at
+                    # 0.6x (a real revenue bite) until Long fixes it.
+                    take = loc.price * 0.6 if loc.broken else loc.price
+                    st.money -= take
                     owner = self.agents.get(loc.owner)
                     if owner is not None:
-                        owner.state.money += loc.price
-                    loc.revenue += loc.price
-                    loc.revenue_today += loc.price
-                    loc.revenue_week += loc.price
+                        owner.state.money += take
+                    loc.revenue += take
+                    loc.revenue_today += take
+                    loc.revenue_week += take
                     st.meals_bought += 1
                     if st.meals_bought == 1 or st.meals_bought % 5 == 0:  # throttle the memory
                         agent.memory.add(MemoryItem(

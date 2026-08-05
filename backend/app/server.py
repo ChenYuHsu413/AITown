@@ -475,7 +475,8 @@ class Sim:
             "cruising": self._cruising,
             "locations": [
                 {"id": l.id, "name": l.name, "kind": l.kind, "x": l.x, "y": l.y,
-                 "owner": l.owner, "landmarks": l.landmarks, "closed_days": l.closed_days}
+                 "owner": l.owner, "landmarks": l.landmarks, "closed_days": l.closed_days,
+                 "broken": l.broken}
                 for l in self.world.locations.values()
             ],
             "agents": self.agent_states(),
@@ -810,6 +811,21 @@ async def world_event(body: dict) -> JSONResponse:
         location = ""  # rain is town-wide
     eff = sim.engine.trigger_world_effect(etype, location, duration)
     return JSONResponse({"ok": True, "effect": eff})
+
+
+@app.post("/api/break-equipment")
+async def break_equipment(body: dict) -> JSONResponse:
+    """God Mode (test aid): force an equipment fault at a place so Long gets
+    dispatched. {"location": "cafe"}. Homes have nothing to break."""
+    assert sim is not None
+    lid = str(body.get("location", ""))
+    loc = sim.world.locations.get(lid)
+    if loc is None or loc.kind == "home":
+        return JSONResponse({"error": "location must be a known non-home place"}, status_code=400)
+    if not loc.broken:
+        loc.broken = True
+        sim.engine._publish("system", "breakdown", location_id=lid)
+    return JSONResponse({"ok": True, "location": lid, "broken": True})
 
 
 @app.get("/api/relationships")

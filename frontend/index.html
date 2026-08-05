@@ -272,6 +272,7 @@ footer b{font-weight:500;font-size:14px}
 .shop-rev-g rect{fill:var(--panel);stroke:var(--line);stroke-width:.5}
 .shop-rev{font-family:var(--mono);font-size:8.5px;font-weight:500;fill:var(--amber);text-anchor:middle}
 .closed-badge{fill:#C0503A;stroke:#8f3a2a;stroke-width:.5}
+.broken-badge{font-size:12px;text-anchor:middle;pointer-events:none}
 .closed-text{font-family:var(--mono);font-size:9px;font-weight:600;fill:#fff;text-anchor:middle;letter-spacing:.06em}
 #inspector .money{color:var(--amber);font-weight:500}
 #terrain,#roads{shape-rendering:crispEdges}
@@ -365,6 +366,7 @@ footer b{font-weight:500;font-size:14px}
   <div id="godpanel" hidden>
     <button id="god-rain" data-i18n="god.rain">Rain · 3h</button>
     <button id="god-festival" data-i18n="god.festival">Park festival · 4h</button>
+    <div class="god-row"><select id="god-break-loc"></select><button id="god-break" data-i18n="god.break">Break equipment</button></div>
 
     <div class="god-sec" data-i18n="god.rumorHead">RUMORS</div>
     <div class="god-row">
@@ -409,6 +411,7 @@ footer b{font-weight:500;font-size:14px}
       <g id="locs"></g>
       <g id="landmarks"></g>   <!-- world objects (the mural); above buildings, below villagers -->
       <g id="closed-signs"></g>   <!-- weekly day-off badges over shops -->
+      <g id="broken-signs"></g>   <!-- 🛠️ equipment-fault badges until Long repairs -->
       <g id="agents"></g>
       <g id="festival" pointer-events="none"></g>
       <g id="rain" opacity="0" pointer-events="none"><rect width="800" height="520" fill="#4a6a90" opacity="0.12"/><g id="raindrops"></g></g>
@@ -502,7 +505,8 @@ let LOCS={}, AGENTS={}, selected=null, LOC_LIST=[], ECON=null, AWAY=null;
 let CHRON=[], chronOpen=false;      // chronicle state (declared early: applyLang() renders it during init)
 const CHRON_VERBS=new Set(['confide','confronted','landmark_done','belief','broke',
   'rain_start','rain_end','festival_start','festival_end','leak','secret_born','week_close',
-  'transition','milestone','romance_dating','romance_rejected','romance_partners']);
+  'transition','milestone','romance_dating','romance_rejected','romance_partners',
+  'breakdown','repaired']);
 
 /* ---------- i18n ---------- */
 const I18N={
@@ -523,7 +527,7 @@ const I18N={
     'conn.reconnecting':'Connection lost, reconnecting…',
     'title.s1':'1 sim-minute per second','title.s5':'5 sim-minutes per second',
     'title.s20':'20 sim-minutes per second','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
-    'title.god':'World events','god.rain':'Rain · 3h','god.festival':'Park festival · 4h',
+    'title.god':'World events','god.rain':'Rain · 3h','god.festival':'Park festival · 4h','god.break':'Break equipment',
     'god.rumorHead':'RUMORS','god.startedBy':'Started by','god.presetDefault':'(preset default)',
     'god.preset.cafe':'Cafe crisis','god.preset.xue':'Xue quitting','god.preset.aisi':"Aisi's award",'god.preset.azong':'Azong moving',
     'god.customToggle':'Custom rumor…','god.about':'About','god.noSubject':'(no subject)',
@@ -568,7 +572,7 @@ const I18N={
     'conn.reconnecting':'連線中斷,重連中…',
     'title.s1':'每秒 1 模擬分鐘','title.s5':'每秒 5 模擬分鐘',
     'title.s20':'每秒 20 模擬分鐘','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
-    'title.god':'世界事件','god.rain':'下雨 3 小時','god.festival':'公園慶典 4 小時',
+    'title.god':'世界事件','god.rain':'下雨 3 小時','god.festival':'公園慶典 4 小時','god.break':'觸發設備故障',
     'god.rumorHead':'謠言','god.startedBy':'由誰起頭','god.presetDefault':'(預設起頭者)',
     'god.preset.cafe':'咖啡館危機','god.preset.xue':'雪要離職','god.preset.aisi':'艾斯得獎','god.preset.azong':'阿總搬遷',
     'god.customToggle':'自訂謠言…','god.about':'主角','god.noSubject':'(無主角)',
@@ -604,7 +608,8 @@ const ACTIONS={work:'工作',eat:'用餐',move:'移動',sleep:'睡眠',rest:'休
 const OCCS={'Cafe Owner':'咖啡館老闆','Office Worker':'上班族','Doctor':'醫生','Retired Teacher':'退休教師','Art Student':'藝術系學生',
   'Baker':'烘焙師','Postman':'郵差','Market Vendor':'市場攤販','Student':'學生','Retired Nurse':'退休護士',
   'Engineer':'工程師','Freelance Designer':'自由設計師','Retired':'退休',
-  'job seeker':'求職中','cafe staff':'咖啡館員工','bakery staff':'烘焙坊員工','freelancer':'自由接案者'};
+  'job seeker':'求職中','cafe staff':'咖啡館員工','bakery staff':'烘焙坊員工','freelancer':'自由接案者',
+  'Repair Technician':'修理師傅'};
 const TRAITS={curious:'好奇',friendly:'友善',gossipy:'八卦',quiet:'安靜',loyal:'忠誠',stressed:'焦慮',
   calm:'冷靜',observant:'敏銳',helpful:'樂於助人',wise:'睿智',talkative:'健談',nostalgic:'念舊',
   creative:'有創意',dreamy:'愛幻想','night-owl':'夜貓子',
@@ -703,6 +708,8 @@ const EV_TMPL={
     romance_dating:(a,l,tg)=>`💕 ${ROMANCE_EN.romance_dating.replace('{a}',a).replace('{b}',tg)}`,
     romance_rejected:(a,l,tg)=>`💔 ${ROMANCE_EN.romance_rejected.replace('{a}',a).replace('{b}',tg)}`,
     romance_partners:(a,l,tg)=>`💍 ${ROMANCE_EN.romance_partners.replace('{a}',a).replace('{b}',tg)}`,
+    breakdown:(a,l)=>`🛠️ Something broke down at ${l}`,
+    repaired:(a,l)=>`🔧 ${a} repaired the equipment at ${l}`,
   },
   zh:{
     sleep:(a,l)=>`${a} 在 ${l} 就寢`, eat:(a,l)=>`${a} 在 ${l} 用餐`,
@@ -725,6 +732,8 @@ const EV_TMPL={
     romance_dating:(a,l,tg)=>`💕 ${ROMANCE_ZH.romance_dating.replace('{a}',a).replace('{b}',tg)}`,
     romance_rejected:(a,l,tg)=>`💔 ${ROMANCE_ZH.romance_rejected.replace('{a}',a).replace('{b}',tg)}`,
     romance_partners:(a,l,tg)=>`💍 ${ROMANCE_ZH.romance_partners.replace('{a}',a).replace('{b}',tg)}`,
+    breakdown:(a,l)=>`🛠️ ${l} 的設備故障了`,
+    repaired:(a,l)=>`🔧 ${a} 修好了 ${l} 的設備`,
   },
 };
 let LANG=localStorage.getItem('lang')||(navigator.language&&navigator.language.startsWith('zh')?'zh':'en');
@@ -800,7 +809,12 @@ function handleWSMessage(e){
   if(msg.agents) updateAgents(msg.agents);
   if(msg.landmarks) updateLandmarks(msg.landmarks);  // mural fill climbs as Emma paints
   if(msg.effects) renderEffects(msg.effects);      // rain/festival visuals switch in real time
-  if(msg.type==='tick') msg.events.forEach(ev=>{addEvent(ev); maybeBubble(ev); chronPush(ev);});
+  if(msg.type==='tick') msg.events.forEach(ev=>{addEvent(ev); maybeBubble(ev); chronPush(ev); applyBreakdown(ev);});
+}
+function applyBreakdown(ev){                                     // keep the map 🛠️ badges live
+  if(ev.verb!=='breakdown' && ev.verb!=='repaired') return;
+  if(LOCS[ev.location]) LOCS[ev.location].broken=(ev.verb==='breakdown');
+  updateBrokenSigns();
 }
 function connectWS(){
   clearTimeout(wsReconnectTimer);
@@ -1001,6 +1015,8 @@ function buildMap(locations){
     if(b.light){ const lg=document.createElementNS(SVGNS,'g'); lg.innerHTML=`<g shape-rendering="crispEdges" transform="${tf}">${b.light}</g>`; lights.appendChild(lg); }
   });
   renderShopRev();   // refill takings after a rebuild (e.g. language switch)
+  updateBrokenSigns();
+  fillBreakLocs();
 }
 // ---- world objects: Aisi's interactive light installation ----
 // Data-driven from /ws landmarks: buildMap draws the buildings, updateLandmarks
@@ -1153,6 +1169,13 @@ function updateClosedSigns(minute){
         +`<text class="closed-text" x="0" y="1.5">${label}</text></g>`;
     }
   });
+  g.innerHTML=s;
+}
+function updateBrokenSigns(){                                    // 🛠️ over any place with a live equipment fault
+  const g=$('#broken-signs'); if(!g) return;
+  let s='';
+  LOC_LIST.forEach(l=>{ if(LOCS[l.id]&&LOCS[l.id].broken)
+    s+=`<text class="broken-badge" x="${l.x+16}" y="${l.y-14}">🛠️</text>`; });
   g.innerHTML=s;
 }
 
@@ -1416,6 +1439,11 @@ function worldEvent(body){ fetch('/api/world-event',{method:'POST',headers:{'Con
 $('#btn-god').onclick=()=>{ $('#godpanel').hidden=!$('#godpanel').hidden; };   // God Mode is operations only now
 $('#god-rain').onclick=()=>{ worldEvent({type:'rain',duration_minutes:180}); $('#godpanel').hidden=true; };
 $('#god-festival').onclick=()=>{ worldEvent({type:'festival',location:'park',duration_minutes:240}); $('#godpanel').hidden=true; };
+function fillBreakLocs(){ const sel=$('#god-break-loc'); if(!sel||!LOC_LIST.length) return;
+  sel.innerHTML=LOC_LIST.filter(l=>l.kind!=='home').map(l=>`<option value="${l.id}">${locById(l.id,l.name)}</option>`).join(''); }
+$('#god-break').onclick=async()=>{ const loc=$('#god-break-loc').value; if(!loc) return;
+  try{ await fetch('/api/break-equipment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:loc})}); }catch(e){}
+  $('#godpanel').hidden=true; };
 
 /* ---------- God Mode: rumor seeding ---------- */
 // The fixed 10-agent cast, by id; the dropdown shows names via agentName().

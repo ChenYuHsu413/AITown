@@ -45,7 +45,8 @@ if TYPE_CHECKING:
 #   v8 -> v9: romance -- relationship romance/romance_stage + per-agent copresence/
 #             confession/awkward state (ride in the existing dicts) and the mutable
 #             romantic_inclination. Older snapshots load with romance at 0.
-SCHEMA_VERSION = 9
+#   v9 -> v10: equipment faults -- per-location `broken`. Older snapshots load un-broken.
+SCHEMA_VERSION = 10
 
 
 # ---- capture -------------------------------------------------------------
@@ -65,6 +66,7 @@ def capture(engine: "SimulationEngine", world: "World", decisions: "DecisionEngi
                 "revenue_today": loc.revenue_today,
                 "revenue_week": loc.revenue_week,
                 "landmarks": [dict(lm) for lm in loc.landmarks],
+                "broken": loc.broken,
             }
             for lid, loc in world.locations.items()
         },
@@ -135,6 +137,8 @@ def restore(payload: dict, engine: "SimulationEngine", world: "World",
                 loc.revenue_week = float(ldata["revenue_week"])
             if "landmarks" in ldata:     # v4+; older snapshots keep the seed landmarks
                 loc.landmarks = [dict(lm) for lm in (ldata.get("landmarks") or []) if isinstance(lm, dict)]
+            if "broken" in ldata:        # v10+; older snapshots load un-broken
+                loc.broken = bool(ldata["broken"])
 
     if "active_effects" in payload:
         world.active_effects = [dict(e) for e in (payload.get("active_effects") or [])]

@@ -12,7 +12,9 @@ happen without polling.
 
 from __future__ import annotations
 
+import hashlib
 import heapq
+import random
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -95,6 +97,8 @@ _EN_TEMPLATES = {
     "romance_dating": "{actor} and {target} are together now",
     "romance_rejected": "{actor} confessed to {target}, but it wasn't mutual",
     "romance_partners": "{actor} and {target} made it official",
+    "breakdown": "Something broke down at {loc}",
+    "repaired": "{actor} repaired the equipment at {loc}",
 }
 
 # The town's living history: the notable beats worth remembering (see Sim.chronicle
@@ -104,7 +108,7 @@ CHRONICLE_VERBS = {
     "confide", "confronted", "landmark_done", "belief", "broke",
     "rain_start", "rain_end", "festival_start", "festival_end",
     "leak", "secret_born", "week_close", "transition", "milestone",
-    "romance_dating", "romance_rejected", "romance_partners",
+    "romance_dating", "romance_rejected", "romance_partners", "breakdown", "repaired",
 }
 CHRONICLE_ICONS = {
     "confide": "🤫", "confronted": "⚖️", "landmark_done": "🎨", "belief": "💭",
@@ -112,6 +116,7 @@ CHRONICLE_ICONS = {
     "festival_end": "🎏", "leak": "🕳️", "secret_born": "🔒", "week_close": "📅",
     "transition": "🔀", "milestone": "🤝",
     "romance_dating": "💕", "romance_rejected": "💔", "romance_partners": "💍",
+    "breakdown": "🛠️", "repaired": "🔧",
 }
 
 
@@ -360,6 +365,48 @@ class SimulationEngine:
         # Romance spark judged once per day per resident (see decision._maybe_ignite).
         for agent in self.world.agents.values():
             self.decisions._maybe_ignite(agent, self.world, self.now)
+        self._maybe_break_equipment()   # a place or two may fault today -> work for Long
+
+    _BREAKDOWN_DAILY_P = 0.08
+    _MAX_BROKEN = 2
+
+    def _maybe_break_equipment(self) -> None:
+        """Once a day, non-home places have a small chance of an equipment fault, up
+        to two broken at once. A fault bites the shop's takings (0.6x, see
+        World.execute) until Long repairs it."""
+        day = self.now // DAY_MIN
+        broken = [l for l in self.world.locations.values() if l.broken]
+        for loc in self.world.locations.values():
+            if len(broken) >= self._MAX_BROKEN:
+                break
+            if loc.kind == "home" or loc.broken:
+                continue
+            seed = int(hashlib.sha256(f"break|{loc.id}|{day}".encode()).hexdigest()[:8], 16)
+            if random.Random(seed).random() < self._BREAKDOWN_DAILY_P:
+                loc.broken = True
+                broken.append(loc)
+                self._publish("system", "breakdown", location_id=loc.id)
+
+    def _do_repair(self, tech: Agent, loc_id: str) -> None:
+        """Long fixes a broken place: fee $15 out of the owner's wallet into his (an
+        ownerless public place is a freebie -- good neighbourliness), a public beat,
+        and a memory each (the owner's carries a grudging thanks)."""
+        loc = self.world.locations.get(loc_id)
+        if loc is None or not loc.broken:
+            return
+        loc.broken = False
+        fee = 15.0
+        owner = self.world.agents.get(loc.owner) if loc.owner else None
+        if owner is not None:
+            owner.state.money -= fee
+            tech.state.money += fee
+            owner.memory.add(MemoryItem(
+                minute=self.now, importance=3, kind="conversation",
+                text=f"{{agent:{tech.id}}} fixed the equipment at {{loc:{loc_id}}}. Cost me $15, but at least it works again."))
+        tech.memory.add(MemoryItem(
+            minute=self.now, importance=3, kind="conversation",
+            text=f"Fixed the equipment at {{loc:{loc_id}}} -- whoever installed it did a sloppy job."))
+        self._publish("action", "repaired", actor=tech, location_id=loc_id)
 
     _TRANSITION_RIPPLE = {                        # third person, for friends' memories
         "quit_job": "quit their job",
@@ -461,6 +508,8 @@ class SimulationEngine:
                 self._publish(
                     "action", result["verb"], actor=agent, location_id=result["location"]
                 )
+            if decision.narrative_verb == "repair" and decision.narrative_target:
+                self._do_repair(agent, decision.narrative_target)
             # Working the creator's own landmark nudges it along (pure rules); a
             # completion rings out as its own event beat.
             if decision.action == "work":
