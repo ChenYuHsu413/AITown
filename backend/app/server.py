@@ -560,7 +560,7 @@ async def lifespan(app: FastAPI):
         await sim.persistence.stop()  # ...which stop() drains before disposing
 
 
-app = FastAPI(title="AI Town", lifespan=lifespan)
+app = FastAPI(title="Gaobo Town (高柏小鎮)", lifespan=lifespan)
 
 
 @app.get("/api/history")
