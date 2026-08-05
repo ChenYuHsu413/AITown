@@ -52,11 +52,14 @@ LEAK_MAX_P = 0.35            # cap on the per-conversation leak probability
 # case tail to the low 40s) on purpose: DeepSeek is the quality anchor for zh, and
 # the free fallbacks (Gemma) fail the strict zh gate far more often, so cutting
 # DeepSeek early trades a slow turn for a likely mock floor. Give it the room to
-# answer; hand off only when it truly hangs. Env-overridable.
+# answer; hand off only when it truly hangs. Widened 40s -> 60s under the "rather
+# slow than canned" policy: the user explicitly accepts a slower turn, and the
+# non-blocking engine means the extra wait only makes the two speakers "brew" a
+# little longer -- it never freezes the town. Env-overridable.
 try:
-    DIALOGUE_PROVIDER_TIMEOUT_S: float = float(os.environ.get("AI_TOWN_DIALOGUE_PROVIDER_TIMEOUT", "40") or "40")
+    DIALOGUE_PROVIDER_TIMEOUT_S: float = float(os.environ.get("AI_TOWN_DIALOGUE_PROVIDER_TIMEOUT", "60") or "60")
 except ValueError:
-    DIALOGUE_PROVIDER_TIMEOUT_S = 40.0
+    DIALOGUE_PROVIDER_TIMEOUT_S = 60.0
 
 TALK_COOLDOWN_MIN = 90        # don't re-approach the same person within 90 sim-minutes
 TALK_DURATION_MIN = 10
@@ -84,6 +87,13 @@ _CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 # "character soup" (e.g. "吃asks导"). Real zh keeps English proper nouns spaced
 # and capitalized, so this stays clear of "覺得 David 最近...".
 _GLUE_RE = re.compile(r"[㐀-䶿一-鿿][a-z]{3,}|[a-z]{3,}[㐀-䶿一-鿿]")
+
+
+# Diagnostic mode: when set, every zh-gate rejection prints the offending turn text
+# plus a reason code (grep '[gate-reject]'), so a sampling run can judge whether the
+# gate is false-positiving on legitimate dialogue. Off by default -- pure observability,
+# never changes behaviour.
+_GATE_DIAG = os.environ.get("AI_TOWN_GATE_DIAG") == "1"
 
 
 def _has_cjk(text: str) -> bool:
@@ -125,26 +135,73 @@ def belief_text_ok(text: str, world: "World") -> bool:
     return any(w.lower().strip(".,;:!?'\"") in names for w in words)
 
 
-def _zh_text_ok(text: str) -> bool:
-    """Gibberish gate for a single zh dialogue turn (the precondition for putting
-    a new model on the zh chain). Rejects character-soup weak models emit:
+def _zh_reject_reason(text: str) -> str | None:
+    """Gibberish gate for a single zh dialogue turn, as a reason code (or None if the
+    turn is clean). This is the precondition for putting a new model on the zh chain.
+    Rejects the character-soup weak models emit:
       - the Unicode replacement char (encoding corruption),
-      - a run of 4+ identical characters (a stuck loop),
       - latin letters glued into CJK with no spacing (mixed-script soup),
+      - a long run of identical characters (a stuck decode loop),
       - fewer than 60% CJK among the letters (excluding punctuation/space) --
         i.e. the "Chinese" turn isn't actually mostly Chinese.
-    A rejected turn drops the whole conversation to the next provider / mock."""
+    A rejected turn drops the whole conversation to the next provider / mock.
+
+    Refined against a live sample of rejections (task 1.2): the stuck-loop rule now
+    fires at 6+ (was 4+) identical chars and never on CJK, so a genuine laugh/stall
+    ("哈哈哈哈", "嗯嗯嗯嗯", "……") -- normal casual zh -- is not mistaken for soup; and
+    the CJK-ratio check ignores ASCII digits/symbols so a turn quoting a time, price,
+    or number ("晚上 7:30 老地方") is not demoted to a canned line."""
     if "�" in text:
-        return False
+        return "replacement-char"
     if _GLUE_RE.search(text):
-        return False
+        return "latin-glue"
+    # A stuck decode loop repeats the SAME non-CJK char many times (e.g. "!!!!!!!");
+    # in Chinese, repeated characters are ordinary emphasis/laughter, so exempt CJK
+    # and only trip on a long run (6+).
+    m = re.search(r"(.)\1{5,}", text)
+    if m and not _CJK_RE.match(m.group(1)):
+        return "char-repeat"
+    # Count script only over "word" characters: CJK + Latin letters. Punctuation,
+    # spaces, digits and symbols don't count either way, so a turn that legitimately
+    # carries a clock time or a price isn't dragged under the 60% CJK bar by its digits.
+    cjk = latin = 0
+    for c in text:
+        if _CJK_RE.match(c):
+            cjk += 1
+        elif c.isalpha():
+            latin += 1
+    total = cjk + latin
+    if total == 0:
+        return "no-letters"
+    if cjk / total < 0.6:
+        return f"low-cjk({cjk}/{total})"
+    return None
+
+
+def _zh_text_ok(text: str) -> bool:
+    """Bool wrapper over ``_zh_reject_reason``; a rejected turn drops the whole
+    conversation to the next provider / mock."""
+    return _zh_reject_reason(text) is None
+
+
+def _zh_reject_reason_legacy(text: str) -> str | None:
+    """The pre-refinement gate, kept ONLY for the diagnostic comparison (task 1.2):
+    a turn the legacy gate rejected but ``_zh_reject_reason`` now passes is a recovered
+    false-positive -- direct evidence the refinement was warranted. Not used in the
+    live path."""
+    if "�" in text:
+        return "replacement-char"
+    if _GLUE_RE.search(text):
+        return "latin-glue"
     if re.search(r"(.)\1{3,}", text):
-        return False
+        return "char-repeat"
     letters = [c for c in text if not c.isspace() and not unicodedata.category(c).startswith("P")]
     if not letters:
-        return False
+        return "no-letters"
     cjk = sum(1 for c in letters if _CJK_RE.match(c))
-    return cjk / len(letters) >= 0.6
+    if cjk / len(letters) < 0.6:
+        return f"low-cjk({cjk}/{len(letters)})"
+    return None
 
 
 def _dialogue_ok(result) -> bool:
@@ -164,14 +221,23 @@ def _dialogue_ok(result) -> bool:
     if not isinstance(turns, list) or not turns or len(turns) > 12:
         return False
     zh = builders.lang_is_zh()
+    prov = f"{getattr(result, 'provider', '?')}/{getattr(result, 'model', '?')}"
     for t in turns:
         if not isinstance(t, dict):
             return False
         text = str(t.get("text", "")).strip()
         if not text or len(text) > 500:
             return False
-        if zh and not _zh_text_ok(text):
-            return False
+        if zh:
+            reason = _zh_reject_reason(text)
+            if reason is not None:
+                if _GATE_DIAG:  # task 1.2: capture the rejected sample for over-kill review
+                    print(f"[gate-reject] {prov} reason={reason} text={text[:140]!r}", flush=True)
+                return False
+            if _GATE_DIAG:  # a turn the OLD gate would have wrongly killed but we now pass
+                legacy = _zh_reject_reason_legacy(text)
+                if legacy is not None:
+                    print(f"[gate-rescue] {prov} was={legacy} text={text[:140]!r}", flush=True)
     return True
 
 
@@ -989,12 +1055,17 @@ class DecisionEngine:
         """The slow half of a conversation: one LLM call produces the whole
         exchange. Run inside a background task so the town doesn't wait on it. Each
         provider is bounded by ``DIALOGUE_PROVIDER_TIMEOUT_S`` so a slow model hands
-        off to the fallback (recorded) rather than starving the call to the floor."""
+        off to the fallback (recorded) rather than starving the call. ``no_floor``
+        means a whole-chain failure raises ``ProvidersExhausted`` instead of returning
+        the canned mock -- the engine catches it, brews a pause, and retries."""
         return await self.router.generate(
             task="dialogue", messages=plan.messages, agent_id=plan.a.id,
             sim_minute=plan.init_minute, schema={"type": "object"},
             max_tokens=plan.max_tokens, validate=plan.validate,
             per_call_timeout=DIALOGUE_PROVIDER_TIMEOUT_S,
+            # Never serve a canned mock line: a total chain failure raises
+            # ProvidersExhausted so the engine can brew a pause and re-run the chain.
+            no_floor=True,
         )
 
     async def mock_dialogue(self, plan: ConvPlan) -> object:

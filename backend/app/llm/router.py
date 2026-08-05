@@ -25,6 +25,14 @@ from .usage import LLMCall, UsageTracker
 
 SOFT_RETRIES = 1  # extra attempts on the same provider after an empty/garbled result
 
+
+class ProvidersExhausted(RuntimeError):
+    """Every real provider failed the quality gate for a ``no_floor`` call. The mock
+    floor was deliberately withheld so the caller can *wait and retry the whole chain*
+    (the reader-facing "patient retry, never canned" policy) instead of shipping a
+    canned mock line. Dialogue and reflection raise this; their engine tasks catch it,
+    brew a short pause, and re-run the chain."""
+
 # Universal free-text quality gate (the "no provider ships garbage" rule). Every
 # model has its own way of dodging a hard prompt -- the classic is a bare "ok" --
 # so this runs at the ROUTER for every call, on top of any task-specific validate,
@@ -151,6 +159,7 @@ class LLMRouter:
         max_tokens: int = 512,
         validate: Callable[[LLMResult], bool] | None = None,
         per_call_timeout: float | None = None,
+        no_floor: bool = False,
     ) -> LLMResult:
         """``validate`` is an optional quality gate run on each provider's
         output. A result that fails it (or, when ``schema`` was requested,
@@ -163,7 +172,13 @@ class LLMRouter:
         chain falls through to the next one (which is recorded normally). This
         keeps a single slow model -- e.g. DeepSeek on a bad tail -- from starving
         the whole call; the fast fallback answers instead of dropping to the mock
-        floor. Off (None) preserves the original unbounded per-provider behaviour."""
+        floor. Off (None) preserves the original unbounded per-provider behaviour.
+
+        ``no_floor``: withhold the mock floor and raise ``ProvidersExhausted`` when
+        every real provider fails the gate, so the caller can wait and re-run the whole
+        chain rather than ship a canned line (the "patient retry, never canned" policy;
+        used by dialogue/reflection). Under budget exhaustion the mock still serves --
+        we're out of money and it's the only free option."""
         tier = TASK_TIERS.get(task, "normal")
 
         # ---- decision cache -------------------------------------
@@ -196,7 +211,8 @@ class LLMRouter:
         # Once cumulative spend hits the cap, collapse to the free fallback
         # (factory guarantees the mock provider is always last in every chain).
         # Cache hits above already returned for free; only real calls are gated.
-        if self.budget_usd is not None and self.usage.total_cost >= self.budget_usd:
+        budget_hit = self.budget_usd is not None and self.usage.total_cost >= self.budget_usd
+        if budget_hit:
             if not self._budget_logged:
                 print(
                     f"[budget] cap ${self.budget_usd:.2f} reached "
@@ -204,6 +220,14 @@ class LLMRouter:
                 )
                 self._budget_logged = True
             chain = chain[-1:]
+
+        # ---- no_floor: withhold the mock so failure RAISES ------
+        # The caller (dialogue/reflection) wants an exception it can wait-and-retry on,
+        # not a canned mock line. Drop the mock provider so a total chain failure falls
+        # through to ProvidersExhausted below. Skipped when the budget guard already
+        # collapsed us to the mock floor -- out of money, mock is the only option left.
+        if no_floor and not budget_hit:
+            chain = [p for p in chain if p.name != "mock"]
 
         last_err: Exception | None = None
         floor: tuple[LLMProvider, LLMResult] | None = None  # best-effort output if all gates fail
@@ -248,8 +272,15 @@ class LLMRouter:
                 if floor is None:
                     floor = (provider, result)
 
-        # Nothing cleared the gates. Rather than hard-fail the tick, fall back to
-        # the first output we did get (typically the free mock floor).
+        # Nothing cleared the gates. A no_floor caller wants to wait and retry the
+        # whole chain rather than serve canned filler, so signal exhaustion instead
+        # of returning the soft floor.
+        if no_floor and not budget_hit:
+            raise ProvidersExhausted(
+                f"all real providers failed the gate for task '{task}': {last_err}")
+
+        # Otherwise, rather than hard-fail the tick, fall back to the first output we
+        # did get (typically the free mock floor).
         if floor is not None:
             provider, result = floor
             self._record(provider, result, task=task, agent_id=agent_id, sim_minute=sim_minute)

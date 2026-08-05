@@ -24,6 +24,7 @@ from ..agents.agent import Agent
 from ..agents.core import MemoryItem
 from ..agents.decision import ConvPlan, DecisionEngine
 from ..llm.prompts import builders
+from ..llm.router import ProvidersExhausted
 from ..world.world import World
 
 DAY_MIN = 24 * 60
@@ -42,6 +43,20 @@ try:
     DIALOGUE_TIMEOUT_S = float(os.environ.get("AI_TOWN_DIALOGUE_TIMEOUT", "90") or "90")
 except ValueError:
     DIALOGUE_TIMEOUT_S = 90.0
+# Patient retry (the "rather slow than canned" policy). When the whole live chain
+# (deepseek -> gemini -> gemma) fails the zh gate, we do NOT drop to the canned mock:
+# the two speakers stay "brewing" (busy) for a short pause, then the whole chain is
+# re-run. With 2 extra rounds that is 3 whole-chain attempts (9 provider tries) before
+# the mock floor is the last resort. The non-blocking engine means only these two
+# freeze; the town keeps moving.
+try:
+    DIALOGUE_RETRY_ROUNDS = int(os.environ.get("AI_TOWN_DIALOGUE_RETRY_ROUNDS", "2"))
+except ValueError:
+    DIALOGUE_RETRY_ROUNDS = 2
+try:
+    DIALOGUE_RETRY_WAIT_S = float(os.environ.get("AI_TOWN_DIALOGUE_RETRY_WAIT", "20") or "20")
+except ValueError:
+    DIALOGUE_RETRY_WAIT_S = 20.0
 REFLECT_TIMEOUT_S = 45.0       # wall-clock: a reflection past this is abandoned (no insight this round)
 # Sim-minutes the two parties are held while the exchange generates. Also the
 # self-heal window on resume: a snapshot taken mid-conversation restores the pair
@@ -233,6 +248,14 @@ class SimulationEngine:
         self._tasks: set[asyncio.Task] = set()      # live background tasks (kept referenced)
         self._dialogue_sem = asyncio.Semaphore(DIALOGUE_MAX_CONCURRENT)
         self._reflect_sem = asyncio.Semaphore(REFLECT_MAX_CONCURRENT)
+        # Dialogue patient-retry observability (surfaced at /api/usage as proof the
+        # retry is doing its job). ``retried`` = conversations that failed the first
+        # whole-chain pass and had to brew+retry; ``recovered`` = those a retry then
+        # rescued to a real model; ``exhausted`` = those that spent every round and
+        # still fell to the mock floor. rounds_extra = total extra chain re-runs.
+        self.dialogue_retry_stats: dict[str, int] = {
+            "retried": 0, "recovered": 0, "exhausted": 0, "rounds_extra": 0,
+        }
 
     def bootstrap(self, start_minute: int) -> None:
         # Fresh scheduler each call so re-bootstrapping onto a restored world
@@ -671,24 +694,51 @@ class SimulationEngine:
         self._spawn(self._dialogue_task(plan))
 
     async def _dialogue_task(self, plan: ConvPlan) -> None:
-        """Background: generate the exchange (bounded to DIALOGUE_MAX_CONCURRENT and a
-        wall-clock timeout; a timeout or total failure drops to the mock floor), then
-        settle. The settlement runs in a ``finally`` so the participants ALWAYS unlock,
-        even on cancellation or error -- no one can get stuck in ``talk`` forever."""
+        """Background: generate the exchange, then settle. Patient retry (the "rather
+        slow than canned" policy): a whole-chain failure -- every live provider fails
+        the zh gate (``ProvidersExhausted``) or the chain overruns the backstop --
+        does NOT drop to the canned mock. Instead the two speakers keep "brewing"
+        (they stay locked) for ``DIALOGUE_RETRY_WAIT_S``, then the whole chain re-runs,
+        up to ``DIALOGUE_RETRY_ROUNDS`` extra rounds. Only once every round is spent is
+        the mock floor served. The settlement runs in a ``finally`` so the participants
+        ALWAYS unlock, even on cancellation or error -- no one gets stuck in ``talk``.
+
+        The semaphore is re-acquired per round (released during the brew pause) so a
+        brewing pair never holds a generation slot away from other conversations."""
         res: object | None = None
-        reason: str | None = None   # set when the outer backstop fires (for one clear log line)
+        reason: str | None = None   # non-None only when we fell to the mock floor
+        rounds = 1 + max(0, DIALOGUE_RETRY_ROUNDS)
+        retried = False
         try:
-            async with self._dialogue_sem:
-                res = await asyncio.wait_for(
-                    self.decisions.generate_conversation(plan), timeout=DIALOGUE_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            reason = "timeout"
-            print(f"[dialogue] floor: whole chain exceeded the {DIALOGUE_TIMEOUT_S:.0f}s backstop, "
-                  f"degrading to mock ({plan.a.id}/{plan.b.id} @ min {plan.init_minute})", flush=True)
-            try:
-                res = await self.decisions.mock_dialogue(plan)
-            except Exception:
-                res = None
+            for attempt in range(rounds):
+                try:
+                    async with self._dialogue_sem:
+                        res = await asyncio.wait_for(
+                            self.decisions.generate_conversation(plan), timeout=DIALOGUE_TIMEOUT_S)
+                    if retried:
+                        self.dialogue_retry_stats["recovered"] += 1  # a retry rescued this from mock
+                    break  # a real, gate-passing exchange
+                except (ProvidersExhausted, asyncio.TimeoutError) as err:
+                    cause = "timeout" if isinstance(err, asyncio.TimeoutError) else "gate"
+                    if attempt < rounds - 1:
+                        if not retried:
+                            retried = True
+                            self.dialogue_retry_stats["retried"] += 1
+                        self.dialogue_retry_stats["rounds_extra"] += 1
+                        print(f"[dialogue] chain exhausted ({cause}, round {attempt + 1}/{rounds}); "
+                              f"brewing {DIALOGUE_RETRY_WAIT_S:.0f}s then retrying whole chain "
+                              f"({plan.a.id}/{plan.b.id} @ min {plan.init_minute})", flush=True)
+                        await asyncio.sleep(DIALOGUE_RETRY_WAIT_S)
+                        continue
+                    # Every round spent -> the mock floor is the last resort.
+                    reason = "exhausted"
+                    self.dialogue_retry_stats["exhausted"] += 1
+                    print(f"[dialogue] floor: all {rounds} chain rounds exhausted ({cause}), "
+                          f"degrading to mock ({plan.a.id}/{plan.b.id} @ min {plan.init_minute})", flush=True)
+                    try:
+                        res = await self.decisions.mock_dialogue(plan)
+                    except Exception:
+                        res = None
         except Exception as err:
             reason = "error"
             print(f"[dialogue] floor: generation errored ({err!r}), degrading to mock "
