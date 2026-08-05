@@ -61,8 +61,16 @@ main{flex:1;display:grid;grid-template-columns:1fr 340px;grid-template-rows:minm
 #map{position:absolute;inset:0;width:100%;height:100%;display:block}
 aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--panel)}
 .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint);padding:10px 14px 6px}
-#feedview{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+#feedview{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;position:relative}
 #feed{flex:1;overflow-y:auto;padding:0 14px 10px;font-size:13px;line-height:1.45}
+.ev.hidden{display:none}
+#feed-filter{display:flex;gap:5px;padding:5px 14px;border-bottom:1px solid var(--line);flex:none}
+.ff{font-size:10px;padding:2px 10px;border-radius:999px;border:1px solid var(--line);background:var(--paper);
+  color:var(--faint);cursor:pointer;letter-spacing:.04em}
+.ff.active{color:var(--ink);border-color:var(--ink)}
+#feed-pill{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);z-index:20;cursor:pointer;
+  font-size:11px;padding:4px 13px;border-radius:999px;border:1px solid var(--ink);background:var(--ink);
+  color:var(--paper);box-shadow:0 2px 7px rgba(0,0,0,.22)}
 /* chronicle -- the town's living history, pinned atop the feed */
 #chronicle{flex:none;border-bottom:1px solid var(--line);background:var(--panel)}
 #chron-head{width:100%;display:flex;align-items:center;gap:8px;padding:8px 12px;border:0;background:none;
@@ -448,6 +456,10 @@ footer b{font-weight:500;font-size:14px}
       <button id="tab-social" class="tab" role="tab" data-i18n="socialTitle">SECRETS</button>
     </div>
     <div id="feedview">
+      <div id="feed-filter">
+        <button id="ff-all" class="ff active" data-i18n="feed.all">All</button>
+        <button id="ff-quiet" class="ff" data-i18n="feed.quiet">Quiet</button>
+      </div>
       <div id="chronicle">
         <button id="chron-head" aria-expanded="false">
           <span class="chron-hicon">📜</span>
@@ -458,6 +470,7 @@ footer b{font-weight:500;font-size:14px}
         <div id="chron-list" hidden></div>
       </div>
       <div id="feed"></div>
+      <button id="feed-pill" hidden></button>
     </div>
     <div id="replay" hidden>
       <div id="replay-nodb" class="replay-msg" hidden data-i18n="replay.noDB">Replay needs a database (set AI_TOWN_DB_URL).</div>
@@ -512,6 +525,7 @@ const CHRON_VERBS=new Set(['confide','confronted','landmark_done','belief','brok
 const I18N={
   en:{
     subtitle:'FIELD STATION · 10 AGENTS', feedTitle:'EVENT FEED', graphTitle:'RELATIONSHIPS', replayTitle:'REPLAY', inspectorTitle:'AGENT INSPECTOR',
+    'feed.all':'All','feed.quiet':'Quiet','feed.newMsgs':'{n} new',
     'replay.run':'Run', 'replay.play':'Play', 'replay.pause':'Pause', 'replay.badge':'⏪ REPLAYING',
     'replay.noDB':'Replay needs a database. Set AI_TOWN_DB_URL to record history you can scrub through.',
     'replay.empty':'This run has no events to replay yet.', 'replay.events':'events', 'replay.loading':'Loading history…',
@@ -557,6 +571,7 @@ const I18N={
   },
   zh:{
     subtitle:'田野觀測站 · 10 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', replayTitle:'回放', inspectorTitle:'智能體檢視器',
+    'feed.all':'全部','feed.quiet':'精簡','feed.newMsgs':'{n} 則新訊息',
     'replay.run':'場次', 'replay.play':'播放', 'replay.pause':'暫停', 'replay.badge':'⏪ 回放中',
     'replay.noDB':'回放需要資料庫。設定 AI_TOWN_DB_URL 後才會記錄可拖曳回放的歷史。',
     'replay.empty':'這個場次還沒有可回放的事件。', 'replay.events':'事件', 'replay.loading':'載入歷史中…',
@@ -786,6 +801,7 @@ function applyLang(){
   if(!$('#replay-body').hidden){ buildRunOptions(); updatePlayBtn(); }   // "events" word + play/pause title follow the language
   if(!$('#away-card').hidden) renderAwayCard();        // "while you were away" card follows the language
   renderChron();                                        // chronicle preview/list follow the language
+  if(typeof updateFeedPill==='function') updateFeedPill();  // "N new" pill follows the language
 }
 function toggleLang(){ LANG=LANG==='en'?'zh':'en'; localStorage.setItem('lang',LANG); applyLang(); }
 
@@ -1202,11 +1218,43 @@ function addEventTo(feed,ev){                        // shared by the live feed 
   d.dataset.ev=JSON.stringify(ev);                 // stash for re-render on language switch
   d.innerHTML=`<time>${ev.clock.replace('Day ','D')}</time><span></span>`;
   renderEventText(d.lastChild,ev);
+  const isLive=feed.id==='feed';
+  if(isLive && !eventVisible(ev)) d.classList.add('hidden');   // quiet filter: display-only
   feed.appendChild(d);
   while(feed.children.length>120) feed.removeChild(feed.firstChild);
-  feed.scrollTop=feed.scrollHeight;
+  if(!isLive){ feed.scrollTop=feed.scrollHeight; return; }     // replay feed always follows
+  if(feedFollow) feed.scrollTop=feed.scrollHeight;             // scroll-lock: only follow at bottom
+  else if(eventVisible(ev)){ feedNew++; updateFeedPill(); }
 }
 function addEvent(ev){ addEventTo($('#feed'),ev); }
+
+/* ---------- feed: scroll-lock + quiet filter ---------- */
+const QUIET_HIDE=new Set(['move','arrive','eat','work','rest','idle','sleep','talk_start']);  // hidden in Quiet
+let feedFilter=sessionStorage.getItem('feedFilter')||'all';
+let feedFollow=true, feedNew=0;
+function eventVisible(ev){ return feedFilter==='all' || !QUIET_HIDE.has(ev.verb); }
+function updateFeedPill(){ const p=$('#feed-pill'); if(!p) return;
+  if(feedFollow||feedNew<=0){ p.hidden=true; return; }
+  p.hidden=false; p.textContent='↓ '+t('feed.newMsgs').replace('{n}',feedNew);
+}
+function applyFeedFilter(){
+  $('#ff-all').classList.toggle('active',feedFilter==='all');
+  $('#ff-quiet').classList.toggle('active',feedFilter==='quiet');
+  document.querySelectorAll('#feed .ev').forEach(d=>{
+    try{ d.classList.toggle('hidden', !eventVisible(JSON.parse(d.dataset.ev))); }catch(e){}
+  });
+  if(feedFollow){ const el=$('#feed'); el.scrollTop=el.scrollHeight; }
+}
+function setFeedFilter(m){ feedFilter=m; sessionStorage.setItem('feedFilter',m); applyFeedFilter(); }
+$('#ff-all').onclick=()=>setFeedFilter('all');
+$('#ff-quiet').onclick=()=>setFeedFilter('quiet');
+$('#feed').addEventListener('scroll',()=>{ const el=$('#feed');
+  const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<24;
+  if(atBottom){ feedFollow=true; feedNew=0; } else feedFollow=false;
+  updateFeedPill();
+});
+$('#feed-pill').onclick=()=>{ feedFollow=true; feedNew=0; const el=$('#feed'); el.scrollTop=el.scrollHeight; updateFeedPill(); };
+applyFeedFilter();
 
 /* ---------- speech bubbles (one per speaker, multi-line, collision-stacked) ----
    Real dialogue runs 40-80 chars, so bubbles wrap onto up to 3 lines (SVG text
