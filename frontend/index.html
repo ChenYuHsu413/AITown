@@ -176,9 +176,13 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 .rc-speeds{display:flex;gap:4px;margin-left:auto}
 .rspeed.active,#replay-play.playing{background:var(--ink);color:var(--paper);border-color:var(--ink)}
 #replay-feed{flex:1;overflow-y:auto;padding:0 14px 10px;font-size:13px;line-height:1.45}
-#replay-badge{position:absolute;top:10px;left:10px;z-index:15;font-family:var(--mono);font-size:11px;
-  letter-spacing:.06em;background:var(--amber);color:#fff;padding:4px 10px;border-radius:4px;
-  box-shadow:0 2px 8px rgba(0,0,0,.2)}
+#replay-badge{position:absolute;top:12px;left:12px;z-index:15;font-family:var(--mono);font-size:15px;font-weight:700;
+  letter-spacing:.08em;background:var(--amber);color:#fff;padding:7px 16px;border-radius:6px;
+  box-shadow:0 3px 12px rgba(0,0,0,.28);animation:replaypulse 1.8s ease-in-out infinite}
+@keyframes replaypulse{0%,100%{opacity:1}50%{opacity:.6}}
+#mapwrap.replaying{box-shadow:inset 0 0 0 5px var(--amber)}   /* obvious "you're in replay" frame */
+#replay-legacy-note{padding:8px 14px;margin:0;font-size:12px;line-height:1.45;color:var(--amber);
+  background:color-mix(in srgb,var(--amber) 12%,transparent);border-bottom:1px solid var(--line)}
 
 /* relationship graph */
 #graph{flex:1;min-height:0;position:relative;overflow:hidden}
@@ -475,7 +479,8 @@ footer b{font-weight:500;font-size:14px}
     <div id="replay" hidden>
       <div id="replay-nodb" class="replay-msg" hidden data-i18n="replay.noDB">Replay needs a database (set AI_TOWN_DB_URL).</div>
       <div id="replay-body" hidden>
-        <div class="replay-ctl">
+        <div id="replay-legacy-note" hidden data-i18n="replay.legacy">This session is from an older town — text browsing only.</div>
+        <div class="replay-ctl" id="replay-ctl">
           <label class="rc-row"><span data-i18n="replay.run">Run</span><select id="replay-run"></select></label>
           <div class="rc-time" id="replay-time">Day 1 06:00</div>
           <input type="range" id="replay-slider" min="0" max="0" value="0" aria-label="Replay time">
@@ -527,6 +532,8 @@ const I18N={
     subtitle:'FIELD STATION · 10 AGENTS', feedTitle:'EVENT FEED', graphTitle:'RELATIONSHIPS', replayTitle:'REPLAY', inspectorTitle:'AGENT INSPECTOR',
     'feed.all':'All','feed.quiet':'Quiet','feed.newMsgs':'{n} new',
     'replay.run':'Run', 'replay.play':'Play', 'replay.pause':'Pause', 'replay.badge':'⏪ REPLAYING',
+    'replay.grpCurrent':'Current town', 'replay.grpArchived':'Archived',
+    'replay.legacy':'This session is from an older town — text browsing only.',
     'replay.noDB':'Replay needs a database. Set AI_TOWN_DB_URL to record history you can scrub through.',
     'replay.empty':'This run has no events to replay yet.', 'replay.events':'events', 'replay.loading':'Loading history…',
     inspectorPlaceholder:'Select an agent on the map to inspect memories, relationships, and decision traces.',
@@ -573,6 +580,8 @@ const I18N={
     subtitle:'田野觀測站 · 10 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', replayTitle:'回放', inspectorTitle:'智能體檢視器',
     'feed.all':'全部','feed.quiet':'精簡','feed.newMsgs':'{n} 則新訊息',
     'replay.run':'場次', 'replay.play':'播放', 'replay.pause':'暫停', 'replay.badge':'⏪ 回放中',
+    'replay.grpCurrent':'目前小鎮', 'replay.grpArchived':'封存',
+    'replay.legacy':'此場次來自舊版小鎮,僅供文字瀏覽。',
     'replay.noDB':'回放需要資料庫。設定 AI_TOWN_DB_URL 後才會記錄可拖曳回放的歷史。',
     'replay.empty':'這個場次還沒有可回放的事件。', 'replay.events':'事件', 'replay.loading':'載入歷史中…',
     inspectorPlaceholder:'點選地圖上的智能體，檢視其記憶、關係與決策軌跡。',
@@ -2181,22 +2190,57 @@ function updatePlayBtn(){
 function buildRunOptions(){
   const sel=$('#replay-run'); if(!sel) return;
   const keep=sel.value;
-  sel.innerHTML=REPLAY.runs.map(r=>{
-    const when=(r.started_at||'').slice(0,16).replace('T',' ');
+  const opt=r=>{ const when=(r.started_at||'').slice(0,16).replace('T',' ');
     const lbl=`${when} · ${r.events} ${t('replay.events')}`+(r.note?` · ${r.note}`:'');
-    return `<option value="${r.id}">${lbl.replace(/</g,'&lt;')}</option>`;
-  }).join('');
+    return `<option value="${r.id}">${lbl.replace(/</g,'&lt;')}</option>`; };
+  const cur=REPLAY.runs.filter(r=>r.id===REPLAY.current), arch=REPLAY.runs.filter(r=>r.id!==REPLAY.current);
+  let html='';
+  if(cur.length)  html+=`<optgroup label="${t('replay.grpCurrent')}">`+cur.map(opt).join('')+`</optgroup>`;
+  if(arch.length) html+=`<optgroup label="${t('replay.grpArchived')}">`+arch.map(opt).join('')+`</optgroup>`;
+  sel.innerHTML=html;
   if(keep) sel.value=keep;
 }
-function selectRun(r){
+async function selectRun(r){
   REPLAY.gen++;                                     // invalidate any in-flight fetch from the previous run
   REPLAY.runId=r.id; REPLAY.minMin=r.minute_min; REPLAY.maxMin=r.minute_max;
   REPLAY.events=[]; REPLAY.fetchedTo=(r.minute_min|0)-1; REPLAY.fetching=null;
   REPLAY.playing=false; REPLAY.idx=0; REPLAY.cur=r.minute_min;
+  if(REPLAY.raf){ cancelAnimationFrame(REPLAY.raf); REPLAY.raf=0; }
+  // A run from a different cast (unknown actor ids) can't be re-staged on this map
+  // -> degrade to a scrollable text-only timeline.
+  const legacy=await isLegacyRun(r.id);
+  REPLAY.legacy=legacy;
+  $('#replay-legacy-note').hidden=!legacy;
+  ['#replay-slider','#replay-time'].forEach(s=>{ const e=$(s); if(e) e.style.display=legacy?'none':''; });
+  const tr=$('.rc-transport'); if(tr) tr.style.display=legacy?'none':'';
+  if(legacy){ renderLegacyTimeline(r); return; }
   const sl=$('#replay-slider'); sl.min=r.minute_min; sl.max=r.minute_max; sl.step=1; sl.value=r.minute_min; sl.disabled=false;
   updatePlayBtn();
   replayEnsure(REPLAY.maxMin);                      // background-fill the whole run in windows (fire & forget)
   queueSeek(r.minute_min);                          // initial view at the run's start
+}
+async function isLegacyRun(id){                     // any event with an actor id outside today's cast?
+  try{
+    const d=await (await fetch(`/api/history?run_id=${encodeURIComponent(id)}&minute_from=0&minute_to=999999999&limit=80`)).json();
+    const cast=new Set(CAST);
+    return (d.events||[]).some(e=>e.actor && !cast.has(e.actor));
+  }catch(e){ return false; }
+}
+async function renderLegacyTimeline(r){             // plain scrollable text: event lines + clocks, no map
+  const rf=$('#replay-feed'); if(!rf) return; rf.innerHTML='';
+  const gen=REPLAY.gen; let from=r.minute_min, all=[];
+  while(from<=r.minute_max){
+    const to=Math.min(from+2880-1, r.minute_max);
+    try{ const d=await (await fetch(`/api/history?run_id=${encodeURIComponent(r.id)}&minute_from=${from}&minute_to=${to}&limit=3000`)).json();
+      if(REPLAY.gen!==gen) return; all.push(...(d.events||[])); }catch(e){}
+    from=to+1;
+  }
+  const frag=document.createDocumentFragment();
+  all.forEach(ev=>{ const d=document.createElement('div'); d.className='ev '+(ev.kind||'');
+    d.innerHTML=`<time>${(ev.clock||'').replace('Day ','D')}</time><span></span>`;
+    d.lastChild.textContent=ev.text||evText(ev)||'';   // ev.text = prerendered English (old-schema safe)
+    frag.appendChild(d); });
+  rf.appendChild(frag); rf.scrollTop=0;
 }
 
 // ---- enter / exit ----
@@ -2214,14 +2258,17 @@ async function enterReplay(){
   buildRunOptions();
   const def=runs.find(r=>r.id===data.current)||runs[0];
   $('#replay-run').value=def.id;
-  REPLAY.on=true; $('#replay-badge').hidden=false;
+  REPLAY.on=true; $('#replay-badge').hidden=false; $('#mapwrap').classList.add('replaying');
   selectRun(def);
 }
 function exitReplay(){
   if(!REPLAY.on) return;
   REPLAY.on=false; REPLAY.playing=false; REPLAY.gen++;          // gen++ aborts the background fill
   if(REPLAY.raf){ cancelAnimationFrame(REPLAY.raf); REPLAY.raf=0; }
-  $('#replay-badge').hidden=true;
+  $('#replay-badge').hidden=true; $('#mapwrap').classList.remove('replaying');
+  $('#replay-legacy-note').hidden=true; REPLAY.legacy=false;
+  ['#replay-slider','#replay-time'].forEach(s=>{ const e=$(s); if(e) e.style.display=''; });
+  const tr=$('.rc-transport'); if(tr) tr.style.display='';
   clearBubbles();
   restoreLive();                                                // repaint the current live frame at once
 }
