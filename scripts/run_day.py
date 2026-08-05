@@ -43,6 +43,9 @@ async def main() -> None:
     print(f"=== AI TOWN · simulating {fmt_time(start)} → {fmt_time(end - 1)} ===\n")
     engine.bootstrap(start)
     await engine.run_until(end)
+    # Dialogue/reflection now generate in background tasks; settle them (and any
+    # decisions they reschedule) so the day fully plays out before we measure.
+    await engine.drain(end)
 
     print("\n=== END-OF-DAY AGENT STATUS ===")
     for a in world.agents.values():

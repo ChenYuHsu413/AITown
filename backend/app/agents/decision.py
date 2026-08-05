@@ -215,6 +215,27 @@ class DecisionTrace:
 
 
 @dataclass
+class ConvPlan:
+    """A conversation captured at initiation. Every pre-dialogue effect (rumor
+    shares, leaks, confides -- each a memory/relationship mutation) is already
+    applied and the prompt is fully built, so the slow dialogue generation can run
+    in a background task without the world's state drifting under the prompt.
+    ``settle_conversation`` consumes the generated result to apply the aftermath."""
+    a: Agent
+    b: Agent
+    location: str
+    init_minute: int
+    messages: list
+    validate: object                 # Callable[[result], bool] -- the dialogue quality gate
+    max_tokens: int
+    is_confront: bool
+    confront_rumor_id: str
+    shared_rumors: list              # fwd/rev/leak descriptors -> engine publishes at initiation
+    confided: list                   # confide descriptors -> engine publishes at initiation
+    confession: dict | None
+
+
+@dataclass
 class DecisionEngine:
     router: LLMRouter
     traces: list[DecisionTrace] = field(default_factory=list)
@@ -859,21 +880,21 @@ class DecisionEngine:
         return {"rumor_id": rumor.id, "text": text, "from": b.id, "to": c.id,
                 "leak": True, "subject": secret.owner, "secret_text": secret.text}
 
-    async def run_conversation(
+    async def start_conversation(
         self, a: Agent, b: Agent, world: World, now: int, confront_text: str | None = None,
         confront_rumor_id: str = "",
-    ) -> tuple[list[dict], dict, list[dict], dict | None]:
-        """One LLM call produces the whole exchange (played back turn by
-        turn in the UI later) + numeric relationship signals. Gossip flows
-        both ways: each side may pass the other a rumor. ``shared_rumors``
-        (0-2 entries, one per direction) carries the passed-on wordings for
-        the engine to publish. ``confront_text``, when set, is what ``a`` opens
-        with (a rumor confrontation) and takes priority over any forward share;
-        with ``confront_rumor_id`` also set the exchange is a confrontation that
-        settles that rumor. The 4th return value is a confrontation descriptor
-        (``{"rumor_id", "outcome", "admitted"}``) or ``None`` for normal chats; the
-        5th is ``confided`` (0-2 descriptors, one per direction someone opened up)
-        for the engine to publish as content-free ``confide`` events."""
+    ) -> ConvPlan:
+        """Initiation (runs synchronously w.r.t. the world clock, in the tick):
+        decide gossip / leaks / confides now -- each mutates memory + relationships
+        while both parties are about to be locked -- snapshot each side's retrieved
+        memories and impressions, and build the dialogue prompt. Returns a ``ConvPlan``
+        the engine hands to a background task; the world keeps advancing while the
+        dialogue itself generates, so only the two participants freeze.
+
+        ``confront_text``/``confront_rumor_id`` make the exchange a rumor
+        confrontation (``a`` opens with it) that settles that rumor. The plan's
+        ``shared_rumors``/``confided`` are already-decided descriptors for the engine
+        to publish at initiation."""
         is_confront = bool(confront_text and confront_rumor_id)
         fwd = await self._maybe_share_rumor(a, b, world, now)   # a -> b
         rev = await self._maybe_share_rumor(b, a, world, now)   # b -> a (lets a stationary initiator hear too)
@@ -915,30 +936,57 @@ class DecisionEngine:
                 return True
             turns = r.parsed.get("turns") if isinstance(r.parsed, dict) else None
             return isinstance(turns, list) and len(turns) >= 3
-        res = await self.router.generate(
-            task="dialogue",
-            messages=builders.dialogue_prompt(
-                a, b, _resolve_mems(a_mem, world), _resolve_mems(b_mem, world),
-                a_wants_to_mention=confront_text or (fwd or leak_fwd or {}).get("text"),
-                b_wants_to_mention=(rev or leak_rev or {}).get("text"),
-                is_confrontation=is_confront,
-                time_hint=builders.time_of_day(now),
-                a_impression=a_imp, b_impression=b_imp,
-                a_confide=confide_fwd["text"] if confide_fwd else None,
-                b_confide=confide_rev["text"] if confide_rev else None,
-                nearby_landmark=self._nearby_landmark(world, a.state.location),
-                confession=confession,
-            ),
-            agent_id=a.id,
-            sim_minute=now,
-            schema={"type": "object"},
+        messages = builders.dialogue_prompt(
+            a, b, _resolve_mems(a_mem, world), _resolve_mems(b_mem, world),
+            a_wants_to_mention=confront_text or (fwd or leak_fwd or {}).get("text"),
+            b_wants_to_mention=(rev or leak_rev or {}).get("text"),
+            is_confrontation=is_confront,
+            time_hint=builders.time_of_day(now),
+            a_impression=a_imp, b_impression=b_imp,
+            a_confide=confide_fwd["text"] if confide_fwd else None,
+            b_confide=confide_rev["text"] if confide_rev else None,
+            nearby_landmark=self._nearby_landmark(world, a.state.location),
+            confession=confession,
+        )
+        # Count the conversation against the daily budget at initiation (serialized
+        # in the tick), so the cap stays honest even though generation is now async.
+        self._roll_day(now)
+        self._dialogues_today += 1
+        return ConvPlan(
+            a=a, b=b, location=a.state.location, init_minute=now,
+            messages=messages, validate=_validate,
             # Chinese runs ~2-3x the tokens/char of English; 4 turns + JSON needs
             # more headroom or the last turn truncates.
             max_tokens=600 if builders.lang_is_zh() else 400,
-            validate=_validate,
+            is_confront=is_confront, confront_rumor_id=confront_rumor_id,
+            shared_rumors=shared_rumors, confided=confided, confession=confession,
         )
-        self._roll_day(now)
-        self._dialogues_today += 1   # count every conversation against the daily budget
+
+    async def generate_conversation(self, plan: ConvPlan) -> object:
+        """The slow half of a conversation: one LLM call produces the whole
+        exchange. Run inside a background task so the town doesn't wait on it."""
+        return await self.router.generate(
+            task="dialogue", messages=plan.messages, agent_id=plan.a.id,
+            sim_minute=plan.init_minute, schema={"type": "object"},
+            max_tokens=plan.max_tokens, validate=plan.validate,
+        )
+
+    async def mock_dialogue(self, plan: ConvPlan) -> object:
+        """Deterministic floor exchange -- used when the live generation times out or
+        the whole chain errors, so the two participants always unlock with a valid
+        scene rather than hanging. The mock provider is always the chain's last tier."""
+        mock = self.router.tiers["normal"][-1]
+        return await mock.generate(plan.messages, schema={"type": "object"}, max_tokens=plan.max_tokens)
+
+    def settle_conversation(
+        self, plan: ConvPlan, world: World, res: object
+    ) -> tuple[list[dict], dict, dict | None, dict | None, list[dict]]:
+        """Settlement (synchronous, runs when the background generation returns):
+        parse the exchange, write both sides' conversation memory, apply the
+        relationship signals, and resolve milestone / romance / confrontation.
+        Returns ``(turns, signals, confrontation, milestone, romance_events)`` for
+        the engine to publish (stamped at the conversation's initiation minute)."""
+        a, b, now = plan.a, plan.b, plan.init_minute
         parsed = res.parsed if isinstance(res.parsed, dict) else {}
         turns = parsed.get("turns", [])
         signals = {
@@ -946,15 +994,14 @@ class DecisionEngine:
             "trust_signal": float(parsed.get("trust_signal", 0.0)),
             "conflict_signal": float(parsed.get("conflict_signal", 0.0)),
         }
-
         # Both sides remember the conversation (importance via cheap tier
         # is skipped here: conversation gets a flat importance; a real
         # importance call is wired for notable events in the engine).
         a.memory.add(MemoryItem(
-            minute=now, text=f"Talked with {{agent:{b.id}}} at {{loc:{a.state.location}}}.",
+            minute=now, text=f"Talked with {{agent:{b.id}}} at {{loc:{plan.location}}}.",
             importance=3, kind="conversation"))
         b.memory.add(MemoryItem(
-            minute=now, text=f"Talked with {{agent:{a.id}}} at {{loc:{b.state.location}}}.",
+            minute=now, text=f"Talked with {{agent:{a.id}}} at {{loc:{plan.location}}}.",
             importance=3, kind="conversation"))
         f_before = a.rel(b.id).friendship                     # for the relationship-milestone check
         a.apply_conversation_signals(b.id, **signals)
@@ -966,15 +1013,15 @@ class DecisionEngine:
         # Romance: a confession settles by rule (its own scene just played); any
         # other warm exchange nudges the track and may tip a side into crushing.
         romance_events: list[dict] = []
-        if confession is not None:
-            romance_events.append(self._settle_confession(world, confession, now))
+        if plan.confession is not None:
+            romance_events.append(self._settle_confession(world, plan.confession, now))
         else:
-            self._grow_romance(a, b, world, signals["sentiment"], bool(confided), now)
+            self._grow_romance(a, b, world, signals["sentiment"], bool(plan.confided), now)
 
         confrontation = None
-        if is_confront:
-            confrontation = self._settle_confrontation(a, b, world, confront_rumor_id, parsed, now)
-        return turns, signals, shared_rumors, confrontation, confided, milestone, romance_events
+        if plan.is_confront:
+            confrontation = self._settle_confrontation(a, b, world, plan.confront_rumor_id, parsed, now)
+        return turns, signals, confrontation, milestone, romance_events
 
     # ---- romance (an independent track; see romance.py) --------------
 
@@ -1235,13 +1282,18 @@ class DecisionEngine:
 
     # ---- Level 3: reflection -----------------------------------------
 
-    async def maybe_reflect(
+    def should_reflect(self, agent: Agent) -> bool:
+        """Cheap synchronous gate (run in the tick): has enough weight accumulated?
+        Individualized -- quiet background characters carry a higher threshold, so
+        they reflect less often and spend less smart-tier without being silenced."""
+        return agent.memory.importance_since_reflection >= agent.profile.reflection_threshold
+
+    async def reflect(
         self, agent: Agent, world: World, now: int
-    ) -> tuple[list[str], list[dict], bool]:
-        # Individualized: quiet background characters (Grace, Mei) reflect less
-        # often, trimming their smart-tier spend without silencing the leads.
-        if agent.memory.importance_since_reflection < agent.profile.reflection_threshold:
-            return [], [], False, []
+    ) -> tuple[list[str], list[dict], bool, list[dict]]:
+        """The reflection body -- run in a background task (it's a slow smart-tier
+        call). Does NOT reset ``importance_since_reflection``; the engine resets it at
+        initiation so a second reflection can't pile up while this one generates."""
         day_start = now - (now % (24 * 60))
         events = _resolve_mems(agent.memory.today(day_start), world)
         # The agent's own still-open worries ride into the reflection so it can judge
@@ -1275,7 +1327,6 @@ class DecisionEngine:
                 romance_events = self._stage_life_decision(agent, world, res.parsed.get("life_decision"), now)
         for ins in insights:
             agent.memory.add(MemoryItem(minute=now, text=ins, importance=5, kind="reflection"))
-        agent.memory.importance_since_reflection = 0
         return insights, belief_events, secret_born, romance_events
 
     def _resolve_reflected_secrets(self, agent: Agent, raw: object, open_secrets: list, now: int) -> None:

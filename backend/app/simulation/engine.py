@@ -12,6 +12,7 @@ happen without polling.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import heapq
 import random
@@ -20,11 +21,29 @@ from typing import Callable
 
 from ..agents.agent import Agent
 from ..agents.core import MemoryItem
-from ..agents.decision import DecisionEngine
+from ..agents.decision import ConvPlan, DecisionEngine
 from ..llm.prompts import builders
 from ..world.world import World
 
 DAY_MIN = 24 * 60
+
+# ---- non-blocking dialogue / reflection ------------------------------------
+# A conversation's slow LLM generation runs in a background task so the town
+# keeps moving; only the two participants freeze. These bound that.
+DIALOGUE_MAX_CONCURRENT = 3   # in-flight dialogue generations (the design's cap); excess queue
+REFLECT_MAX_CONCURRENT = 4    # in-flight reflections (smart-tier); a soft burst limit
+DIALOGUE_TIMEOUT_S = 20.0     # wall-clock: a generation past this drops to the mock floor
+REFLECT_TIMEOUT_S = 20.0      # wall-clock: a reflection past this is abandoned (no insight this round)
+# Sim-minutes the two parties are held while the exchange generates. Also the
+# self-heal window on resume: a snapshot taken mid-conversation restores the pair
+# as busy_until = init + this, so they free themselves within it after a restart
+# (the in-flight task is gone; see the design's snapshot/resume note).
+DIALOGUE_LOCK_MIN = 30
+# In-process backstop only: _finish_dialogue always unlocks (it runs in a finally),
+# so this fires solely if that machinery itself wedges. Sized well above the max
+# sim-time a legitimate generation can span even at 20x (20s * 20x = 400 sim-min),
+# so it never force-kills a still-generating conversation.
+WATCHDOG_STUCK_MIN = 720
 
 # Day 1 = Monday. day_of_week 0=Mon .. 6=Sun.
 _DOW_EN = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -194,6 +213,15 @@ class SimulationEngine:
         # Fired (zero-arg) after each daily settlement so the host can persist a
         # snapshot; stays None -- and thus a no-op -- for headless/no-DB runs.
         self.on_snapshot: Callable[[], None] | None = None
+        # ---- background dialogue / reflection state ----------------------
+        # A conversation's slow generation runs in a background task; the two
+        # participants are locked in ``_in_dialogue`` (agent_id -> initiation minute,
+        # the authoritative lock + settlement token) until it settles.
+        self._in_dialogue: dict[str, int] = {}
+        self._reflecting: set[str] = set()          # agents with a reflection in flight
+        self._tasks: set[asyncio.Task] = set()      # live background tasks (kept referenced)
+        self._dialogue_sem = asyncio.Semaphore(DIALOGUE_MAX_CONCURRENT)
+        self._reflect_sem = asyncio.Semaphore(REFLECT_MAX_CONCURRENT)
 
     def bootstrap(self, start_minute: int) -> None:
         # Fresh scheduler each call so re-bootstrapping onto a restored world
@@ -212,6 +240,13 @@ class SimulationEngine:
             if nxt is None or nxt >= end_minute:
                 break
             await self.tick()
+            # Yield to the event loop while a dialogue/reflection is in flight so its
+            # background task actually gets to run (and settle) between ticks. Without
+            # this, an instant provider (mock) never suspends, so the loop would race
+            # ahead with the two talkers locked and nothing settling. Only when tasks
+            # are pending -- a pure-rules stretch keeps running at full tilt.
+            if self._tasks:
+                await asyncio.sleep(0)
 
     def _publish(
         self,
@@ -223,10 +258,15 @@ class SimulationEngine:
         text: str = "",
         target_name: str | None = None,
         detail: str = "",
+        minute: int | None = None,
     ) -> None:
+        # ``minute`` lets a background settlement stamp its events at the
+        # conversation's initiation time (the exchange narratively happened then,
+        # even though generation finished a few seconds -- and some sim-minutes --
+        # later). Defaults to the live clock.
         loc = self.world.locations.get(location_id)
         ev = Event(
-            minute=self.now,
+            minute=self.now if minute is None else minute,
             kind=kind,
             verb=verb,
             actor=actor.id if actor else "",
@@ -478,7 +518,23 @@ class SimulationEngine:
         self.expire_world_effects()   # end rain/festival whose window has closed
         agent = self.world.agents[item.agent_id]
 
-        # Busy agents (mid-conversation) get pushed to when they free up.
+        # Locked mid-conversation (its dialogue is generating in the background):
+        # keep the participant frozen -- reschedule shortly and skip. These small
+        # hops also keep the clock advancing even when only the two talkers have
+        # near-term work, so the town never stalls waiting on a conversation.
+        locked = self._in_dialogue.get(agent.id)
+        if locked is not None:
+            if self.now - locked > WATCHDOG_STUCK_MIN:   # backstop: settlement machinery wedged
+                self._in_dialogue.pop(agent.id, None)
+                agent.state.busy_until = self.now
+                print(f"[watchdog] {agent.id} stuck in dialogue {self.now - locked} sim-min "
+                      f"-> force unlock", flush=True)
+            else:
+                self.scheduler.schedule(agent.id, self.now + 5)
+                return
+
+        # Busy agents (resting/asleep, or a conversation whose lock hasn't lifted)
+        # get pushed to when they free up.
         if agent.state.busy_until > self.now:
             self.scheduler.schedule(agent.id, agent.state.busy_until)
             return
@@ -491,7 +547,7 @@ class SimulationEngine:
         decision = await self.decisions.decide(agent, self.world, obs, self.now)
 
         if decision.action == "talk" and decision.talk_partner:
-            await self._handle_conversation(
+            await self._initiate_conversation(
                 agent, decision.talk_partner, decision.confront_text, decision.confront_rumor_id,
             )
         else:
@@ -526,52 +582,57 @@ class SimulationEngine:
             if decision.action == "move":
                 self._interrupt_colocated(agent)
 
-        # Reflection check (Level 3) fires only on accumulated importance. It also
-        # distills lasting beliefs from repeated experience (semantic memory).
-        insights, beliefs, secret_born, romance_events = await self.decisions.maybe_reflect(agent, self.world, self.now)
-        for ev in romance_events:      # a proposal that just settled into partnership
-            self._publish_romance(ev)
-        if secret_born:  # content-free beat: the town notes they're holding something back
-            self._publish("reflection", "secret_born", actor=agent, location_id=agent.state.location)
-        for ins in insights:
-            self._publish(
-                "reflection", "insight", actor=agent,
-                location_id=agent.state.location, text=ins,
-            )
-        for be in beliefs:
-            conf = be.get("confidence")
-            detail = be["text"] + (f"  (confidence {int(conf * 100)}%)" if conf is not None else "")
-            self._publish(
-                "reflection", "belief", actor=agent,
-                target=self.world.agents.get(be["subject_id"]),
-                target_name=be["subject_name"],
-                location_id=agent.state.location, text=be["text"], detail=detail,
-            )
+        # Reflection (Level 3) fires on accumulated importance, then runs in the
+        # BACKGROUND -- it's a slow smart-tier call and a pure psychological beat, so
+        # the agent doesn't lock (it keeps acting; any life-decision it stages waits
+        # for the next day boundary anyway). Reset the counter now so a second
+        # reflection can't pile up while this one generates.
+        if self.decisions.should_reflect(agent) and agent.id not in self._reflecting:
+            agent.memory.importance_since_reflection = 0
+            self._reflecting.add(agent.id)
+            self._spawn(self._reflect_task(agent, self.now))
 
         self.scheduler.schedule(agent.id, self.now + decision.duration)
 
-    async def _handle_conversation(
+    # ---- background dialogue / reflection --------------------------------
+
+    def _spawn(self, coro) -> None:
+        """Launch a background task, keep it referenced (so it isn't GC'd mid-flight),
+        and drop it from the set when done."""
+        t = asyncio.ensure_future(coro)
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
+
+    async def _initiate_conversation(
         self, a: Agent, partner_id: str, confront_text: str = "", confront_rumor_id: str = "",
     ) -> None:
+        """Initiation (synchronous in the tick): if the partner is free, build the
+        conversation plan (rumor/leak/confide effects apply now), LOCK both parties,
+        publish the opening beats immediately (talk_start + any shared_rumor/leak/
+        confide), and hand the slow dialogue generation to a background task. The
+        world keeps advancing; only these two freeze until it settles."""
         b = self.world.agents[partner_id]
-        if b.state.busy_until > self.now or b.state.current_action == "sleep":
-            # Partner got occupied since the decision; retry shortly.
+        if (b.state.busy_until > self.now or b.state.current_action == "sleep"
+                or b.id in self._in_dialogue or a.id in self._in_dialogue):
+            # Partner (or self) got occupied since the decision; retry shortly.
             self.scheduler.schedule(a.id, self.now + 5)
             return
-        turns, signals, shared_rumors, confrontation, confided, milestone, romance_events = \
-            await self.decisions.run_conversation(
-                a, b, self.world, self.now,
-                confront_text=confront_text or None, confront_rumor_id=confront_rumor_id,
-            )
+        plan = await self.decisions.start_conversation(
+            a, b, self.world, self.now,
+            confront_text=confront_text or None, confront_rumor_id=confront_rumor_id,
+        )
+        init = self.now
+        # Lock both. ``_in_dialogue`` is the authoritative lock + settlement token;
+        # busy_until mirrors it for the UI ("talk" bubble) and third-party free checks,
+        # and is the resume self-heal window (see DIALOGUE_LOCK_MIN).
+        self._in_dialogue[a.id] = init
+        self._in_dialogue[b.id] = init
         a.state.current_action = "talk"
         b.state.current_action = "talk"
-        duration = max(6, len(turns) * 2)
-        a.state.busy_until = self.now + duration
-        b.state.busy_until = self.now + duration
-        self._publish(
-            "action", "talk_start", actor=a, target=b, location_id=a.state.location
-        )
-        for sr in shared_rumors:  # one event per direction actually shared
+        a.state.busy_until = init + DIALOGUE_LOCK_MIN
+        b.state.busy_until = init + DIALOGUE_LOCK_MIN
+        self._publish("action", "talk_start", actor=a, target=b, location_id=a.state.location)
+        for sr in plan.shared_rumors:  # one event per direction actually shared
             self._publish(
                 "action", "share_rumor",
                 actor=self.world.agents.get(sr["from"]),
@@ -588,7 +649,7 @@ class SimulationEngine:
                     detail=(f'Secret: "{secret_text}"  ->  now spreading as: "{sr["text"]}"'
                             if secret_text else f'Now spreading as: "{sr["text"]}"'),
                 )
-        for cf in confided:  # content-free to the world; the chronicle (god's-eye) keeps the detail
+        for cf in plan.confided:  # content-free to the world; the chronicle (god's-eye) keeps the detail
             self._publish(
                 "action", "confide",
                 actor=self.world.agents.get(cf["from"]),
@@ -596,36 +657,125 @@ class SimulationEngine:
                 location_id=a.state.location,
                 detail=cf.get("text", ""),   # the confided secret's text
             )
-        by_name = {a.name.lower(): a, b.name.lower(): b}
-        for i, turn in enumerate(turns):
-            speaker = by_name.get(
-                str(turn.get("speaker", "")).lower(),
-                a if i % 2 == 0 else b,  # fallback: alternate speakers
-            )
-            saved_now = self.now
-            self.now = saved_now + i  # stagger dialogue lines in sim time
+        self._spawn(self._dialogue_task(plan))
+
+    async def _dialogue_task(self, plan: ConvPlan) -> None:
+        """Background: generate the exchange (bounded to DIALOGUE_MAX_CONCURRENT and a
+        wall-clock timeout; a timeout or total failure drops to the mock floor), then
+        settle. The settlement runs in a ``finally`` so the participants ALWAYS unlock,
+        even on cancellation or error -- no one can get stuck in ``talk`` forever."""
+        res: object | None = None
+        try:
+            try:
+                async with self._dialogue_sem:
+                    res = await asyncio.wait_for(
+                        self.decisions.generate_conversation(plan), timeout=DIALOGUE_TIMEOUT_S)
+            except Exception:
+                res = await self.decisions.mock_dialogue(plan)   # floor: never leave them hanging
+        except Exception:
+            res = None
+        finally:
+            self._finish_dialogue(plan, res)
+
+    def _finish_dialogue(self, plan: ConvPlan, res: object | None) -> None:
+        """Settlement (synchronous): apply the aftermath and publish the exchange
+        (say lines + confronted/milestone/romance beats), stamped at the initiation
+        minute. Guarded by the ``_in_dialogue`` token so a late task can't stomp a
+        conversation the watchdog already cleared."""
+        a, b, init = plan.a, plan.b, plan.init_minute
+        if self._in_dialogue.get(a.id) != init or self._in_dialogue.get(b.id) != init:
+            return   # superseded / watchdog-cleared -> these two already moved on
+        self._in_dialogue.pop(a.id, None)
+        self._in_dialogue.pop(b.id, None)
+        duration = 6
+        if res is not None:
+            turns, _signals, confrontation, milestone, romance_events = \
+                self.decisions.settle_conversation(plan, self.world, res)
+            duration = max(6, len(turns) * 2)
+            by_name = {a.name.lower(): a, b.name.lower(): b}
+            for i, turn in enumerate(turns):
+                speaker = by_name.get(
+                    str(turn.get("speaker", "")).lower(),
+                    a if i % 2 == 0 else b,  # fallback: alternate speakers
+                )
+                self._publish(
+                    "dialogue", "say", actor=speaker,
+                    target=b if speaker is a else a,
+                    location_id=speaker.state.location,
+                    text=str(turn.get("text", "")), minute=init + i,  # stagger, stamped at initiation
+                )
+            if confrontation is not None:  # the rumor's endpoint: publish the verdict
+                outcome = "admitted it" if confrontation["outcome"] == "admitted" else "denied it"
+                rumor = self.decisions.rumors.rumors.get(confrontation.get("rumor_id", ""))
+                rumor_text = rumor.versions[-1].text if rumor and rumor.versions else ""
+                self._publish(
+                    "action", "confronted", actor=a, target=b,
+                    location_id=a.state.location, text=outcome, minute=init,
+                    detail=(f'About the rumor "{rumor_text}" -> {b.id.capitalize()} {outcome}'
+                            if rumor_text else f"{b.id.capitalize()} {outcome}"),
+                )
+            if milestone is not None:  # a friendship crossed a stage boundary -> a visible beat
+                self._publish_milestone(a, b, milestone, minute=init)
+            for ev in romance_events:  # a confession that just resolved (accepted -> dating, or turned down)
+                self._publish_romance(ev, minute=init)
+        # Narrative duration: the exchange occupies ``init .. init+duration`` in sim
+        # time regardless of how long generation took. Unlock and reschedule both;
+        # if that window is already in the past, they decide again immediately.
+        a.state.busy_until = init + duration
+        b.state.busy_until = init + duration
+        self.scheduler.schedule(a.id, max(self.now, a.state.busy_until))
+        self.scheduler.schedule(b.id, max(self.now, b.state.busy_until))
+
+    async def _reflect_task(self, agent: Agent, at_minute: int) -> None:
+        """Background reflection: generate insights/beliefs/new-secret/life-decision,
+        then publish them (stamped at ``at_minute``). Bounded and timeout-guarded;
+        always clears the per-agent in-flight guard."""
+        insights: list[str] = []
+        beliefs: list[dict] = []
+        secret_born = False
+        romance_events: list[dict] = []
+        try:
+            async with self._reflect_sem:
+                insights, beliefs, secret_born, romance_events = await asyncio.wait_for(
+                    self.decisions.reflect(agent, self.world, at_minute), timeout=REFLECT_TIMEOUT_S)
+        except Exception:
+            pass  # a hiccup/timeout just means no reflection this round
+        finally:
+            self._reflecting.discard(agent.id)
+        for ev in romance_events:      # a proposal that just settled into partnership
+            self._publish_romance(ev, minute=at_minute)
+        if secret_born:  # content-free beat: the town notes they're holding something back
+            self._publish("reflection", "secret_born", actor=agent,
+                          location_id=agent.state.location, minute=at_minute)
+        for ins in insights:
+            self._publish("reflection", "insight", actor=agent,
+                          location_id=agent.state.location, text=ins, minute=at_minute)
+        for be in beliefs:
+            conf = be.get("confidence")
+            detail = be["text"] + (f"  (confidence {int(conf * 100)}%)" if conf is not None else "")
             self._publish(
-                "dialogue", "say", actor=speaker,
-                target=b if speaker is a else a,
-                location_id=speaker.state.location,
-                text=str(turn.get("text", "")),
+                "reflection", "belief", actor=agent,
+                target=self.world.agents.get(be["subject_id"]),
+                target_name=be["subject_name"],
+                location_id=agent.state.location, text=be["text"], detail=detail, minute=at_minute,
             )
-            self.now = saved_now
-        if confrontation is not None:  # the rumor's endpoint: publish the verdict
-            outcome = "admitted it" if confrontation["outcome"] == "admitted" else "denied it"
-            rumor = self.decisions.rumors.rumors.get(confrontation.get("rumor_id", ""))
-            rumor_text = rumor.versions[-1].text if rumor and rumor.versions else ""
-            self._publish(
-                "action", "confronted", actor=a, target=b,
-                location_id=a.state.location, text=outcome,
-                detail=(f'About the rumor "{rumor_text}" -> {b.id.capitalize()} {outcome}'
-                        if rumor_text else f"{b.id.capitalize()} {outcome}"),
-            )
-        if milestone is not None:  # a friendship crossed a stage boundary -> a visible beat
-            self._publish_milestone(a, b, milestone)
-        for ev in romance_events:  # a confession that just resolved (accepted -> dating, or turned down)
-            self._publish_romance(ev)
-        self.scheduler.schedule(b.id, self.now + duration)
+
+    async def drain(self, end_minute: int) -> None:
+        """Headless helper (run_day): settle every in-flight dialogue/reflection and
+        process any decisions they reschedule, until nothing is pending and the
+        scheduler is exhausted to ``end_minute``. Lets a day's conversations fully
+        play out even though generation is now backgrounded (the server never calls
+        this -- it runs continuously and lets settlements arrive on their own)."""
+        guard = 0
+        while self._tasks or (
+            self.scheduler.peek_minute() is not None and self.scheduler.peek_minute() < end_minute
+        ):
+            if self._tasks:
+                await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            await self.run_until(end_minute)
+            guard += 1
+            if guard > 10000:   # backstop against a pathological reschedule loop
+                break
 
     def _accrue_copresence(self, agent: Agent, elapsed: int) -> None:
         """Credit the time this agent just spent co-located with other awake residents
@@ -655,27 +805,28 @@ class SimulationEngine:
                     n += 1
         return n
 
-    def _publish_romance(self, ev: dict) -> None:
+    def _publish_romance(self, ev: dict, minute: int | None = None) -> None:
         """A public romance beat: dating / rejection / partnership. (A crush stays
         private -- it plants a secret, never a chronicle line.)"""
         a = self.world.agents.get(ev["a"])
         b = self.world.agents.get(ev["b"])
         self._publish("system", ev["verb"], actor=a, target=b,
-                      location_id=a.state.location if a else "")
+                      location_id=a.state.location if a else "", minute=minute)
 
-    def _publish_milestone(self, a: Agent, b: Agent, m: dict) -> None:
+    def _publish_milestone(self, a: Agent, b: Agent, m: dict, minute: int | None = None) -> None:
         """A relationship stage-change: one chronicle beat + a memory for each side.
         ``text`` is the stage reached (up) or 'distant' (a conflict-driven drop); the
         frontend renders both languages. ``detail`` carries the current friendship
         both ways so the expanded row shows where they stand."""
+        m_at = self.now if minute is None else minute
         stage = m["stage"] if m["up"] else "distant"
         detail = f"{{agent:{a.id}}} ↔ {{agent:{b.id}}} · {m['fa']} / {m['fb']}"
         self._publish("system", "milestone", actor=a, target=b,
-                      location_id=a.state.location, text=stage, detail=detail)
+                      location_id=a.state.location, text=stage, detail=detail, minute=minute)
         note = ("grew closer to" if m["up"] else "drifted apart from")
-        a.memory.add(MemoryItem(minute=self.now, importance=4, kind="reflection",
+        a.memory.add(MemoryItem(minute=m_at, importance=4, kind="reflection",
                                 text=f"I {note} {{agent:{b.id}}}."))
-        b.memory.add(MemoryItem(minute=self.now, importance=4, kind="reflection",
+        b.memory.add(MemoryItem(minute=m_at, importance=4, kind="reflection",
                                 text=f"I {note} {{agent:{a.id}}}."))
 
     def _interrupt_colocated(self, mover: Agent) -> None:
