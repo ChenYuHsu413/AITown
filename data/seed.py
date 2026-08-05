@@ -356,7 +356,10 @@ def build_agents() -> list[Agent]:
     # Xixi looks up to Aisi (one-way); she barely knows him yet (default).
     _rel(xixi, "aisi", 45, 40)
 
-    return [jiji, ange, oula, lengyue, azong, xixi, aisi, xue, long, kuaizheng]
+    residents = [jiji, ange, oula, lengyue, azong, xixi, aisi, xue, long, kuaizheng]
+    for a in residents:                       # attach each resident's locked speech style
+        a.profile.speech_style = SPEECH_STYLE.get(a.id, "")
+    return residents
 
 
 # Initial private matters, tied to the new personalities. Seeded into the

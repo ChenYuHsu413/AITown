@@ -127,13 +127,18 @@ def dialogue_locale_directive() -> str:
             "never the English/pinyin form: " + "; ".join(parts) + ".")
 
 
-def character_card(agent: "Agent", name: str | None = None) -> str:
+def character_card(agent: "Agent", name: str | None = None, speech: bool = False) -> str:
     p = agent.profile
     traits = ", ".join(p.traits)
-    return (
+    card = (
         f"{name or p.name}, {p.age}, {p.occupation}. Traits: {traits}. "
         f"Top goal: {p.goals[0]['goal'] if p.goals else 'none'}."
     )
+    # Speech style is only worth its tokens where the reader hears the voice --
+    # i.e. dialogue; should_talk/decision/reflection leave it off.
+    if speech and p.speech_style:
+        card += f" Speech style: {p.speech_style}"
+    return card
 
 
 def state_line(agent: "Agent") -> str:
@@ -179,8 +184,8 @@ def dialogue_prompt(
     user = (
         f"Simulate a conversation between {a.profile.name} and {b.profile.name}. "
         f"Maximum {max_turns} turns.\n{scene}"
-        f"A: {character_card(a)} {state_line(a)}\n{memories_block(a_mem)}\n"
-        f"B: {character_card(b)} {state_line(b)}\n{memories_block(b_mem)}"
+        f"A: {character_card(a, speech=True)} {state_line(a)}\n{memories_block(a_mem)}\n"
+        f"B: {character_card(b, speech=True)} {state_line(b)}\n{memories_block(b_mem)}"
     )
     # Lasting impressions colour how they treat each other, beyond today's memories.
     if a_impression:
