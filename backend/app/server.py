@@ -48,6 +48,19 @@ try:
     UNATTENDED_SPEED = float(os.environ.get("AI_TOWN_UNATTENDED_SPEED", "2") or "2")
 except ValueError:
     UNATTENDED_SPEED = 2.0
+
+# Night skip: when the whole town is asleep with no LLM work in flight, fast-forward
+# through the dead hours so a 1x viewer doesn't wait out eight sim-hours. An all-asleep
+# town makes zero LLM calls, so this speed is honest even in free mode (it's exempt from
+# the MAX_LIVE_SPEED clamp -- see _apply_night_skip). Restores the viewer's own gear the
+# moment anyone stirs, or NIGHT_WAKE_LEAD_MIN sim-min before the earliest routine wake so
+# morning opens at their chosen speed rather than mid-fast-forward.
+try:
+    NIGHT_SPEED = float(os.environ.get("AI_TOWN_NIGHT_SPEED", "20") or "20")
+except ValueError:
+    NIGHT_SPEED = 20.0
+NIGHT_WAKE_LEAD_MIN = 15  # restore this many sim-min before the earliest scheduled wake
+
 AWAY_SUMMARY_MIN_SECONDS = 30 * 60.0  # only summarize an absence longer than this real-time gap
 
 # Display-layer translation retry (the "no English left on screen" policy). When a
@@ -96,6 +109,10 @@ class Sim:
         self._user_speed: float = self.speed    # the viewer's chosen live speed, restored on reconnect
         self.unattended_speed: float = min(UNATTENDED_SPEED, MAX_LIVE_SPEED) if self.live else UNATTENDED_SPEED
         self._cruising: bool = False            # currently auto-slowed because nobody's watching
+        # Night skip: fast-forward through the sleeping hours (see NIGHT_SPEED).
+        self.night_speed: float = NIGHT_SPEED
+        self._night_cruising: bool = False      # currently fast-forwarding through the night
+        self._night_suppressed: bool = False    # user set speed this night -> no auto skip until they wake
         self._away_since: float | None = None   # monotonic when the last viewer left (None = someone's here)
         self._away_mark: dict | None = None     # {minute, event_idx} captured when the last viewer left
         self.persistence = None          # set by lifespan when DB configured
@@ -394,6 +411,8 @@ class Sim:
             "speed": self.speed,
             "unattended": self.unattended,
             "cruising": self._cruising,
+            "night": self._night_cruising,
+            "user_speed": self._user_speed,
             "llm_busy": self._llm_depth > 0,
             "busy_ms": self._llm_busy_ms(),
         })
@@ -453,6 +472,62 @@ class Sim:
             self._cruising = True
             self.speed = self.unattended_speed
             print(f"[unattended] no viewers, cruising at {self.speed:g}x", flush=True)
+
+    # ---- night skip -----------------------------------------------
+
+    def _town_all_asleep(self) -> bool:
+        agents = self.world.agents.values()
+        return bool(agents) and all(a.state.current_action == "sleep" for a in agents)
+
+    def _llm_inflight(self) -> bool:
+        """Any dialogue/reflection still generating, or a synchronous call in flight.
+        The engine's locks (_in_dialogue/_reflecting) and live task set are the source
+        of truth; _llm_depth catches a decision-time call. Night skip waits for all of
+        these to settle -- a late-night conversation must play out at normal speed."""
+        e = self.engine
+        return bool(e._tasks or e._in_dialogue or e._reflecting) or self._llm_depth > 0
+
+    def _night_meetup_pending(self) -> bool:
+        """Forward hook: no scheduled night-appointment mechanism exists yet. When one
+        lands, return True while an appointment falls inside the sleeping window so the
+        town doesn't fast-forward past it. Today it's always clear."""
+        return False
+
+    def _apply_night_skip(self) -> None:
+        """Fast-forward the sleeping hours. Engages when the whole town is asleep, no
+        LLM work is in flight, and no night appointment is pending -- then cruises at
+        ``night_speed``. Restores the pre-skip gear the instant someone stirs, or
+        NIGHT_WAKE_LEAD_MIN sim-min before the earliest scheduled wake so morning opens
+        at the viewer's own speed. Coexists with the unattended cruise (takes the
+        higher) and is exempt from the free-mode 5x clamp: an all-asleep town makes zero
+        LLM calls, so 20x burns no quota -- which is exactly why it's safe to run fast."""
+        next_wake = self.engine.scheduler.peek_minute()
+        near_wake = next_wake is not None and (next_wake - self.engine.now) <= NIGHT_WAKE_LEAD_MIN
+        want = (
+            self._town_all_asleep()
+            and not self._llm_inflight()
+            and not self._night_meetup_pending()
+            and not near_wake
+            and not self._night_suppressed
+        )
+        if want:
+            # Baseline = the speed that would be active without night skip (the
+            # unattended cruise while unwatched, else the viewer's own gear). Take the
+            # higher so unattended-2x and night-20x coexist as 20x, not 2x.
+            baseline = self.unattended_speed if self._cruising else self._user_speed
+            target = max(self.night_speed, baseline)
+            if not self._night_cruising:
+                self._night_cruising = True
+                print(f"[night] town asleep, cruising through the night at {target:g}x", flush=True)
+            self.speed = target
+        elif self._night_cruising:
+            self._night_cruising = False
+            self.speed = self.unattended_speed if self._cruising else self._user_speed
+            print(f"[night] morning -- restored {self.speed:g}x", flush=True)
+        # Manual-override suppression lasts only for the current night: once anyone is
+        # awake again, re-arm auto night-skip for the next one.
+        if self._night_suppressed and not self._town_all_asleep():
+            self._night_suppressed = False
 
     # ---- client registration + away summary -----------------------
 
@@ -528,6 +603,7 @@ class Sim:
             if self._is_idle():
                 continue  # no clients: don't advance the clock or accumulate _frac
             self._apply_unattended_speed()  # unattended: cruise slower while unwatched
+            self._apply_night_skip()        # night: fast-forward the sleeping hours (overrides cruise upward)
             self._frac += self.speed * TICK_REAL_SECONDS
             step = int(self._frac)
             if step <= 0:
@@ -606,6 +682,8 @@ class Sim:
             "speed": self.speed,
             "unattended": self.unattended,
             "cruising": self._cruising,
+            "night": self._night_cruising,
+            "user_speed": self._user_speed,
             "live": self.live, "paid": self.paid,   # frontend gates the 20x button on these
             "locations": [
                 {"id": l.id, "name": l.name, "kind": l.kind, "x": l.x, "y": l.y,
@@ -648,6 +726,8 @@ class Sim:
             "speed": self.speed,
             "unattended": self.unattended,
             "cruising": self._cruising,
+            "night": self._night_cruising,
+            "user_speed": self._user_speed,
             "agents": self.agent_states(),
             "effects": self.effects_json(),
             "landmarks": self.landmarks_json(),
@@ -768,6 +848,10 @@ async def control(body: dict) -> JSONResponse:
         want = float(body.get("speed", 5))
         want = min(want, MAX_LIVE_SPEED) if (sim.live and not sim.paid) else want   # free live: don't burst rate limits
         sim._user_speed = want                                   # remember it across unattended cruise
+        # Manual override wins over night skip for the rest of this night (auto skip
+        # re-arms next night, once the town has woken); drop out of the cruise now.
+        sim._night_suppressed = True
+        sim._night_cruising = False
         if not sim._cruising:                                    # while cruising, keep the slow speed
             sim.speed = want
         sim.paused = False

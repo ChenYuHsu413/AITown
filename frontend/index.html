@@ -29,6 +29,10 @@ header{display:flex;align-items:center;gap:20px;padding:10px 18px;border-bottom:
 #llm-dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--amber);
   box-shadow:0 0 0 0 var(--amber);animation:llmpulse 1.5s ease-in-out infinite;cursor:default}
 @keyframes llmpulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
+/* night skip: a small moon beside the clock while the town fast-forwards through the
+   sleeping hours (hover -> "restores at dawn"). A slow breath, not an alarm. */
+#night-moon{font-size:14px;line-height:1;flex:none;cursor:default;animation:moonbreath 3s ease-in-out infinite}
+@keyframes moonbreath{0%,100%{opacity:.55}50%{opacity:1}}
 /* connection-lost hint: a quiet grey dot beside the clock while the ws reconnects */
 #conn-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--faint);
   opacity:.6;animation:connpulse 1.6s ease-in-out infinite;cursor:default}
@@ -51,6 +55,10 @@ header{display:flex;align-items:center;gap:20px;padding:10px 18px;border-bottom:
 .controls button{font-family:var(--mono);font-size:12px;padding:6px 12px;background:var(--panel);
   border:1px solid var(--line);border-radius:4px;color:var(--ink);cursor:pointer}
 .controls button.active{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+/* night skip: the viewer's own gear stays selected but wears a moon corner-badge --
+   "your gear is still here, just on autopilot through the night". */
+.controls button.night-cruise{position:relative}
+.controls button.night-cruise::after{content:'🌙';position:absolute;top:-7px;right:-6px;font-size:10px;line-height:1;pointer-events:none}
 .controls button.disabled{opacity:.4;cursor:not-allowed}
 .controls button:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
 
@@ -390,6 +398,7 @@ footer b{font-weight:500;font-size:14px}
     <div id="clock">— —:—</div>
     <span id="conn-dot" hidden data-i18n-title="conn.reconnecting" title="Connection lost, reconnecting…" role="status"></span>
     <span id="llm-dot" hidden data-i18n-title="llmBusy" title="Waiting for AI…" role="status"></span>
+    <span id="night-moon" hidden data-i18n-title="night.hint" title="Fast-forwarding through the night — restores at dawn" role="status">🌙</span>
   </div>
   <div id="daystrip"><div id="sun" style="left:25%"></div></div>
   <div class="controls">
@@ -585,6 +594,7 @@ const I18N={
     'title.s1':'1 sim-minute per second','title.s5':'5 sim-minutes per second',
     'title.s10':'10 sim-minutes per second','title.s10capped':'Capped at 5× in free-quota mode',
     'title.s20':'20 sim-minutes per second','title.s20capped':'Capped at 5× in free-quota mode','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
+    'night.hint':'Fast-forwarding through the night — restores at dawn',
     'title.god':'World events','god.rain':'Rain · 3h','god.festival':'Park festival · 4h','god.break':'Break equipment',
     'god.rumorHead':'RUMORS','god.startedBy':'Started by','god.presetDefault':'(preset default)',
     'god.preset.cafe':'Cafe crisis','god.preset.xue':'Xue quitting','god.preset.aisi':"Aisi's award",'god.preset.azong':'Azong moving',
@@ -636,6 +646,7 @@ const I18N={
     'title.s1':'每秒 1 模擬分鐘','title.s5':'每秒 5 模擬分鐘',
     'title.s10':'每秒 10 模擬分鐘','title.s10capped':'免費額度模式下限速 5×',
     'title.s20':'每秒 20 模擬分鐘','title.s20capped':'免費額度模式下限速 5×','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
+    'night.hint':'夜間快轉中，清晨自動恢復',
     'title.god':'世界事件','god.rain':'下雨 3 小時','god.festival':'公園慶典 4 小時','god.break':'觸發設備故障',
     'god.rumorHead':'謠言','god.startedBy':'由誰起頭','god.presetDefault':'(預設起頭者)',
     'god.preset.cafe':'咖啡館危機','god.preset.xue':'雪要離職','god.preset.aisi':'艾斯得獎','god.preset.azong':'阿總搬遷',
@@ -870,7 +881,7 @@ function handleWSMessage(e){
   if(msg.type==='snapshot' && msg.away_summary) showAwaySummary(msg.away_summary);  // unattended recap on reconnect
   if(REPLAY.on) return;                                // in replay: keep receiving, but don't paint over it
   if(msg.type==='snapshot') msg.events.forEach(addEvent);
-  updateClock(msg.minute,msg.clock,msg.paused,msg.speed);
+  updateClock(msg.minute,msg.clock,msg.paused,msg.speed,msg.night,msg.user_speed);
   if('llm_busy' in msg) updateBusy(msg);               // tick / snapshot / status all carry the in-flight state
   if(msg.type==='status') return;                      // status heartbeat: clock + busy hint only, no world data
   if(msg.agents) updateAgents(msg.agents);
@@ -1219,14 +1230,22 @@ function fmtMinute(m){
   return `Day ${day} · ${dow} ${String(Math.floor(x/60)).padStart(2,'0')}:${String(x%60).padStart(2,'0')}`;
 }
 let LAST_MINUTE=0;
-function updateClock(minute,clock,paused,speed){
+function updateClock(minute,clock,paused,speed,night,userSpeed){
   LAST_MINUTE=minute;
   $('#clock').textContent=fmtMinute(minute);                   // derive from the minute (server clock is identical)
   applyDaylight(minute);
   updateClosedSigns(minute);                                   // shops on their weekly day off
   if(paused && pausePending) clearPausePending();              // server confirmed the pause -> drop the transitional state
   $('#btn-pause').classList.toggle('active',paused);
-  ['1','5','10','20'].forEach(s=>$('#btn-'+s).classList.toggle('active',!paused&&speed==+s));
+  // Night skip: the clock races at the cruise speed, but the selected gear stays the
+  // viewer's own (a moon badge marks it -- "your gear is still here, just on autopilot
+  // through the night"). Otherwise the live speed drives the selection as usual.
+  const gear = night ? (userSpeed||speed) : speed;
+  ['1','5','10','20'].forEach(s=>{ const b=$('#btn-'+s);
+    b.classList.toggle('active',!paused&&gear==+s);
+    b.classList.toggle('night-cruise',!!night&&!paused&&gear==+s);
+  });
+  const moon=$('#night-moon'); if(moon) moon.hidden=!night;
 }
 // A small "休" / "CLOSED" badge over any shop resting on its weekly day off.
 function updateClosedSigns(minute){
@@ -2384,7 +2403,7 @@ function exitReplay(){
 }
 async function restoreLive(){
   try{ const s=await (await fetch('/api/state')).json();
-    updateAgents(s.agents||[]); updateLandmarks(s.landmarks||[]); renderEffects(s.effects||[]); updateClock(s.minute,s.clock,s.paused,s.speed); updateBusy(s);
+    updateAgents(s.agents||[]); updateLandmarks(s.landmarks||[]); renderEffects(s.effects||[]); updateClock(s.minute,s.clock,s.paused,s.speed,s.night,s.user_speed); updateBusy(s);
   }catch(e){}
 }
 
