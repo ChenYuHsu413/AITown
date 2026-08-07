@@ -39,6 +39,14 @@ IDLE_GRACE_SECONDS = 10.0  # keep running this long after the last client leaves
 MAX_LIVE_SPEED = 5.0       # in live mode, cap speed so LLM calls don't burst past free-tier rate limits
 SNAPSHOT_REAL_SECONDS = 60.0  # persist the world at most this often (only when the clock advanced)
 
+# Daytime pacing: the fixed live speed while the town is awake. There are no manual
+# speed tiers -- days run at DAY_SPEED (real time by default), nights auto fast-forward
+# (see NIGHT_SPEED). DAY_SPEED sits below MAX_LIVE_SPEED so free mode never clamps it.
+try:
+    DAY_SPEED = float(os.environ.get("AI_TOWN_DAY_SPEED", "1") or "1")
+except ValueError:
+    DAY_SPEED = 1.0
+
 # Unattended mode: keep the town running with nobody watching, so a user can
 # leave it recording history overnight and replay it later. When on, the idle
 # auto-pause is skipped and -- once the last viewer leaves -- the clock cruises
@@ -95,7 +103,7 @@ class Sim:
         self.world = World(build_locations(), build_agents())
         self.engine = SimulationEngine(self.world, DecisionEngine(self.router))
         seed_secrets(self.engine.decisions.secrets)   # fresh start; a resume overwrites from the snapshot
-        self.speed: float = 5.0          # sim minutes per real second
+        self.speed: float = DAY_SPEED    # sim minutes per real second (fixed daytime pace)
         self.paused: bool = False
         self._frac: float = 0.0
         self._new_events: list[Event] = []
@@ -106,13 +114,12 @@ class Sim:
         # Unattended mode: the town keeps running with no viewers; when empty it
         # auto-slows to a quota-friendly cruise speed, restored on reconnect.
         self.unattended: bool = UNATTENDED
-        self._user_speed: float = self.speed    # the viewer's chosen live speed, restored on reconnect
+        self._user_speed: float = self.speed    # daytime live speed, restored after an unattended cruise
         self.unattended_speed: float = min(UNATTENDED_SPEED, MAX_LIVE_SPEED) if self.live else UNATTENDED_SPEED
         self._cruising: bool = False            # currently auto-slowed because nobody's watching
         # Night skip: fast-forward through the sleeping hours (see NIGHT_SPEED).
         self.night_speed: float = NIGHT_SPEED
         self._night_cruising: bool = False      # currently fast-forwarding through the night
-        self._night_suppressed: bool = False    # user set speed this night -> no auto skip until they wake
         self._away_since: float | None = None   # monotonic when the last viewer left (None = someone's here)
         self._away_mark: dict | None = None     # {minute, event_idx} captured when the last viewer left
         self.persistence = None          # set by lifespan when DB configured
@@ -508,11 +515,10 @@ class Sim:
             and not self._llm_inflight()
             and not self._night_meetup_pending()
             and not near_wake
-            and not self._night_suppressed
         )
         if want:
             # Baseline = the speed that would be active without night skip (the
-            # unattended cruise while unwatched, else the viewer's own gear). Take the
+            # unattended cruise while unwatched, else the daytime speed). Take the
             # higher so unattended-2x and night-20x coexist as 20x, not 2x.
             baseline = self.unattended_speed if self._cruising else self._user_speed
             target = max(self.night_speed, baseline)
@@ -524,10 +530,6 @@ class Sim:
             self._night_cruising = False
             self.speed = self.unattended_speed if self._cruising else self._user_speed
             print(f"[night] morning -- restored {self.speed:g}x", flush=True)
-        # Manual-override suppression lasts only for the current night: once anyone is
-        # awake again, re-arm auto night-skip for the next one.
-        if self._night_suppressed and not self._town_all_asleep():
-            self._night_suppressed = False
 
     # ---- client registration + away summary -----------------------
 
@@ -845,14 +847,13 @@ async def control(body: dict) -> JSONResponse:
     elif cmd == "play":
         sim.paused = False
     elif cmd == "speed":
-        want = float(body.get("speed", 5))
+        # No manual speed tiers in the UI anymore; this endpoint stays for unattended
+        # and internal callers. It sets the daytime speed without disturbing an active
+        # cruise (unattended or night), which the pacing loop recomputes each tick.
+        want = float(body.get("speed", DAY_SPEED))
         want = min(want, MAX_LIVE_SPEED) if (sim.live and not sim.paid) else want   # free live: don't burst rate limits
         sim._user_speed = want                                   # remember it across unattended cruise
-        # Manual override wins over night skip for the rest of this night (auto skip
-        # re-arms next night, once the town has woken); drop out of the cruise now.
-        sim._night_suppressed = True
-        sim._night_cruising = False
-        if not sim._cruising:                                    # while cruising, keep the slow speed
+        if not sim._cruising and not sim._night_cruising:
             sim.speed = want
         sim.paused = False
     return JSONResponse({"paused": sim.paused, "speed": sim.speed})

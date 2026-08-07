@@ -51,16 +51,14 @@ header{display:flex;align-items:center;gap:20px;padding:10px 18px;border-bottom:
 #daystrip{flex:1;height:6px;border:1px solid var(--line);border-radius:3px;position:relative;background:
   linear-gradient(90deg,#131F35 0%,#131F35 20%,#c98a3a 27%,#f2ecd8 40%,#f2ecd8 62%,#c98a3a 75%,#131F35 85%,#131F35 100%)}
 #sun{position:absolute;top:-4px;width:12px;height:12px;border-radius:50%;background:var(--ink);border:2px solid var(--paper);transform:translateX(-50%)}
-.controls{display:flex;gap:6px}
+.controls{display:flex;gap:6px;align-items:center}
 .controls button{font-family:var(--mono);font-size:12px;padding:6px 12px;background:var(--panel);
   border:1px solid var(--line);border-radius:4px;color:var(--ink);cursor:pointer}
 .controls button.active{background:var(--ink);color:var(--paper);border-color:var(--ink)}
-/* night skip: the viewer's own gear stays selected but wears a moon corner-badge --
-   "your gear is still here, just on autopilot through the night". */
-.controls button.night-cruise{position:relative}
-.controls button.night-cruise::after{content:'🌙';position:absolute;top:-7px;right:-6px;font-size:10px;line-height:1;pointer-events:none}
-.controls button.disabled{opacity:.4;cursor:not-allowed}
 .controls button:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
+/* Day/night pacing indicator (not a control): realtime by day, auto night cruise. */
+.pace-state{font-family:var(--mono);font-size:12px;padding:6px 10px;color:var(--ink);cursor:default;white-space:nowrap}
+.pace-state.cruising{color:var(--amber)}
 
 /* layout */
 main{flex:1;display:grid;grid-template-columns:1fr 340px;grid-template-rows:minmax(0,1fr);min-height:0}
@@ -403,10 +401,7 @@ footer b{font-weight:500;font-size:14px}
   <div id="daystrip"><div id="sun" style="left:25%"></div></div>
   <div class="controls">
     <button id="btn-pause" data-i18n-title="title.pause" title="Pause simulation">▮▮</button>
-    <button id="btn-1" data-i18n-title="title.s1" title="1 sim-minute per second">1×</button>
-    <button id="btn-5" class="active" data-i18n-title="title.s5" title="5 sim-minutes per second">5×</button>
-    <button id="btn-10" data-i18n-title="title.s10" title="10 sim-minutes per second">10×</button>
-    <button id="btn-20" data-i18n-title="title.s20" title="20 sim-minutes per second">20×</button>
+    <span id="pace-state" class="pace-state" data-i18n-title="pace.hint" title="Daytime runs in real time; nights fast-forward automatically" role="status">☀️ 1×</span>
     <button id="btn-lang" title="Switch language">中</button>
     <button id="btn-god" data-i18n-title="title.god" title="World events">⚡</button>
   </div>
@@ -591,9 +586,8 @@ const I18N={
     'footer.cost':'EST. COST','footer.rules':'DECISIONS BY RULES',
     'title.pause':'Pause simulation','title.pausing':'Pausing…','llmBusy':'Waiting for AI…',
     'conn.reconnecting':'Connection lost, reconnecting…',
-    'title.s1':'1 sim-minute per second','title.s5':'5 sim-minutes per second',
-    'title.s10':'10 sim-minutes per second','title.s10capped':'Capped at 5× in free-quota mode',
-    'title.s20':'20 sim-minutes per second','title.s20capped':'Capped at 5× in free-quota mode','title.lang':'Switch language', mapAria:'Town map', listSep:', ',
+    'pace.night':'🌙 Fast-forward','pace.hint':'Daytime runs in real time; nights fast-forward automatically',
+    'title.lang':'Switch language', mapAria:'Town map', listSep:', ',
     'night.hint':'Fast-forwarding through the night — restores at dawn',
     'title.god':'World events','god.rain':'Rain · 3h','god.festival':'Park festival · 4h','god.break':'Break equipment',
     'god.rumorHead':'RUMORS','god.startedBy':'Started by','god.presetDefault':'(preset default)',
@@ -643,9 +637,8 @@ const I18N={
     'footer.cost':'預估成本','footer.rules':'規則決策佔比',
     'title.pause':'暫停模擬','title.pausing':'暫停中…','llmBusy':'等待 AI 回應中…',
     'conn.reconnecting':'連線中斷,重連中…',
-    'title.s1':'每秒 1 模擬分鐘','title.s5':'每秒 5 模擬分鐘',
-    'title.s10':'每秒 10 模擬分鐘','title.s10capped':'免費額度模式下限速 5×',
-    'title.s20':'每秒 20 模擬分鐘','title.s20capped':'免費額度模式下限速 5×','title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
+    'pace.night':'🌙 快轉中','pace.hint':'白天實時,夜間自動快轉',
+    'title.lang':'切換語言', mapAria:'小鎮地圖', listSep:'、',
     'night.hint':'夜間快轉中，清晨自動恢復',
     'title.god':'世界事件','god.rain':'下雨 3 小時','god.festival':'公園慶典 4 小時','god.break':'觸發設備故障',
     'god.rumorHead':'謠言','god.startedBy':'由誰起頭','god.presetDefault':'(預設起頭者)',
@@ -862,7 +855,6 @@ function applyLang(){
   if(!$('#away-card').hidden) renderAwayCard();        // "while you were away" card follows the language
   renderChron();                                        // chronicle preview/list follow the language
   if(typeof updateFeedPill==='function') updateFeedPill();  // "N new" pill follows the language
-  if(typeof applySpeedCap==='function') applySpeedCap();    // 20x tooltip (capped vs not) follows the language
 }
 function toggleLang(){ LANG=LANG==='en'?'zh':'en'; localStorage.setItem('lang',LANG); applyLang(); }
 
@@ -876,8 +868,7 @@ const WS_BACKOFF=[1000,2000,5000];                       // then 10s cap, foreve
 function setConnLost(lost){ const el=$('#conn-dot'); if(el) el.hidden=!lost; }
 function handleWSMessage(e){
   const msg=JSON.parse(e.data);
-  if(msg.type==='snapshot'){ buildMap(msg.locations);   // locations are static -> always safe (sets LOCS)
-    if('live' in msg) SIM_LIVE=msg.live; if('paid' in msg) SIM_PAID=msg.paid; applySpeedCap(); }
+  if(msg.type==='snapshot') buildMap(msg.locations);    // locations are static -> always safe (sets LOCS)
   if(msg.type==='snapshot' && msg.away_summary) showAwaySummary(msg.away_summary);  // unattended recap on reconnect
   if(REPLAY.on) return;                                // in replay: keep receiving, but don't paint over it
   if(msg.type==='snapshot') msg.events.forEach(addEvent);
@@ -1237,14 +1228,12 @@ function updateClock(minute,clock,paused,speed,night,userSpeed){
   updateClosedSigns(minute);                                   // shops on their weekly day off
   if(paused && pausePending) clearPausePending();              // server confirmed the pause -> drop the transitional state
   $('#btn-pause').classList.toggle('active',paused);
-  // Night skip: the clock races at the cruise speed, but the selected gear stays the
-  // viewer's own (a moon badge marks it -- "your gear is still here, just on autopilot
-  // through the night"). Otherwise the live speed drives the selection as usual.
-  const gear = night ? (userSpeed||speed) : speed;
-  ['1','5','10','20'].forEach(s=>{ const b=$('#btn-'+s);
-    b.classList.toggle('active',!paused&&gear==+s);
-    b.classList.toggle('night-cruise',!!night&&!paused&&gear==+s);
-  });
+  // Automatic day/night pacing (no manual tiers): daytime runs in real time at the
+  // fixed day speed; once the town's asleep the engine cruises through the night and
+  // the indicator flips to "fast-forward", restoring at dawn.
+  const pace=$('#pace-state');
+  if(pace){ pace.textContent = night ? t('pace.night') : ('☀️ '+(+speed)+'×');
+    pace.classList.toggle('cruising',!!night); }
   const moon=$('#night-moon'); if(moon) moon.hidden=!night;
 }
 // A small "休" / "CLOSED" badge over any shop resting on its weekly day off.
@@ -1527,18 +1516,6 @@ let pausePending=false;
 function setPausePending(){ pausePending=true; const b=$('#btn-pause'); b.classList.add('pending'); b.title=t('title.pausing'); }
 function clearPausePending(){ if(!pausePending) return; pausePending=false; const b=$('#btn-pause'); b.classList.remove('pending'); b.title=t('title.pause'); }
 $('#btn-pause').onclick=()=>{ setPausePending(); ctl({cmd:'pause'}); };
-$('#btn-1').onclick=()=>{ clearPausePending(); ctl({cmd:'speed',speed:1}); };
-$('#btn-5').onclick=()=>{ clearPausePending(); ctl({cmd:'speed',speed:5}); };
-$('#btn-10').onclick=()=>{ if(SIM_LIVE&&!SIM_PAID) return; clearPausePending(); ctl({cmd:'speed',speed:10}); };
-$('#btn-20').onclick=()=>{ if(SIM_LIVE&&!SIM_PAID) return; clearPausePending(); ctl({cmd:'speed',speed:20}); };
-let SIM_LIVE=false, SIM_PAID=false;
-function applySpeedCap(){                             // free live mode caps at 5x -> show 10x/20x as disabled
-  const capped=SIM_LIVE&&!SIM_PAID;
-  for(const s of ['10','20']){ const b=$('#btn-'+s); if(!b) continue;
-    b.classList.toggle('disabled',capped);
-    b.title=capped?t('title.s'+s+'capped'):t('title.s'+s);
-  }
-}
 $('#btn-lang').onclick=toggleLang;
 applyLang();
 
