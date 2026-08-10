@@ -90,16 +90,22 @@ def roster_directive(english_only: bool = False) -> str:
     return out
 
 
-def roster_gender_directive() -> str:
-    """List each resident's fixed gender so the model uses the right pronouns --
-    the sim can't fix a mis-gendered 'he'/'she' at the display layer. Empty when
-    no genders are set (older callers), so English/mock runs are unaffected."""
+def roster_gender_directive(english_only: bool = False) -> str:
+    """List each resident's fixed gender so the model uses the right pronouns -- a
+    mis-gendered 'he'/'she' written into a memory/belief is stored forever (the sim
+    can only fix pronouns at the zh display layer, not in the English source). Empty
+    when no genders are set (older callers), so English/mock runs are unaffected.
+
+    ``english_only`` picks the English (pinyin) name form, to match a prompt that
+    generates English text ('Xixi is male' -> the model writes 'Xixi ... he'); the
+    default uses the zh name, for zh-output prompts (dialogue, translate)."""
     genders = [(en, zh, g) for en, zh, g in _ROSTER if g]
     if not genders:
         return ""
-    parts = ", ".join(f"{zh or en} is {g}" for en, zh, g in genders)
-    return (f" Each resident has a fixed gender -- use the correct pronoun and never "
-            f"call a woman 'he' or a man 'she': {parts}.")
+    parts = ", ".join(f"{(en if english_only else (zh or en))} is {g}" for en, zh, g in genders)
+    return (f" Each resident has a fixed gender -- use the matching pronouns for that "
+            f"person throughout (he/him/his for male, she/her/hers for female; 他/她) and "
+            f"never mis-gender anyone: {parts}.")
 
 
 def roster_pairs() -> list[tuple[str, str]]:
@@ -157,7 +163,8 @@ def should_talk_prompt(agent: "Agent", other_name: str, memories: list[str]) -> 
         {
             "role": "system",
             "content": "You decide social micro-choices for a life-sim character. "
-            'Respond ONLY with JSON: {"talk": true|false, "reason": "..."}. Task: should_talk.',
+            'Respond ONLY with JSON: {"talk": true|false, "reason": "..."}. Task: should_talk.'
+            + roster_gender_directive(english_only=True),
         },
         {
             "role": "user",
@@ -307,6 +314,7 @@ def distort_prompt(text: str) -> list[dict]:
                 "one sentence, same gist. Write in English (this is internal knowledge, not "
                 "spoken lines). Respond ONLY with JSON: {\"text\": \"...\"}. Task: distort."
                 + roster_directive(english_only=True)
+                + roster_gender_directive(english_only=True)
             ),
         },
         {"role": "user", "content": f"Retell this: {text}"},
@@ -324,6 +332,7 @@ def leak_prompt(owner_name: str, secret_text: str) -> list[dict]:
                 'Respond ONLY with JSON: {"text": "...", "sentiment": -1..1} where sentiment is how '
                 "damaging/negative it is for that person. Task: leak."
                 + roster_directive(english_only=True)
+                + roster_gender_directive(english_only=True)
             ),
         },
         {"role": "user", "content": f"{owner_name}'s secret: {secret_text}"},
@@ -335,7 +344,8 @@ def decision_prompt(agent: "Agent", observation: str, memories: list[str], actio
         {
             "role": "system",
             "content": "You make one decision for a life-sim character. "
-            'Respond ONLY with JSON: {"action": "...", "target": "...", "reason": "..."}. Task: decision.',
+            'Respond ONLY with JSON: {"action": "...", "target": "...", "reason": "..."}. Task: decision.'
+            + roster_gender_directive(english_only=True),
         },
         {
             "role": "user",
@@ -404,6 +414,7 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
                 + "Write all text in English (this is internal knowledge, translated for display separately). "
                 "Task: reflection."
                 + roster_directive(english_only=True)
+                + roster_gender_directive(english_only=True)
             ),
         },
         {
