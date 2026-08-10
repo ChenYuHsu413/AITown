@@ -253,6 +253,54 @@ def _dialogue_ok(result) -> bool:
     return True
 
 
+# ---- referential-integrity gate (anchored pronouns; no self-third-person) ----------
+# Two lenient heuristics that catch only OBVIOUS breakdown, so normal reporting and
+# third-party mentions ("Aisi and Azong") pass untouched:
+#   (a) the speaker juxtaposes the LISTENER as if a separate person -- "你和{listener}"
+#   (b) the speaker names THEMSELVES as a third-person subject -- "{self}覺得" / "是{self}"
+# Quoted spans (reported speech) are exempt. A failure fails the dialogue gate -> the
+# router retries / falls through (same path as any bad turn).
+_REF_QUOTE_RE = re.compile(r"[「『“][^」』”]*[」』”]|\"[^\"]*\"")
+_REF_SELF_VERBS = "覺得|認為|想|說|會|要|喜歡|知道|希望|打算|決定|問|告訴|擔心|以為"
+_REF_EN_SELF_VERBS = r"thinks?|feels?|says?|said|wants?|knows?|will|would|hopes?|worries|decides?"
+
+
+def _ref_name_forms(agent: "Agent") -> set[str]:
+    """Every way this speaker's name can surface in a turn: the display (zh) name AND
+    the pinyin/English form, since a weak model slips between them."""
+    return {s for s in (getattr(agent, "name", "").strip(), agent.id.capitalize()) if s}
+
+
+def _referential_ok(parsed: object, a: "Agent", b: "Agent") -> bool:
+    turns = parsed.get("turns") if isinstance(parsed, dict) else None
+    if not isinstance(turns, list):
+        return True                                   # structural gate owns this case
+    a_forms, b_forms = _ref_name_forms(a), _ref_name_forms(b)
+    for t in turns:
+        if not isinstance(t, dict):
+            continue
+        speaker = str(t.get("speaker", "")).strip()
+        body = _REF_QUOTE_RE.sub(" ", str(t.get("text", "") or ""))   # drop quoted (reported) spans
+        if speaker in a_forms:
+            self_forms, partner_forms = a_forms, b_forms
+        elif speaker in b_forms:
+            self_forms, partner_forms = b_forms, a_forms
+        else:
+            continue                                  # unknown speaker label -> can't anchor; skip (lenient)
+        for pn in partner_forms:                      # (a) listener juxtaposed as a third party
+            if re.search(rf"[你妳您][和跟與、]\s*{re.escape(pn)}", body) \
+                    or re.search(rf"{re.escape(pn)}\s*[和跟與、]\s*[你妳您]", body) \
+                    or re.search(rf"\byou\s+and\s+{re.escape(pn)}\b", body, re.I) \
+                    or re.search(rf"\b{re.escape(pn)}\s+and\s+you\b", body, re.I):
+                return False
+        for sn in self_forms:                         # (b) speaker names themselves in 3rd person
+            if re.search(rf"(?<!我){re.escape(sn)}\s*(?:{_REF_SELF_VERBS})", body) \
+                    or re.search(rf"(?<!我)是{re.escape(sn)}(?=[。.!?！？，,、\s]|$)", body) \
+                    or re.search(rf"\b{re.escape(sn)}\s+(?:{_REF_EN_SELF_VERBS})\b", body, re.I):
+                return False
+    return True
+
+
 # Memory text stores {agent:id}/{loc:id}/{landmark:id} placeholders. For the LLM
 # context we resolve them to pinyin/English (the model stays in an English name
 # space); the UI resolves the same placeholders to zh/en names at display time.
@@ -1036,6 +1084,11 @@ class DecisionEngine:
         intimate = is_confront or bool(confide_fwd or confide_rev) or confession is not None
         def _validate(r: object) -> bool:
             if not _dialogue_ok(r):
+                return False
+            if not _referential_ok(getattr(r, "parsed", None), a, b):
+                if _GATE_DIAG:
+                    prov = f"{getattr(r, 'provider', '?')}/{getattr(r, 'model', '?')}"
+                    print(f"[ref-reject] {prov} {a.id}<->{b.id}", flush=True)
                 return False
             if not intimate:
                 return True

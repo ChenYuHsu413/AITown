@@ -229,14 +229,22 @@ def dialogue_prompt(
             user += (f"\n{fn} has decided this is the moment to confess romantic feelings to {tn}. "
                      f"{fn} opens up in the first person -- sincere and nervous. But {tn} does not feel the "
                      f"same and gently, awkwardly turns {fn} down. Keep it kind, never cruel.")
-    # A general coherence rule for every conversation: the two speakers are
-    # face-to-face, so neither may talk about the other in the third person.
+    # Referential anchor -- the two speakers are face-to-face, so each addresses the
+    # OTHER as "you", and "you" and that person's name are the SAME individual. The two
+    # failure modes we've seen (juxtaposing the listener as if a third party -- "you and
+    # {them}" -- and a speaker naming THEMSELVES in the third person) are called out by
+    # name so the model can't slide into them.
+    a_n, b_n = a.profile.name, b.profile.name
     coherence = (
-        " Keep the exchange internally consistent: the two speakers are together, so a "
-        "speaker must never refer to the person they are talking to in the third person "
-        "-- they address each other directly as \"you\". Do not invent concrete facts that "
-        "aren't in the context (deadlines, sums of money, named events); keep background "
-        "grounded in what you're given."
+        f" Referential anchor (critical): this is a face-to-face exchange between exactly "
+        f"two people, {a_n} and {b_n}. When {a_n} speaks they address {b_n} directly as "
+        f"\"you\" (你/妳) or by name -- but \"you\" and \"{b_n}\" are THE SAME person, so "
+        f"never place them side by side as if two people (never \"你和{b_n}\" / \"妳和{b_n}\" "
+        f"/ \"you and {b_n}\"); and {a_n} never refers to themselves in the third person by "
+        f"name (never \"{a_n}覺得…\" / \"是{a_n}\" / \"it's {a_n}\" when {a_n} is the speaker). "
+        f"The same rules hold for {b_n}. Do not invent concrete facts that aren't in the "
+        f"context (deadlines, sums of money, named events); keep background grounded in "
+        f"what you're given."
     )
     # Confide / confront are emotionally significant beats: a one-line version reads
     # as broken, so ask for real back-and-forth.
