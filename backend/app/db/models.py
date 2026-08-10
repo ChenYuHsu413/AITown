@@ -1,6 +1,6 @@
 """Database models (SQLAlchemy 2.0, async).
 
-Six tables:
+Seven tables:
 
     simulation_runs   one row per server boot / script run
     events            structured events (Event Contract v1, verbatim)
@@ -8,6 +8,7 @@ Six tables:
     llm_calls         the cost ledger (was in-memory UsageTracker only)
     world_snapshots   latest serialized world state per run (resume foundation)
     snapshot_archive  pre-operation backups saved before destructive admin ops
+    translation_cache display-layer English->zh translations (translate once, keep)
 
 The events table mirrors the Event Contract exactly -- that was the point
 of the structured-events refactor.
@@ -100,6 +101,24 @@ class WorldSnapshot(Base):
     run_id: Mapped[str] = mapped_column(ForeignKey("simulation_runs.id"), primary_key=True)
     minute: Mapped[int] = mapped_column(Integer)
     payload: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class TranslationCacheRow(Base):
+    """Display-layer translation cache, persisted so a restart doesn't re-translate the
+    whole standing corpus (the boot-time queue storm + repeat spend). Keyed by a hash
+    of (lang, source_text). A ``gave_up`` row records a text that exhausted its retries
+    so the startup backfill won't re-queue it (a user opening the panel still retries it
+    on demand). No FK -- the cache is content-addressed and outlives any single run."""
+
+    __tablename__ = "translation_cache"
+
+    text_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_text: Mapped[str] = mapped_column(Text)
+    translated_text: Mapped[str] = mapped_column(Text, default="")
+    lang: Mapped[str] = mapped_column(String(8), default="", index=True)  # "zh-tw"/"en"/"zh-hant" all fit
+    model: Mapped[str] = mapped_column(String(64), default="")
+    gave_up: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

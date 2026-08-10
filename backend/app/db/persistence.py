@@ -29,7 +29,8 @@ from ..llm.embeddings import EmbeddingProvider, MockEmbedding
 from ..llm.usage import LLMCall
 from ..simulation.engine import Event
 from .models import (
-    Base, EventRow, LLMCallRow, MemoryRow, SimulationRun, SnapshotArchive, WorldSnapshot,
+    Base, EventRow, LLMCallRow, MemoryRow, SimulationRun, SnapshotArchive,
+    TranslationCacheRow, WorldSnapshot,
 )
 
 
@@ -42,6 +43,16 @@ class _MemWrite:
 @dataclass
 class _SnapWrite:
     payload: dict
+
+
+@dataclass
+class _TransWrite:
+    text_hash: str
+    source_text: str
+    translated_text: str
+    lang: str
+    model: str
+    gave_up: bool
 
 
 class Persistence:
@@ -123,6 +134,14 @@ class Persistence:
         every other write -- the sim never waits on the DB."""
         self._queue.put_nowait(_SnapWrite(payload))
 
+    def on_translation(self, *, text_hash: str, source_text: str, translated_text: str,
+                       lang: str, model: str, gave_up: bool) -> None:
+        """Queue a translation-cache upsert (a real zh translation, or a gave-up
+        marker). Non-blocking; a DB failure never affects what's shown on screen."""
+        self._queue.put_nowait(_TransWrite(
+            text_hash=text_hash, source_text=source_text, translated_text=translated_text,
+            lang=lang, model=model, gave_up=gave_up))
+
     async def _flush_loop(self) -> None:
         while True:
             batch = [await self._queue.get()]
@@ -178,6 +197,19 @@ class Persistence:
                         },
                     )
                     await s.execute(stmt)
+                elif isinstance(item, _TransWrite):
+                    # Content-addressed upsert: the newest result (a real translation,
+                    # or a gave_up marker) wins for a given (lang, source_text) hash.
+                    stmt = pg_insert(TranslationCacheRow).values(
+                        text_hash=item.text_hash, source_text=item.source_text,
+                        translated_text=item.translated_text, lang=item.lang,
+                        model=item.model, gave_up=item.gave_up,
+                    ).on_conflict_do_update(
+                        index_elements=[TranslationCacheRow.text_hash],
+                        set_={"translated_text": item.translated_text, "model": item.model,
+                              "gave_up": item.gave_up, "created_at": datetime.utcnow()},
+                    )
+                    await s.execute(stmt)
             await s.commit()
 
     # ---- read path -------------------------------------------------
@@ -196,6 +228,70 @@ class Persistence:
             if row is None:
                 return None
             return {"run_id": row.run_id, "minute": row.minute, "payload": row.payload}
+
+    # ---- translation cache ----------------------------------------
+
+    async def load_translation_cache(self, lang: str) -> list[dict]:
+        """Whole translation cache for a language, loaded into memory at startup (the
+        corpus is small). Each row: source_text, translated_text, gave_up."""
+        async with self.session() as s:
+            rows = (await s.execute(
+                select(TranslationCacheRow.source_text, TranslationCacheRow.translated_text,
+                       TranslationCacheRow.gave_up)
+                .where(TranslationCacheRow.lang == lang)
+            )).all()
+            return [{"source": r.source_text, "translated": r.translated_text,
+                     "gave_up": r.gave_up} for r in rows]
+
+    async def list_translations(self, *, lang: str | None = None, contains: str | None = None,
+                                limit: int = 50) -> list[dict]:
+        """Admin discoverability: recent cache entries, optionally filtered by language
+        or a substring of the source/translated text (newest first)."""
+        async with self.session() as s:
+            q = select(TranslationCacheRow).order_by(TranslationCacheRow.created_at.desc())
+            if lang:
+                q = q.where(TranslationCacheRow.lang == lang)
+            if contains:
+                like = f"%{contains}%"
+                q = q.where(TranslationCacheRow.source_text.ilike(like)
+                            | TranslationCacheRow.translated_text.ilike(like))
+            rows = (await s.execute(q.limit(limit))).scalars().all()
+            return [{"text_hash": r.text_hash, "source": r.source_text,
+                     "translated": r.translated_text, "lang": r.lang, "model": r.model,
+                     "gave_up": r.gave_up, "created_at": r.created_at.isoformat()} for r in rows]
+
+    async def count_translations(self, *, lang: str | None = None,
+                                 contains: str | None = None, gave_up_only: bool = False) -> int:
+        async with self.session() as s:
+            q = select(func.count()).select_from(TranslationCacheRow)
+            if lang:
+                q = q.where(TranslationCacheRow.lang == lang)
+            if contains:
+                like = f"%{contains}%"
+                q = q.where(TranslationCacheRow.source_text.ilike(like)
+                            | TranslationCacheRow.translated_text.ilike(like))
+            if gave_up_only:
+                q = q.where(TranslationCacheRow.gave_up.is_(True))
+            return int((await s.execute(q)).scalar_one())
+
+    async def clear_translations(self, *, lang: str | None = None, contains: str | None = None,
+                                 gave_up_only: bool = False) -> int:
+        """Delete matching cache rows; returns how many. The admin endpoint gates this
+        behind a dry-run by default (it counts first)."""
+        from sqlalchemy import delete
+        async with self.session() as s:
+            q = delete(TranslationCacheRow)
+            if lang:
+                q = q.where(TranslationCacheRow.lang == lang)
+            if contains:
+                like = f"%{contains}%"
+                q = q.where(TranslationCacheRow.source_text.ilike(like)
+                            | TranslationCacheRow.translated_text.ilike(like))
+            if gave_up_only:
+                q = q.where(TranslationCacheRow.gave_up.is_(True))
+            res = await s.execute(q)
+            await s.commit()
+            return int(res.rowcount or 0)
 
     # ---- archive (pre-destructive-op backups) ----------------------
 

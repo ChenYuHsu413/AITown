@@ -13,6 +13,7 @@ thin real-time shell around it.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import contextlib
 import os
 import re
@@ -205,10 +206,10 @@ class Sim:
             text = pat.sub(zh, text)
         return text
 
-    async def _translate_once(self, src: str) -> str:
-        """One translation attempt over the whole chain. Returns the zh text, or ""
-        if it failed the gate / errored (so the caller can fall back + queue a retry).
-        Held to the translate-only semaphore so it yields to dialogue/reflection."""
+    async def _translate_once(self, src: str) -> tuple[str, str]:
+        """One translation attempt over the whole chain. Returns (zh_text, model), or
+        ("", "") if it failed the gate / errored (so the caller can fall back + queue a
+        retry). Held to the translate-only semaphore so it yields to dialogue/reflection."""
         try:
             async with self._translate_sem:   # low-priority: at most one translate chain at a time
                 res = await self.router.generate(
@@ -225,10 +226,24 @@ class Sim:
             if isinstance(res.parsed, dict):
                 cand = str(res.parsed.get("text") or "").strip()
                 if not _is_garbage_text(cand):   # never let a dodge ("ok") reach the display
-                    return cand
+                    return cand, f"{res.provider}/{res.model}"
         except Exception:
             pass
-        return ""
+        return "", ""
+
+    def _persist_translation(self, source: str, translated: str, model: str, gave_up: bool) -> None:
+        """Land a translation (or a gave-up marker) in the DB so it survives a restart.
+        No-op without persistence; failures never touch what's on screen (queued async)."""
+        if self.persistence is None:
+            return
+        lang = builders.lang_code()
+        h = hashlib.sha256(f"{lang}|{source}".encode()).hexdigest()
+        try:
+            self.persistence.on_translation(
+                text_hash=h, source_text=source, translated_text=translated,
+                lang=lang, model=model, gave_up=gave_up)
+        except Exception:
+            pass
 
     async def translate_text(self, text: str) -> str:
         """English knowledge text -> Traditional Chinese for display. Cached by text;
@@ -250,10 +265,11 @@ class Sim:
         # Pre-substitute pinyin -> zh names so the model can't phonetically drift
         # them (Aisi -> 阿思); it then translates the English around the fixed names.
         src = self._apply_name_subs(text)
-        zh = await self._translate_once(src)
+        zh, model = await self._translate_once(src)
         if zh:
             out = self._apply_name_subs(zh)
             self._translate_cache[text] = out       # only cache a REAL translation
+            self._persist_translation(text, out, model, gave_up=False)   # translate once, keep forever
             return out
         self._enqueue_translation(text)             # English shown now, retried in the background
         return self._apply_name_subs(src)           # English original is the fallback, never junk
@@ -285,12 +301,14 @@ class Sim:
                     self._tr_inflight.discard(text)   # already filled in elsewhere
                     continue
                 src = self._apply_name_subs(text)
-                zh = await self._translate_once(src)
+                zh, model = await self._translate_once(src)
                 if zh:
-                    self._translate_cache[text] = self._apply_name_subs(zh)
+                    out = self._apply_name_subs(zh)
+                    self._translate_cache[text] = out
                     self._tr_attempts.pop(text, None)
                     self._tr_inflight.discard(text)
                     self._tr_gaveup.discard(text)     # a retry (e.g. panel-open) finally succeeded
+                    self._persist_translation(text, out, model, gave_up=False)
                 else:
                     n = self._tr_attempts.get(text, 0) + 1
                     self._tr_attempts[text] = n
@@ -300,6 +318,7 @@ class Sim:
                         self._tr_attempts.pop(text, None)
                         self._tr_inflight.discard(text)
                         self._tr_gaveup.add(text)
+                        self._persist_translation(text, "", "", gave_up=True)   # don't retry it next boot
             except Exception:
                 self._tr_inflight.discard(text)
             finally:
@@ -371,6 +390,22 @@ class Sim:
 
         resumed = await p.start(note="server", resume=resume_enabled, restore_cb=_restore)
         self.persistence = p
+        # Rehydrate the translation cache: a restart should NOT re-translate the whole
+        # standing corpus (the boot-time queue storm + repeat spend). Load every cached
+        # translation + gave-up marker for this language into memory, so the startup
+        # backfill queues only genuinely-new English (see backfill_translations).
+        if builders.lang_is_zh():
+            try:
+                rows = await p.load_translation_cache(builders.lang_code())
+                for r in rows:
+                    if r["gave_up"]:
+                        self._tr_gaveup.add(r["source"])
+                    elif r["translated"]:
+                        self._translate_cache[r["source"]] = r["translated"]
+                print(f"[translate] loaded {len(self._translate_cache)} cached translations + "
+                      f"{len(self._tr_gaveup)} gave-up from DB", flush=True)
+            except Exception as err:
+                print(f"[translate] cache load failed (continuing memory-only): {err}", flush=True)
         self.engine.bus.subscribers.append(p.on_event)
         self.router.usage.on_record = p.on_llm_call
         self.engine.on_snapshot = self._take_snapshot   # snapshot at each daily settlement
@@ -1317,6 +1352,60 @@ async def prune_beliefs(body: dict = Body(default={})) -> JSONResponse:
         "dry_run": False, "archive_id": archive_id,
         "removed_beliefs": len(doomed_beliefs), "removed_secrets": len(doomed_secrets),
     })
+
+
+@app.get("/api/admin/translations")
+async def list_translations(lang: str = "", contains: str = "", limit: int = 50) -> JSONResponse:
+    """Inspect the persistent translation cache (newest first). Filter by ``lang`` or a
+    ``contains`` substring of the source/translated text. Needs persistence."""
+    assert sim is not None
+    if sim.persistence is None:
+        return JSONResponse({"error": "persistence not enabled"}, status_code=501)
+    rows = await sim.persistence.list_translations(
+        lang=lang or None, contains=contains or None, limit=max(1, min(limit, 500)))
+    return JSONResponse({"count": len(rows), "translations": rows})
+
+
+@app.post("/api/admin/translations/clear")
+async def clear_translations(body: dict = Body(default={})) -> JSONResponse:
+    """Remove cached translations -- the clean-up path for a future 'ok'-style
+    contamination (clear the DB instead of waiting for a restart).
+
+    SAFE BY DEFAULT: a dry run that only REPORTS how many rows match. Send
+    {"dry_run": false} to actually delete. Filters: ``lang``, ``contains`` (substring
+    of source/translated), ``gave_up_only`` (drop only the given-up markers so they
+    retry fresh). Also evicts matching entries from the in-memory cache so the running
+    server reflects the clear immediately."""
+    assert sim is not None
+    if sim.persistence is None:
+        return JSONResponse({"error": "persistence not enabled"}, status_code=501)
+    b = body if isinstance(body, dict) else {}
+    dry_run = bool(b.get("dry_run", True))
+    lang = (b.get("lang") or "") or None
+    contains = (b.get("contains") or "") or None
+    gave_up_only = bool(b.get("gave_up_only", False))
+    n = await sim.persistence.count_translations(
+        lang=lang, contains=contains, gave_up_only=gave_up_only)
+    if dry_run:
+        return JSONResponse({
+            "dry_run": True, "would_remove": n,
+            "filters": {"lang": lang, "contains": contains, "gave_up_only": gave_up_only},
+            "hint": 'nothing changed -- re-send with {"dry_run": false} to apply',
+        })
+    removed = await sim.persistence.clear_translations(
+        lang=lang, contains=contains, gave_up_only=gave_up_only)
+    # Evict from the live in-memory cache too, so the running server stops serving them.
+    def _match(src: str) -> bool:
+        return contains is None or contains.lower() in src.lower()
+    if gave_up_only:
+        for t in [t for t in sim._tr_gaveup if _match(t)]:
+            sim._tr_gaveup.discard(t)
+    else:
+        for t in [t for t in sim._translate_cache if _match(t)]:
+            del sim._translate_cache[t]
+        for t in [t for t in sim._tr_gaveup if _match(t)]:
+            sim._tr_gaveup.discard(t)
+    return JSONResponse({"dry_run": False, "removed": removed})
 
 
 @app.post("/api/admin/resolve-stale-secrets")
