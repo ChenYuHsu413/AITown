@@ -61,6 +61,18 @@ try:
 except ValueError:
     DIALOGUE_PROVIDER_TIMEOUT_S = 60.0
 
+# Per-provider timeout for the cheap tasks that run SYNCHRONOUSLY inside a tick
+# (should_talk, decision, distort, leak). These block the pacing loop until they
+# return, so a single hung provider here would freeze the whole town (clock, agents,
+# broadcasts) -- the observed night "freeze". 10s is generous for a cheap/short call;
+# past that we abandon the provider and fall through the chain, so any one hung
+# provider steals at most ~10s instead of parking the loop. Dialogue/reflection are
+# backgrounded (own longer timeouts) and deliberately excluded. Env-overridable.
+try:
+    SYNC_CALL_TIMEOUT_S: float = float(os.environ.get("AI_TOWN_SYNC_CALL_TIMEOUT", "10") or "10")
+except ValueError:
+    SYNC_CALL_TIMEOUT_S = 10.0
+
 TALK_COOLDOWN_MIN = 90        # don't re-approach the same person within 90 sim-minutes
 TALK_DURATION_MIN = 10
 LOW_ENERGY = 20
@@ -425,6 +437,7 @@ class DecisionEngine:
                     schema={"type": "object"},
                     cache_key=f"{agent.id}|{partner_id}|{agent.state.mood}|{obs.location}",
                     max_tokens=60,
+                    per_call_timeout=SYNC_CALL_TIMEOUT_S,   # in-tick: never park the pacing loop on a hung provider
                 )
                 model_used = f"{res.provider}/{res.model}"
                 if isinstance(res.parsed, dict) and res.parsed.get("talk"):
@@ -458,6 +471,7 @@ class DecisionEngine:
                 sim_minute=now,
                 schema={"type": "object"},
                 max_tokens=80,
+                per_call_timeout=SYNC_CALL_TIMEOUT_S,   # in-tick: never park the pacing loop on a hung provider
             )
             model_used = f"{res.provider}/{res.model}"
             action = str(res.parsed.get("action", "")) if isinstance(res.parsed, dict) else ""
@@ -731,6 +745,7 @@ class DecisionEngine:
                 sim_minute=now,
                 schema={"type": "object"},
                 max_tokens=80,
+                per_call_timeout=SYNC_CALL_TIMEOUT_S,   # in-tick (start_conversation): don't park the loop
             )
             new = str(res.parsed.get("text") or "") if isinstance(res.parsed, dict) else ""
             if new and not _has_cjk(new):   # reject a zh hallucination -> keep the prior English version
@@ -940,6 +955,7 @@ class DecisionEngine:
         res = await self.router.generate(       # rephrase to a 3rd-person rumor + appraise, in one call
             task="leak", messages=builders.leak_prompt(owner_name, secret.text),
             agent_id=b.id, sim_minute=now, schema={"type": "object"}, max_tokens=80,
+            per_call_timeout=SYNC_CALL_TIMEOUT_S,   # in-tick (start_conversation): don't park the loop
         )
         parsed = res.parsed if isinstance(res.parsed, dict) else {}
         text = str(parsed.get("text") or "").strip()

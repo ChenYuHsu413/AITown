@@ -92,6 +92,15 @@ except ValueError:
 # worker acquire it).
 TRANSLATE_MAX_CONCURRENT = 1
 
+# Per-provider timeout for the cheap out-of-tick LLM calls (translate on its worker,
+# appraise on the /api/rumors handler). They don't park the pacing loop, but the same
+# rule applies -- a single hung provider should steal at most this long before the
+# chain falls through -- so no call site can hang indefinitely on a wedged provider.
+try:
+    SYNC_CALL_TIMEOUT_S = float(os.environ.get("AI_TOWN_SYNC_CALL_TIMEOUT", "10") or "10")
+except ValueError:
+    SYNC_CALL_TIMEOUT_S = 10.0
+
 
 class Sim:
     """Owns the engine + real-time pacing + fan-out to websockets."""
@@ -190,6 +199,7 @@ class Sim:
                     task="translate", messages=builders.translate_prompt(src),
                     agent_id="-", sim_minute=self.engine.now,
                     schema={"type": "object"}, max_tokens=200,
+                    per_call_timeout=SYNC_CALL_TIMEOUT_S,   # a wedged provider must not hold the translate slot
                     # The router's universal gate already rejects a junk "text" (a bare
                     # number, an "ok" dodge) and falls through; this local validate is a
                     # thin echo of it for the same-provider retry.
@@ -910,6 +920,7 @@ async def seed_rumor(body: dict) -> JSONResponse:
             messages=builders.appraise_prompt(text),
             agent_id=agent_id, sim_minute=sim.engine.now,
             schema={"type": "object"}, max_tokens=30,
+            per_call_timeout=SYNC_CALL_TIMEOUT_S,   # bound this request-path call too
         )
         sentiment = float(res.parsed.get("sentiment", 0.0)) if isinstance(res.parsed, dict) else 0.0
 
