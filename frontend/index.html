@@ -301,6 +301,16 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 .trace{margin:6px 14px;padding:8px;border:1px solid var(--line);border-radius:6px;font-size:12px;background:var(--paper)}
 .trace .m{font-family:var(--mono);font-size:10px;color:var(--faint)}
 .trace b{color:var(--amber)}
+/* inspector loading skeleton -- shown the instant you switch agents, so the
+   previous person's data never lingers while the new fetch is in flight */
+.insp-skel{padding:16px 14px;display:flex;flex-direction:column;gap:10px}
+.insp-skel .sk{height:11px;border-radius:4px;
+  background:linear-gradient(90deg,var(--paper) 0%,var(--line) 50%,var(--paper) 100%);
+  background-size:200% 100%;animation:skwave 1.2s ease-in-out infinite}
+.insp-skel .sk.title{height:19px;width:52%;margin-bottom:4px}
+.insp-skel .sk.w1{width:82%}.insp-skel .sk.w2{width:64%}.insp-skel .sk.w3{width:73%}
+@keyframes skwave{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@media (prefers-reduced-motion:reduce){ .insp-skel .sk{animation:none;opacity:.6} }
 
 /* cost strip */
 footer{display:flex;gap:26px;align-items:baseline;padding:8px 18px;border-top:1px solid var(--line);
@@ -1431,10 +1441,37 @@ function openInspector(){
   card.style.left=L+'px'; card.style.top=T+'px'; card.style.right='auto';
 }
 function closeInspector(){ $('#inspector').hidden=true; }   // keep `selected`; re-clicking reopens
-async function inspect(id){ selected=id; openInspector(); refreshInspector(id,true); }
+// Stale-response guard: a click starts a new "generation"; a slow /api/agents reply
+// from an earlier click (common when the LLM saturates the event loop) is discarded
+// on arrival instead of overwriting the person you just selected. `inspAbort` also
+// cancels the previous selection's in-flight request outright, and `inspBusy` keeps
+// the 5s auto-refresh from stacking on top of a request that's still running.
+let inspGen=0, inspAbort=null, inspBusy=false;
+function showInspLoading(){                              // skeleton: no residue from the last agent
+  $('#insp-body').innerHTML=`<div class="insp-skel"><div class="sk title"></div>`
+    +`<div class="sk w1"></div><div class="sk w2"></div><div class="sk w3"></div>`
+    +`<div class="sk w1"></div><div class="sk w2"></div></div>`;
+}
+async function inspect(id){
+  const change=id!==selected;
+  selected=id; openInspector();
+  if(change){
+    inspGen++;                                           // new selection -> older replies are now stale
+    if(inspAbort){ try{ inspAbort.abort(); }catch(_){} } // drop the previous agent's in-flight fetch
+    showInspLoading();                                   // clear the panel immediately
+  }
+  refreshInspector(id,true);
+}
 async function refreshInspector(id,scroll){
-  const r=await fetch('/api/agents/'+id); if(!r.ok) return;
-  const a=await r.json();
+  const gen=inspGen;
+  if(!scroll && inspBusy) return;                        // auto-refresh: don't pile onto a live request
+  const ac=new AbortController(); inspAbort=ac; inspBusy=true;
+  let a=null;
+  try{ const r=await fetch('/api/agents/'+id,{signal:ac.signal}); if(r.ok) a=await r.json(); }
+  catch(e){}                                             // aborted on switch, or offline -> keep current view
+  finally{ if(inspAbort===ac){ inspAbort=null; inspBusy=false; } }
+  // Superseded by a newer selection, agent changed, or panel closed mid-flight -> discard.
+  if(!a || gen!==inspGen || id!==selected || $('#inspector').hidden) return;
   const box=$('#insp-body');
   box.innerHTML=`
     <h2>${moodEmoji(a.state.mood)}${agentName(a.id,a.name)}</h2>
