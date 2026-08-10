@@ -163,7 +163,14 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 /* a translated row fades in place when its Chinese arrives (background per-item swap) */
 .tr-in{animation:trin .34s ease}
 @keyframes trin{from{opacity:.32}to{opacity:1}}
-@media (prefers-reduced-motion: reduce){ .soc-caret{transition:none} .tr-in{animation:none} }
+/* honest "being translated" hint: a faint pulsing 譯 after a row still in English,
+   so a temporarily-English item reads as "translating", not "broken". Gone once the
+   Chinese lands (the .tr-pend class is removed on swap). zh only; en never marks. */
+.tr-pend::after{content:'譯';margin-left:5px;font-family:var(--mono);font-size:9px;
+  color:var(--amber);opacity:.55;vertical-align:super;animation:trpend 1.2s ease-in-out infinite}
+@keyframes trpend{0%,100%{opacity:.25}50%{opacity:.65}}
+@media (prefers-reduced-motion: reduce){ .soc-caret{transition:none} .tr-in{animation:none}
+  .tr-pend::after{animation:none;opacity:.5} }
 
 /* replay panel */
 #replay{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
@@ -1730,7 +1737,13 @@ function trInvalidate(surface){                       // drop this panel's pendi
   TR_SURFACES[surface]=(TR_SURFACES[surface]||0)+1;
   if(TR_INFLIGHT && TR_INFLIGHT.surface===surface){ try{ TR_INFLIGHT.ac.abort(); }catch(_){} }
 }
-function trCancel(surface){ trInvalidate(surface); TR_JOBS=TR_JOBS.filter(j=>j.surface!==surface); }
+const trMark=el=>el&&el.classList.add('tr-pend');     // "譯" pending hint (Task 3)
+const trUnmark=el=>el&&el.classList.remove('tr-pend');
+function trCancel(surface){
+  trInvalidate(surface);
+  TR_JOBS.forEach(j=>{ if(j.surface===surface) trUnmark(j.el); });
+  TR_JOBS=TR_JOBS.filter(j=>j.surface!==surface);
+}
 // Enqueue a render's {el,en,pre} pairs for a panel (English already on screen).
 function trQueue(surface,pairs){
   trInvalidate(surface);                              // this render supersedes the previous one
@@ -1741,6 +1754,7 @@ function trQueue(surface,pairs){
     if(!p||!p.el||!p.en) continue;
     const zh=TR_CACHE[p.en];
     if(zh!==undefined){ p.el.textContent=(p.pre||'')+zh; continue; }   // cached -> instant, no fetch
+    trMark(p.el);                                                      // still English -> show the 譯 hint
     TR_JOBS.push({el:p.el,en:p.en,pre:p.pre||'',surface,token});
   }
   trPump();
@@ -1751,6 +1765,7 @@ function trVisible(el){                               // is this row within its 
   return r.bottom>c.top && r.top<c.bottom && r.height>0;
 }
 function trSwapOne(job,zh){
+  trUnmark(job.el);                                   // Chinese landed -> drop the 譯 hint
   job.el.textContent=(job.pre||'')+zh;
   if(!REDUCE_MOTION){ job.el.classList.remove('tr-in'); void job.el.offsetWidth; job.el.classList.add('tr-in'); }
 }
@@ -1759,16 +1774,18 @@ async function trPump(){
   TR_RUNNING=true;
   try{
     while(TR_JOBS.length){
-      if(LANG!=='zh'){ TR_JOBS=[]; break; }
-      TR_JOBS=TR_JOBS.filter(j=>j.token===TR_SURFACES[j.surface]);     // sweep superseded jobs
+      if(LANG!=='zh'){ TR_JOBS.forEach(j=>trUnmark(j.el)); TR_JOBS=[]; break; }
+      const live=[]; TR_JOBS.forEach(j=>{ if(j.token===TR_SURFACES[j.surface]) live.push(j); else trUnmark(j.el); });
+      TR_JOBS=live;                                                    // sweep (and un-hint) superseded jobs
       if(!TR_JOBS.length) break;
       let i=TR_JOBS.findIndex(j=>trVisible(j.el)); if(i<0) i=0;         // visible rows first, else oldest
       const job=TR_JOBS.splice(i,1)[0];
       const cached=TR_CACHE[job.en];
-      if(cached!==undefined){ if(job.token===TR_SURFACES[job.surface]) trSwapOne(job,cached); continue; }
+      if(cached!==undefined){ if(job.token===TR_SURFACES[job.surface]) trSwapOne(job,cached); else trUnmark(job.el); continue; }
       const zh=await trOne(job.en,job.surface);
-      if(job.token!==TR_SURFACES[job.surface]) continue;               // canceled/superseded while fetching
-      if(zh!=null) trSwapOne(job,zh);                                  // else leave English; server bg-retries
+      if(job.token!==TR_SURFACES[job.surface]){ trUnmark(job.el); continue; }   // canceled/superseded while fetching
+      if(zh!=null) trSwapOne(job,zh);                                  // Chinese arrived -> swap + drop hint
+      else trUnmark(job.el);                                           // not ready -> leave English, drop hint; server bg-retries
     }
   }finally{ TR_RUNNING=false; }
 }
