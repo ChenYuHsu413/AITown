@@ -84,6 +84,14 @@ try:
 except ValueError:
     TRANSLATE_RETRY_MAX = 3
 
+# Display translation is a low-priority chore that must never crowd the live
+# performance: dialogue/reflection each own their own engine semaphore, and translate
+# gets this SEPARATE pool of 1 so at most one translation chain runs at a time. It
+# therefore yields the shared providers/event-loop to conversation work instead of
+# racing it (both the foreground /api/translate path and the background backfill
+# worker acquire it).
+TRANSLATE_MAX_CONCURRENT = 1
+
 
 class Sim:
     """Owns the engine + real-time pacing + fan-out to websockets."""
@@ -149,6 +157,9 @@ class Sim:
         self._tr_inflight: set[str] = set()       # texts queued or awaiting requeue (dedupe)
         self._tr_worker: asyncio.Task | None = None
         self._tr_backfill_day: int = -1           # last sim-day the display layer was scanned
+        # translate's own concurrency pool (see TRANSLATE_MAX_CONCURRENT): keeps
+        # display translation from competing with dialogue/reflection for capacity.
+        self._translate_sem = asyncio.Semaphore(TRANSLATE_MAX_CONCURRENT)
         self._name_subs = [
             (re.compile(rf"\b{re.escape(a.id.capitalize())}\b", re.IGNORECASE), a.name)
             for a in self.world.agents.values()
@@ -166,18 +177,20 @@ class Sim:
 
     async def _translate_once(self, src: str) -> str:
         """One translation attempt over the whole chain. Returns the zh text, or ""
-        if it failed the gate / errored (so the caller can fall back + queue a retry)."""
+        if it failed the gate / errored (so the caller can fall back + queue a retry).
+        Held to the translate-only semaphore so it yields to dialogue/reflection."""
         try:
-            res = await self.router.generate(
-                task="translate", messages=builders.translate_prompt(src),
-                agent_id="-", sim_minute=self.engine.now,
-                schema={"type": "object"}, max_tokens=200,
-                # The router's universal gate already rejects a junk "text" (a bare
-                # number, an "ok" dodge) and falls through; this local validate is a
-                # thin echo of it for the same-provider retry.
-                validate=lambda r: isinstance(r.parsed, dict)
-                and not _is_garbage_text(r.parsed.get("text")),
-            )
+            async with self._translate_sem:   # low-priority: at most one translate chain at a time
+                res = await self.router.generate(
+                    task="translate", messages=builders.translate_prompt(src),
+                    agent_id="-", sim_minute=self.engine.now,
+                    schema={"type": "object"}, max_tokens=200,
+                    # The router's universal gate already rejects a junk "text" (a bare
+                    # number, an "ok" dodge) and falls through; this local validate is a
+                    # thin echo of it for the same-provider retry.
+                    validate=lambda r: isinstance(r.parsed, dict)
+                    and not _is_garbage_text(r.parsed.get("text")),
+                )
             if isinstance(res.parsed, dict):
                 cand = str(res.parsed.get("text") or "").strip()
                 if not _is_garbage_text(cand):   # never let a dodge ("ok") reach the display

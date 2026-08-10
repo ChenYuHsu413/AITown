@@ -160,7 +160,10 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 .soc-hop{font-size:11.5px;line-height:1.35}
 .soc-hop .soc-hop-who{font-family:var(--mono);font-size:9.5px;color:var(--faint);display:block}
 .soc-hop .soc-hop-text{color:var(--ink);word-break:break-word}
-@media (prefers-reduced-motion: reduce){ .soc-caret{transition:none} }
+/* a translated row fades in place when its Chinese arrives (background per-item swap) */
+.tr-in{animation:trin .34s ease}
+@keyframes trin{from{opacity:.32}to{opacity:1}}
+@media (prefers-reduced-motion: reduce){ .soc-caret{transition:none} .tr-in{animation:none} }
 
 /* replay panel */
 #replay{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
@@ -1712,6 +1715,75 @@ function trSwap(pairs){
   });
 }
 
+/* ---------- observatory translation: non-blocking, viewport-first, cancelable ----------
+   The secrets/rumors floating panels paint English (or cached zh) the instant they
+   open -- rendering never waits on a translation. Chinese then fills in per item in
+   the background: visible rows first, ONE request at a time (the server serializes
+   translate behind dialogue/reflection), each fading in place. Closing or re-rendering
+   a panel invalidates its queued jobs and aborts the live request, so nothing is
+   wasted. Shares TR_CACHE with trSwap; other surfaces keep using trSwap. */
+const TR_SURFACES={secrets:0,rumors:0};              // per-panel generation (bumped to drop stale jobs)
+let TR_JOBS=[];                                       // pending {el,en,pre,surface,token}
+let TR_RUNNING=false;                                 // worker loop active
+let TR_INFLIGHT=null;                                 // {ac,surface} of the request being fetched now
+function trInvalidate(surface){                       // drop this panel's pending jobs + cancel its live fetch
+  TR_SURFACES[surface]=(TR_SURFACES[surface]||0)+1;
+  if(TR_INFLIGHT && TR_INFLIGHT.surface===surface){ try{ TR_INFLIGHT.ac.abort(); }catch(_){} }
+}
+function trCancel(surface){ trInvalidate(surface); TR_JOBS=TR_JOBS.filter(j=>j.surface!==surface); }
+// Enqueue a render's {el,en,pre} pairs for a panel (English already on screen).
+function trQueue(surface,pairs){
+  trInvalidate(surface);                              // this render supersedes the previous one
+  const token=TR_SURFACES[surface];
+  TR_JOBS=TR_JOBS.filter(j=>j.surface!==surface);     // discard the panel's now-stale jobs
+  if(LANG!=='zh') return;                             // en: zero translation
+  for(const p of (pairs||[])){
+    if(!p||!p.el||!p.en) continue;
+    const zh=TR_CACHE[p.en];
+    if(zh!==undefined){ p.el.textContent=(p.pre||'')+zh; continue; }   // cached -> instant, no fetch
+    TR_JOBS.push({el:p.el,en:p.en,pre:p.pre||'',surface,token});
+  }
+  trPump();
+}
+function trVisible(el){                               // is this row within its scroll container's viewport?
+  const sc=el.closest('.fc-body'); if(!sc) return true;
+  const r=el.getBoundingClientRect(), c=sc.getBoundingClientRect();
+  return r.bottom>c.top && r.top<c.bottom && r.height>0;
+}
+function trSwapOne(job,zh){
+  job.el.textContent=(job.pre||'')+zh;
+  if(!REDUCE_MOTION){ job.el.classList.remove('tr-in'); void job.el.offsetWidth; job.el.classList.add('tr-in'); }
+}
+async function trPump(){
+  if(TR_RUNNING) return;
+  TR_RUNNING=true;
+  try{
+    while(TR_JOBS.length){
+      if(LANG!=='zh'){ TR_JOBS=[]; break; }
+      TR_JOBS=TR_JOBS.filter(j=>j.token===TR_SURFACES[j.surface]);     // sweep superseded jobs
+      if(!TR_JOBS.length) break;
+      let i=TR_JOBS.findIndex(j=>trVisible(j.el)); if(i<0) i=0;         // visible rows first, else oldest
+      const job=TR_JOBS.splice(i,1)[0];
+      const cached=TR_CACHE[job.en];
+      if(cached!==undefined){ if(job.token===TR_SURFACES[job.surface]) trSwapOne(job,cached); continue; }
+      const zh=await trOne(job.en,job.surface);
+      if(job.token!==TR_SURFACES[job.surface]) continue;               // canceled/superseded while fetching
+      if(zh!=null) trSwapOne(job,zh);                                  // else leave English; server bg-retries
+    }
+  }finally{ TR_RUNNING=false; }
+}
+async function trOne(en,surface){                     // one abortable single-text translate; caches on success
+  const ac=new AbortController(); TR_INFLIGHT={ac,surface};
+  try{
+    const d=await (await fetch('/api/translate',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({texts:[en]}),signal:ac.signal})).json();
+    const zh=(d.translations||{})[en];
+    if(zh!==undefined && zh!==en){ TR_CACHE[en]=zh; return zh; }       // real zh -> cache (same as trFetch)
+    return null;                                                       // server echoed English -> not ready
+  }catch(e){ return null; }                                           // abort or network error
+  finally{ if(TR_INFLIGHT && TR_INFLIGHT.ac===ac) TR_INFLIGHT=null; }
+}
+
 async function loadSocial(){
   let secrets, rumors;
   try{
@@ -1765,7 +1837,7 @@ function renderSocialSecrets(secrets, rumors){
       box.appendChild(card);
     });
   }
-  trSwap(trP);                                                                  // zh: swap secret texts to Chinese
+  trQueue('secrets',trP);                                                       // zh: fill in Chinese per item, viewport-first
 }
 
 function renderSocialRumors(rumors){
@@ -1794,7 +1866,7 @@ function renderSocialRumors(rumors){
     });
     box.appendChild(d);
   });
-  trSwap(trP);                                                                  // zh: swap rumor chain to Chinese
+  trQueue('rumors',trP);                                                        // zh: fill in Chinese per item, viewport-first
 }
 
 async function pollUsage(){
@@ -2148,6 +2220,7 @@ function toggleObs(kind){
   const open=card.hidden; card.hidden=!open; icon.classList.toggle('active',open);
   icon.classList.remove('pulse');
   if(open){ restoreFloatPos(kind); loadSocial(); }
+  else trCancel(kind);                        // closed -> drop this panel's pending translations
 }
 function restoreFloatPos(kind){
   const card=$('#float-'+kind);
