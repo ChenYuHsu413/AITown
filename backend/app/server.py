@@ -38,6 +38,17 @@ START_MINUTE = 6 * 60  # Day 1, 06:00
 IDLE_GRACE_SECONDS = 10.0  # keep running this long after the last client leaves (survives a page refresh)
 MAX_LIVE_SPEED = 5.0       # in live mode, cap speed so LLM calls don't burst past free-tier rate limits
 SNAPSHOT_REAL_SECONDS = 60.0  # persist the world at most this often (only when the clock advanced)
+# Per-client WebSocket send timeout. A frozen browser tab keeps its socket open but
+# stops reading it, so the OS send buffer fills and `ws.send_json` blocks on
+# backpressure -- which, in the broadcast, would stall the whole pacing loop. Past
+# this we drop the client (it auto-reconnects) rather than let one dead viewer freeze
+# the town. Generous: a healthy client sends instantly.
+WS_SEND_TIMEOUT_S = 5.0
+# Pacing-loop observability: a heartbeat line every N real-seconds, and a watchdog
+# that flags the loop if a single iteration phase stalls past the threshold -- so a
+# future freeze is self-locating (which phase, which minute) instead of a guess.
+PACE_HEARTBEAT_S = 30.0
+PACE_STALL_WARN_S = 15.0
 
 # Daytime pacing: the fixed live speed while the town is awake. There are no manual
 # speed tiers -- days run at DAY_SPEED (real time by default), nights auto fast-forward
@@ -142,6 +153,11 @@ class Sim:
         self.persistence = None          # set by lifespan when DB configured
         self._snap_wall: float = 0.0     # monotonic time of the last periodic snapshot
         self._snap_minute: int = -1      # sim minute at the last periodic snapshot
+        # Pacing-loop heartbeat/watchdog state (see PACE_* constants).
+        self._pace_phase: str = "init"   # which loop phase we're in (for the stall watchdog)
+        self._pace_beat: float = 0.0     # monotonic at the start of the current iteration
+        self._pace_hb: float = 0.0       # monotonic of the last heartbeat line
+        self._pace_warned: bool = False  # stall already logged for this stall episode
         # LLM in-flight tracking: the router pings these around each real call so
         # the UI can show a quiet "waiting for AI" hint while a slow call freezes
         # the tick, plus a watchdog that flags a call stuck past 45s.
@@ -425,16 +441,44 @@ class Sim:
                       f"{elapsed:.0f}s", flush=True)
                 self._llm_warned = True
 
+    def _pace_heartbeat(self) -> None:
+        """One heartbeat line every PACE_HEARTBEAT_S while running, so the log always
+        carries the loop's live position. If these lines STOP, the loop stalled -- and
+        the stall watchdog (in status_loop) names the phase it stalled in."""
+        now = time.monotonic()
+        if now - self._pace_hb < PACE_HEARTBEAT_S:
+            return
+        self._pace_hb = now
+        e = self.engine
+        print(f"[pace] min={e.now} {fmt_time(e.now)} speed={self.speed:g}x "
+              f"cruise={'night' if self._night_cruising else 'unatt' if self._cruising else 'no'} "
+              f"clients={len(self.clients)} dlg={len(e._in_dialogue)} refl={len(e._reflecting)} "
+              f"tr_q={self._tr_queue.qsize()} llm_depth={self._llm_depth}", flush=True)
+
+    def _pace_watchdog(self) -> None:
+        """Flag (once) if the pacing loop's current iteration has run past
+        PACE_STALL_WARN_S -- names the phase and minute so a freeze locates itself."""
+        if self._pace_beat <= 0 or self._pace_warned or self.paused or self._idle:
+            return
+        elapsed = time.monotonic() - self._pace_beat
+        if elapsed > PACE_STALL_WARN_S:
+            print(f"[watchdog] pacing loop stalled in phase '{self._pace_phase}' at "
+                  f"minute {self.engine.now} for {elapsed:.0f}s (clients={len(self.clients)}, "
+                  f"llm_depth={self._llm_depth})", flush=True)
+            self._pace_warned = True
+
     async def status_loop(self) -> None:
         """A lightweight heartbeat independent of the main pacing loop: while an
         LLM call blocks a tick (the sim clock is frozen inside run_until), the
         main loop can't broadcast, so this pushes the in-flight state instead.
         Sends only while busy, plus once to clear -- the normal tick carries
-        everything else, so quiet periods stay silent."""
+        everything else, so quiet periods stay silent. Also runs the pacing-loop
+        stall watchdog (independent of the main loop, so it fires even mid-stall)."""
         last_busy = False
         while True:
             await asyncio.sleep(0.4)
             self._llm_watchdog()
+            self._pace_watchdog()
             busy = self._llm_depth > 0
             if self.clients and (busy or last_busy):
                 await self._broadcast_status()
@@ -457,14 +501,25 @@ class Sim:
         })
 
     async def _send_all(self, payload: dict) -> None:
-        dead = []
-        for ws in self.clients:
+        # Send to every client CONCURRENTLY and bound each send with WS_SEND_TIMEOUT_S.
+        # A frozen tab (socket open, never drained) backpressures ws.send_json, which --
+        # done sequentially and unbounded, as before -- stalled the whole pacing loop and
+        # starved every other viewer (the observed non-LLM night freeze). Now a stuck or
+        # errored client is dropped (it auto-reconnects) and healthy clients are never
+        # held up by it.
+        if not self.clients:
+            return
+
+        async def _one(ws):
             try:
-                await ws.send_json(payload)
+                await asyncio.wait_for(ws.send_json(payload), timeout=WS_SEND_TIMEOUT_S)
+                return None
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.clients.discard(ws)
+                return ws   # timed out on backpressure, or the socket errored -> drop
+        drop = await asyncio.gather(*[_one(ws) for ws in list(self.clients)])
+        for ws in drop:
+            if ws is not None:
+                self.clients.discard(ws)
 
     # ---- pacing loop ----------------------------------------------
 
@@ -636,7 +691,11 @@ class Sim:
 
     async def loop(self) -> None:
         while True:
+            self._pace_phase = "sleep"
             await asyncio.sleep(TICK_REAL_SECONDS)
+            self._pace_beat = time.monotonic()   # iteration start: the stall watchdog measures from here
+            self._pace_warned = False
+            self._pace_heartbeat()
             if self.paused:
                 continue
             if self._is_idle():
@@ -649,6 +708,7 @@ class Sim:
                 continue
             self._frac -= step
             target = self.engine.now + step
+            self._pace_phase = "run_until"
             await self.engine.run_until(target)
             self.engine.now = max(self.engine.now, target)  # clock advances even in quiet periods
             self.engine.expire_world_effects()  # end rain/festival on time even with no pending decisions
@@ -660,7 +720,9 @@ class Sim:
             day = self.engine.now // DAY_MIN
             if day != self._tr_backfill_day and not self._night_cruising:
                 self._tr_backfill_day = day
+                self._pace_phase = "backfill"
                 self.backfill_translations()
+            self._pace_phase = "broadcast"
             await self._broadcast_tick()
             # Periodic snapshot: every SNAPSHOT_REAL_SECONDS, but only if the
             # clock actually moved since the last one (a paused/idle town isn't
