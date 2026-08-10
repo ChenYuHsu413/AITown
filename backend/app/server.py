@@ -155,6 +155,11 @@ class Sim:
         self._tr_queue: asyncio.Queue[str] = asyncio.Queue()
         self._tr_attempts: dict[str, int] = {}   # text -> failed attempts so far
         self._tr_inflight: set[str] = set()       # texts queued or awaiting requeue (dedupe)
+        # Texts that exhausted TRANSLATE_RETRY_MAX background attempts: the daily
+        # backfill scan skips these so a permanently-failing phrase can't be re-queued
+        # every sim-day forever (perpetual night LLM). A user opening the panel still
+        # retries them on demand (translate_text -> one fresh attempt).
+        self._tr_gaveup: set[str] = set()
         self._tr_worker: asyncio.Task | None = None
         self._tr_backfill_day: int = -1           # last sim-day the display layer was scanned
         # translate's own concurrency pool (see TRANSLATE_MAX_CONCURRENT): keeps
@@ -245,7 +250,8 @@ class Sim:
         """Drains the retry queue: each text gets another whole-chain attempt; on
         success it lands in the cache (so the next panel-open shows zh), on failure it
         is requeued after TRANSLATE_RETRY_WAIT_S, up to TRANSLATE_RETRY_MAX attempts.
-        After that it's dropped -- still uncached, so a fresh panel-open re-queues it."""
+        After that it's marked given-up (skipped by the daily backfill so it can't
+        cycle forever) -- still uncached, so a fresh panel-open retries it on demand."""
         while True:
             text = await self._tr_queue.get()
             try:
@@ -258,14 +264,16 @@ class Sim:
                     self._translate_cache[text] = self._apply_name_subs(zh)
                     self._tr_attempts.pop(text, None)
                     self._tr_inflight.discard(text)
+                    self._tr_gaveup.discard(text)     # a retry (e.g. panel-open) finally succeeded
                 else:
                     n = self._tr_attempts.get(text, 0) + 1
                     self._tr_attempts[text] = n
                     if n < TRANSLATE_RETRY_MAX:
                         asyncio.ensure_future(self._requeue_after(text, TRANSLATE_RETRY_WAIT_S))
-                    else:  # gave up -> leave uncached; a later panel-open retries fresh
+                    else:  # gave up -> mark it so the daily backfill won't re-queue it forever
                         self._tr_attempts.pop(text, None)
                         self._tr_inflight.discard(text)
+                        self._tr_gaveup.add(text)
             except Exception:
                 self._tr_inflight.discard(text)
             finally:
@@ -306,7 +314,8 @@ class Sim:
                 texts.append(v.text)                         # every phrasing in circulation
         for t in texts:
             t = (t or "").strip()
-            if t and re.search(r"[A-Za-z]", t) and t not in self._translate_cache:
+            if (t and re.search(r"[A-Za-z]", t) and t not in self._translate_cache
+                    and t not in self._tr_gaveup):   # don't perpetually re-queue a dead phrase
                 self._enqueue_translation(t)
         return len(self._tr_inflight) - before
 
@@ -499,13 +508,17 @@ class Sim:
         agents = self.world.agents.values()
         return bool(agents) and all(a.state.current_action == "sleep" for a in agents)
 
-    def _llm_inflight(self) -> bool:
-        """Any dialogue/reflection still generating, or a synchronous call in flight.
-        The engine's locks (_in_dialogue/_reflecting) and live task set are the source
-        of truth; _llm_depth catches a decision-time call. Night skip waits for all of
-        these to settle -- a late-night conversation must play out at normal speed."""
+    def _dialogue_or_reflection_inflight(self) -> bool:
+        """Any dialogue or reflection still generating. Night skip waits for these --
+        a late-night conversation must play out at normal speed -- but deliberately
+        NOT for display-layer translation. Translation is a background chore that has
+        nothing to do with the sleeping town; counting it (it bumps ``_llm_depth`` like
+        any call) used to pin the town awake all night, since the backfill worker is
+        almost always mid-call in live mode (see _apply_night_skip). ``e._tasks`` holds
+        only dialogue/reflection background tasks (``_spawn``); the translate worker
+        runs on its own task, so it isn't in there."""
         e = self.engine
-        return bool(e._tasks or e._in_dialogue or e._reflecting) or self._llm_depth > 0
+        return bool(e._tasks or e._in_dialogue or e._reflecting)
 
     def _night_meetup_pending(self) -> bool:
         """Forward hook: no scheduled night-appointment mechanism exists yet. When one
@@ -515,8 +528,9 @@ class Sim:
 
     def _apply_night_skip(self) -> None:
         """Fast-forward the sleeping hours. Engages when the whole town is asleep, no
-        LLM work is in flight, and no night appointment is pending -- then cruises at
-        ``night_speed``. Restores the pre-skip gear the instant someone stirs, or
+        dialogue/reflection is in flight, and no night appointment is pending -- then
+        cruises at ``night_speed`` (display translation does NOT hold it off; see
+        _dialogue_or_reflection_inflight). Restores the pre-skip gear the instant someone stirs, or
         NIGHT_WAKE_LEAD_MIN sim-min before the earliest scheduled wake so morning opens
         at the viewer's own speed. Coexists with the unattended cruise (takes the
         higher) and is exempt from the free-mode 5x clamp: an all-asleep town makes zero
@@ -525,7 +539,7 @@ class Sim:
         near_wake = next_wake is not None and (next_wake - self.engine.now) <= NIGHT_WAKE_LEAD_MIN
         want = (
             self._town_all_asleep()
-            and not self._llm_inflight()
+            and not self._dialogue_or_reflection_inflight()
             and not self._night_meetup_pending()
             and not near_wake
         )
@@ -630,8 +644,11 @@ class Sim:
             self.engine.expire_world_effects()  # end rain/festival on time even with no pending decisions
             # Each sim-day, proactively queue the day's new English knowledge for zh
             # translation so a panel-open never shows English first (cheap: deduped).
+            # Skipped while night-cruising: translation is daytime work, and letting the
+            # backfill fire mid-cruise would spend LLM calls through the sleeping hours
+            # (and _tr_backfill_day is left unchanged so it runs once morning restores).
             day = self.engine.now // DAY_MIN
-            if day != self._tr_backfill_day:
+            if day != self._tr_backfill_day and not self._night_cruising:
                 self._tr_backfill_day = day
                 self.backfill_translations()
             await self._broadcast_tick()
