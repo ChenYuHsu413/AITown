@@ -163,6 +163,9 @@ _EN_TEMPLATES = {
     "romance_partners": "{actor} and {target} made it official",
     "breakdown": "Something broke down at {loc}",
     "repaired": "{actor} repaired the equipment at {loc}",
+    "meetup_arranged": "{actor} and {target} arranged to meet at {loc}",
+    "meetup_declined": "{actor} asked {target} to meet, but they passed",
+    "met_up": "{actor} and {target} met up as planned at {loc}",
 }
 
 # The town's living history: the notable beats worth remembering (see Sim.chronicle
@@ -173,6 +176,7 @@ CHRONICLE_VERBS = {
     "rain_start", "rain_end", "festival_start", "festival_end",
     "leak", "secret_born", "week_close", "transition", "milestone",
     "romance_dating", "romance_rejected", "romance_partners", "breakdown", "repaired",
+    "met_up",
 }
 CHRONICLE_ICONS = {
     "confide": "🤫", "confronted": "⚖️", "landmark_done": "🎨", "belief": "💭",
@@ -180,7 +184,7 @@ CHRONICLE_ICONS = {
     "festival_end": "🎏", "leak": "🕳️", "secret_born": "🔒", "week_close": "📅",
     "transition": "🔀", "milestone": "🤝",
     "romance_dating": "💕", "romance_rejected": "💔", "romance_partners": "💍",
-    "breakdown": "🛠️", "repaired": "🔧",
+    "breakdown": "🛠️", "repaired": "🔧", "met_up": "🫂",
 }
 
 
@@ -459,6 +463,24 @@ class SimulationEngine:
         for agent in self.world.agents.values():
             self.decisions._maybe_ignite(agent, self.world, self.now)
         self._maybe_break_equipment()   # a place or two may fault today -> work for Long
+        self._roll_meetups()            # social initiative: friends arrange to meet today
+
+    def _roll_meetups(self) -> None:
+        """Once a day, residents may arrange to meet a friend later today (live only; see
+        decision.maybe_arrange_meetup). An arranged pair is scheduled to the appointed
+        minute so both drift to the venue; a decline is a quiet beat."""
+        for agent in list(self.world.agents.values()):
+            outcome = self.decisions.maybe_arrange_meetup(agent, self.world, self.now)
+            if outcome is None:
+                continue
+            a, b = self.world.agents[outcome["a"]], self.world.agents[outcome["b"]]
+            if outcome["verb"] == "meetup_arranged":
+                self.scheduler.schedule(a.id, outcome["minute"])   # both get a tick at the meetup time
+                self.scheduler.schedule(b.id, outcome["minute"])
+                self._publish("action", "meetup_arranged", actor=a, target=b,
+                              location_id=outcome["location"])
+            else:
+                self._publish("action", "meetup_declined", actor=a, target=b)
 
     _BREAKDOWN_DAILY_P = 0.08
     _MAX_BROKEN = 2
@@ -602,6 +624,7 @@ class SimulationEngine:
         if decision.action == "talk" and decision.talk_partner:
             await self._initiate_conversation(
                 agent, decision.talk_partner, decision.confront_text, decision.confront_rumor_id,
+                is_meetup=decision.is_meetup,
             )
         else:
             if decision.narrative_verb == "seek_out":
@@ -658,6 +681,7 @@ class SimulationEngine:
 
     async def _initiate_conversation(
         self, a: Agent, partner_id: str, confront_text: str = "", confront_rumor_id: str = "",
+        is_meetup: bool = False,
     ) -> None:
         """Initiation (synchronous in the tick): if the partner is free, build the
         conversation plan (rumor/leak/confide effects apply now), LOCK both parties,
@@ -673,8 +697,13 @@ class SimulationEngine:
         plan = await self.decisions.start_conversation(
             a, b, self.world, self.now,
             confront_text=confront_text or None, confront_rumor_id=confront_rumor_id,
+            count_against_cap=not is_meetup,   # a kept meetup is exempt from the daily cap
         )
         init = self.now
+        if is_meetup:   # both kept the appointment -> clear the mirror, mark the beat
+            a.state.pending_meetup = None
+            b.state.pending_meetup = None
+            self._publish("action", "met_up", actor=a, target=b, location_id=a.state.location)
         # Lock both. ``_in_dialogue`` is the authoritative lock + settlement token;
         # busy_until mirrors it for the UI ("talk" bubble) and third-party free checks,
         # and is the resume self-heal window (see DIALOGUE_LOCK_MIN).

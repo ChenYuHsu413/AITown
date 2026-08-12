@@ -77,6 +77,15 @@ TALK_COOLDOWN_MIN = 90        # don't re-approach the same person within 90 sim-
 TALK_DURATION_MIN = 10
 LOW_ENERGY = 20
 
+# Social initiative (maybe_arrange_meetup): a resident may, at most once every few days,
+# arrange to meet a friend at a shared free window later that day.
+MEETUP_DAILY_P = 0.18            # per-eligible-agent daily chance to try to arrange one
+MEETUP_FRIEND_MIN = 45          # only invite someone you're at least this friendly with
+MEETUP_PERSON_COOLDOWN = 3      # a person initiates at most once per this many sim-days
+MEETUP_PAIR_COOLDOWN = 7        # a given pair meets at most once per this many sim-days
+MEETUP_WINDOW_MIN = 180         # attend within this many sim-minutes of the appointed time, else drop
+MEETUP_SOCIAL_ACTIONS = frozenset({"idle", "rest", "eat"})  # routine states open to a drop-in
+
 # Words that named a PRIOR run's world -- e.g. a park "mural" (壁畫), long since
 # replaced by a light installation. A generated turn mentioning one is almost
 # certainly stale context bleeding through (the old culprit was a hardcoded mock
@@ -339,6 +348,7 @@ class Decision:
     narrative_target: str = ""         # agent_id the narrative beat is aimed at
     confront_text: str = ""            # opener injected into the dialogue when confronting over a rumor
     confront_rumor_id: str = ""        # the rumor being confronted (set alongside confront_text)
+    is_meetup: bool = False            # a kept social appointment -> conversation bypasses the daily cap
 
 
 @dataclass
@@ -398,11 +408,18 @@ class DecisionEngine:
 
     def __post_init__(self) -> None:
         live = any(p.name != "mock" for chain in self.router.tiers.values() for p in chain)
+        self._live = live
         if live and self.dialogue_cap == 0:
             try:
                 self.dialogue_cap = int(os.environ.get("AI_TOWN_DIALOGUE_CAP", "25"))
             except ValueError:
                 self.dialogue_cap = 25
+
+    # Social initiative is a live-mode beat (it drives real LLM conversations); the mock
+    # baseline stays deterministic. AI_TOWN_MEETUPS=1 force-enables it for testing.
+    @property
+    def _meetups_enabled(self) -> bool:
+        return self._live or os.environ.get("AI_TOWN_MEETUPS") == "1"
 
     def _roll_day(self, now: int) -> None:
         day = now // (24 * 60)
@@ -441,6 +458,17 @@ class DecisionEngine:
                 ))
                 return seek_dec
             # gave up (source unreachable) -> fall through to the routine
+
+        # ---- Level 2 (resume): keeping a social appointment -----------
+        if agent.state.pending_meetup and agent.state.current_action != "sleep":
+            meet_dec = self._resume_meetup(agent, world, now)
+            if meet_dec is not None:
+                self.traces.append(DecisionTrace(
+                    minute=now, agent_id=agent.id, observation=obs_text,
+                    retrieved_memories=[], decision=meet_dec, model="rules",
+                ))
+                return meet_dec
+            # not time yet / lapsed -> fall through to the routine
 
         # ---- Level 0: hard rules --------------------------------------
         if agent.state.current_action == "sleep" and entry.action == "sleep":
@@ -757,6 +785,122 @@ class DecisionEngine:
         agent.state.seek_tries = 0
         return None
 
+    # ---- social initiative: arranged meetups -------------------------
+
+    def _social_venue(self, world: "World") -> str:
+        """A public place both parties can head to for a meetup (cafe first, else park,
+        else any non-home location)."""
+        for pref in ("cafe", "park"):
+            if pref in world.locations:
+                return pref
+        for lid, loc in world.locations.items():
+            if getattr(loc, "kind", "") != "home":
+                return lid
+        return next(iter(world.locations), "")
+
+    def _common_free_window(self, a: Agent, b: Agent, world: "World", now: int) -> tuple[int, str] | None:
+        """Find the earliest daytime slot today where BOTH agents' routines are in a
+        drop-in-friendly state (idle/rest/eat -- never asleep or working), with at least
+        an hour of lead. Location: where they'd already both be, else a public venue.
+        Returns (absolute sim-minute, location_id) or None."""
+        day_start = (now // (24 * 60)) * (24 * 60)
+        dow = (now // (24 * 60)) % 7
+        for t_mod in range(10 * 60, 20 * 60, 30):         # 10:00 .. 19:30, half-hour steps
+            minute_abs = day_start + t_mod
+            if minute_abs < now + 60:                     # need real lead time
+                continue
+            ea, eb = a.routine.current(t_mod, dow), b.routine.current(t_mod, dow)
+            if ea.action in MEETUP_SOCIAL_ACTIONS and eb.action in MEETUP_SOCIAL_ACTIONS:
+                loc = ea.location if ea.location == eb.location else self._social_venue(world)
+                if loc:
+                    return minute_abs, loc
+        return None
+
+    def maybe_arrange_meetup(self, agent: Agent, world: "World", now: int) -> dict | None:
+        """Once-a-day roll: ``agent`` may invite a friend to meet later today. Honors the
+        per-person and per-pair cooldowns, asks the friend (a rejection is possible), and
+        on acceptance finds a shared free window and sets the mirrored ``pending_meetup``
+        on both. Returns an outcome dict for the engine to publish
+        ({"verb": "meetup_arranged"|"meetup_declined", "a", "b", "minute"?, "location"?}),
+        or None (no attempt / no window). Disabled under mock so the baseline is untouched."""
+        if not self._meetups_enabled:
+            return None
+        day = now // (24 * 60)
+        st = agent.state
+        if day - st.last_meetup_day < MEETUP_PERSON_COOLDOWN:
+            return None
+        if st.pending_meetup is not None:
+            return None
+        # Deterministic per (day, agent): reproducible, and independent of call order.
+        rng = random.Random(int(hashlib.sha256(f"meetup|{day}|{agent.id}".encode()).hexdigest()[:8], 16))
+        if rng.random() >= MEETUP_DAILY_P:
+            return None
+        # Candidate friends: friendly enough, not on the per-pair cooldown, free of an
+        # existing appointment, and not the agent themselves.
+        cands = []
+        for other in world.agents.values():
+            if other.id == agent.id or other.state.pending_meetup is not None:
+                continue
+            rel = agent.relationships.get(other.id)   # read-only: don't create empty entries
+            if rel is None or rel.friendship < MEETUP_FRIEND_MIN:
+                continue
+            if day - st.meetup_with_day.get(other.id, -100) < MEETUP_PAIR_COOLDOWN:
+                continue
+            cands.append(other)
+        if not cands:
+            return None
+        cands.sort(key=lambda o: agent.rel(o.id).friendship, reverse=True)
+        b = cands[rng.randrange(min(3, len(cands)))]     # one of the top few friends
+        # The friend may decline -- warmer relationships accept more readily; a sour mood
+        # dampens it. Record the per-pair cooldown either way so they don't re-ask daily.
+        st.meetup_with_day[b.id] = day
+        b.state.meetup_with_day[agent.id] = day
+        p_accept = min(0.95, 0.30 + 0.006 * b.rel(agent.id).friendship)
+        if b.state.mood in ("upset", "worried", "anxious"):
+            p_accept *= 0.6
+        if rng.random() >= p_accept:
+            return {"verb": "meetup_declined", "a": agent.id, "b": b.id}
+        window = self._common_free_window(agent, b, world, now)
+        if window is None:
+            return None                                  # willing, but no shared gap today
+        minute_abs, loc = window
+        st.last_meetup_day = day                         # per-person throttle on the INITIATOR
+        appt = {"partner": "", "location": loc, "minute": minute_abs}
+        st.pending_meetup = {**appt, "partner": b.id}
+        b.state.pending_meetup = {**appt, "partner": agent.id}
+        return {"verb": "meetup_arranged", "a": agent.id, "b": b.id,
+                "minute": minute_abs, "location": loc}
+
+    def _resume_meetup(self, agent: Agent, world: "World", now: int) -> Decision | None:
+        """Drive a kept appointment: once the appointed time arrives, head to the venue
+        and, when both are there and free, start the (cap-exempt) conversation. Returns a
+        move/idle/talk Decision, or None (not time yet, or the window lapsed -> cleared)."""
+        m = agent.state.pending_meetup
+        if not m or agent.state.current_action == "sleep":
+            return None
+        if now < m["minute"]:
+            return None                                  # not yet -- live the normal routine
+        if now > m["minute"] + MEETUP_WINDOW_MIN:
+            agent.state.pending_meetup = None            # missed the window
+            return None
+        partner = world.agents.get(m["partner"])
+        pm = partner.state.pending_meetup if partner else None
+        if partner is None or not pm or pm.get("partner") != agent.id:
+            agent.state.pending_meetup = None            # partner isn't coming any more
+            return None
+        loc = m["location"]
+        if agent.state.location != loc:
+            return Decision(action="move", target_location=loc, duration=10, level=2,
+                            reason=f"heading to meet {partner.name}",
+                            narrative_verb="meetup_go", narrative_target=partner.id)
+        if (partner.state.location == loc and partner.state.current_action != "sleep"
+                and partner.state.busy_until <= now):
+            agent.state.pending_meetup = None            # engine clears the partner's on initiation
+            return Decision(action="talk", talk_partner=partner.id, duration=TALK_DURATION_MIN,
+                            level=2, is_meetup=True, reason=f"catching up with {partner.name}")
+        return Decision(action="idle", duration=10, level=2,
+                        reason=f"waiting at {loc} for {partner.name}")
+
     # ---- Level 2: one-call conversation ------------------------------
 
     async def _maybe_share_rumor(self, a: Agent, b: Agent, world: World, now: int) -> dict | None:
@@ -1035,7 +1179,7 @@ class DecisionEngine:
 
     async def start_conversation(
         self, a: Agent, b: Agent, world: World, now: int, confront_text: str | None = None,
-        confront_rumor_id: str = "",
+        confront_rumor_id: str = "", count_against_cap: bool = True,
     ) -> ConvPlan:
         """Initiation (runs synchronously w.r.t. the world clock, in the tick):
         decide gossip / leaks / confides now -- each mutates memory + relationships
@@ -1108,8 +1252,10 @@ class DecisionEngine:
         )
         # Count the conversation against the daily budget at initiation (serialized
         # in the tick), so the cap stays honest even though generation is now async.
+        # A kept meetup is exempt: it's a deliberate social beat, not routine chatter.
         self._roll_day(now)
-        self._dialogues_today += 1
+        if count_against_cap:
+            self._dialogues_today += 1
         return ConvPlan(
             a=a, b=b, location=a.state.location, init_minute=now,
             messages=messages, validate=_validate,

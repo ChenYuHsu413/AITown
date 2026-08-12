@@ -621,9 +621,17 @@ class Sim:
         return bool(e._tasks or e._in_dialogue or e._reflecting)
 
     def _night_meetup_pending(self) -> bool:
-        """Forward hook: no scheduled night-appointment mechanism exists yet. When one
-        lands, return True while an appointment falls inside the sleeping window so the
-        town doesn't fast-forward past it. Today it's always clear."""
+        """True while an arranged meetup (see decision.maybe_arrange_meetup) is still
+        unkept and falls before the next scheduled wake -- so night skip won't fast-forward
+        past an appointment. Meetups are arranged into daytime windows, so this is normally
+        clear at night; it just guarantees the town never cruises over one."""
+        now = self.engine.now
+        next_wake = self.engine.scheduler.peek_minute()
+        horizon = next_wake if next_wake is not None else now + NIGHT_WAKE_LEAD_MIN
+        for a in self.world.agents.values():
+            m = a.state.pending_meetup
+            if m and now <= m.get("minute", 0) < horizon:
+                return True
         return False
 
     def _apply_night_skip(self) -> None:

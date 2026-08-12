@@ -582,7 +582,7 @@ let CHRON=[], chronOpen=false;      // chronicle state (declared early: applyLan
 const CHRON_VERBS=new Set(['confide','confronted','landmark_done','belief','broke',
   'rain_start','rain_end','festival_start','festival_end','leak','secret_born','week_close',
   'transition','milestone','romance_dating','romance_rejected','romance_partners',
-  'breakdown','repaired']);
+  'breakdown','repaired','met_up']);
 
 /* ---------- i18n ---------- */
 const I18N={
@@ -798,6 +798,9 @@ const EV_TMPL={
     romance_partners:(a,l,tg)=>`💍 ${ROMANCE_EN.romance_partners.replace('{a}',a).replace('{b}',tg)}`,
     breakdown:(a,l)=>`🛠️ Something broke down at ${l}`,
     repaired:(a,l)=>`🔧 ${a} repaired the equipment at ${l}`,
+    meetup_arranged:(a,l,tg)=>`🗓️ ${a} and ${tg} arranged to meet at ${l}`,
+    meetup_declined:(a,l,tg)=>`🙇 ${a} asked ${tg} to meet, but they passed`,
+    met_up:(a,l,tg)=>`🫂 ${a} and ${tg} met up as planned at ${l}`,
   },
   zh:{
     sleep:(a,l)=>`${a} 在 ${l} 就寢`, eat:(a,l)=>`${a} 在 ${l} 用餐`,
@@ -822,6 +825,9 @@ const EV_TMPL={
     romance_partners:(a,l,tg)=>`💍 ${ROMANCE_ZH.romance_partners.replace('{a}',a).replace('{b}',tg)}`,
     breakdown:(a,l)=>`🛠️ ${l} 的設備故障了`,
     repaired:(a,l)=>`🔧 ${a} 修好了 ${l} 的設備`,
+    meetup_arranged:(a,l,tg)=>`🗓️ ${a} 和 ${tg} 約好在 ${l} 見面`,
+    meetup_declined:(a,l,tg)=>`🙇 ${a} 邀 ${tg} 見面，但對方婉拒了`,
+    met_up:(a,l,tg)=>`🫂 ${a} 和 ${tg} 如約在 ${l} 碰了面`,
   },
 };
 let LANG=localStorage.getItem('lang')||(navigator.language&&navigator.language.startsWith('zh')?'zh':'en');

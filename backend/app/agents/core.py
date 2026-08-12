@@ -75,6 +75,12 @@ class AgentState:
     awkward_until: dict[str, int] = field(default_factory=dict)  # partner_id -> sim-day the post-rejection chill lifts
     pending_confession: str = ""            # partner_id this agent has resolved to confess to (next solo talk)
     last_confess_day: int = -100            # sim-day of the last confession attempt (cooldown anchor)
+    # Social initiative (see decision.maybe_arrange_meetup): a standing appointment to
+    # meet a friend at a place/time today. Both parties carry the mirror. Cleared when
+    # kept or when the window lapses.
+    pending_meetup: dict | None = None      # {"partner": id, "location": id, "minute": abs sim-min}
+    last_meetup_day: int = -100             # sim-day this agent last INITIATED a meetup (per-person throttle)
+    meetup_with_day: dict[str, int] = field(default_factory=dict)  # partner_id -> sim-day last met (per-pair throttle)
 
 
 @dataclass
