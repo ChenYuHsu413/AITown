@@ -161,7 +161,7 @@ class Wish:
             drive = raw.get("drive_state", {})
             if (not isinstance(drive, dict) or set(drive) - {
                     "attempt_days", "cursor", "blocked_days", "last_frustration_day",
-                    "last_blocked_day", "daily_day", "daily_attempts"}):
+                    "daily_day", "daily_attempts"}):
                 return None
             attempts = drive.get("attempt_days", {})
             if (not isinstance(attempts, dict)
@@ -170,27 +170,23 @@ class Wish:
                            or v < 0 or not k.isdigit() or int(k) >= len(reqs)
                            for k, v in attempts.items())):
                 return None
-            drive_ints = ("cursor", "blocked_days", "daily_attempts")
+            drive_ints = ("cursor", "blocked_days", "last_frustration_day",
+                          "daily_day", "daily_attempts")
             if any(k in drive and (not isinstance(drive[k], int) or isinstance(drive[k], bool))
                    for k in drive_ints):
                 return None
-            def safe_day(key: str) -> int:
-                value = drive.get(key, -1)
-                return value if isinstance(value, int) and not isinstance(value, bool) and value >= -1 else -1
             try:
                 cursor = int(drive.get("cursor", 0))
                 blocked = int(drive.get("blocked_days", 0))
-                frustration_day = safe_day("last_frustration_day")
-                blocked_day = safe_day("last_blocked_day")
-                daily_day = safe_day("daily_day")
+                frustration_day = int(drive.get("last_frustration_day", -1))
+                daily_day = int(drive.get("daily_day", -1))
                 daily_attempts = int(drive.get("daily_attempts", 0))
             except (TypeError, ValueError):
                 return None
-            if min(cursor, blocked, daily_attempts) < 0:
+            if min(cursor, blocked, daily_attempts) < 0 or frustration_day < -1 or daily_day < -1:
                 return None
             w.drive_state = {"attempt_days": dict(attempts), "cursor": cursor,
                              "blocked_days": blocked, "last_frustration_day": frustration_day,
-                             "last_blocked_day": blocked_day,
                              "daily_day": daily_day, "daily_attempts": daily_attempts}
             if (w.scale not in SCALES or w.status not in STATUSES
                     or not all((w.id.strip(), w.owner_id.strip(), w.title.strip(), w.statement.strip()))
@@ -366,14 +362,11 @@ def validate_generation(raw: object, agent, world, material: dict) -> dict | Non
         r = Requirement.from_dict(rr)
         if r is None or r.kind not in REQUIREMENT_KINDS or not _finite_positive(r.threshold):
             return None
-        if (r.kind in ("talk_count", "friendship", "trust")
-                and (r.target not in world.agents or r.target == agent.id)):
+        if r.kind in ("talk_count", "friendship", "trust") and r.target not in world.agents:
             return None
         if r.kind == "location_visits" and r.target not in world.locations:
             return None
         if r.kind == "action_count" and r.target not in ALLOWED_ACTIONS:
-            return None
-        if r.kind == "action_count" and r.target == "work" and not _work_locations(agent, world):
             return None
         if r.kind == "event_count" and r.target not in ALLOWED_EVENTS:
             return None
@@ -398,7 +391,7 @@ def validate_generation(raw: object, agent, world, material: dict) -> dict | Non
         reqs.append(r)
     if not reqs or len(reqs) > REQUIREMENTS_MAX:
         return None
-    if scale == "major" and not any(_requirement_actionable(agent, world, r) for r in reqs):
+    if scale == "major" and not any(r.kind in ACTIONABLE_REQUIREMENTS for r in reqs):
         return None
     effort = sum(r.threshold - r.current for r in reqs)
     if scale == "major" and effort < 2:
@@ -519,8 +512,7 @@ def _drive_state(wish: Wish, day: int) -> dict:
     state = wish.drive_state
     if not state:
         state.update(attempt_days={}, cursor=0, blocked_days=0,
-                     last_frustration_day=-1, last_blocked_day=-1,
-                     daily_day=day, daily_attempts=0)
+                     last_frustration_day=-1, daily_day=day, daily_attempts=0)
     if state.get("daily_day") != day:
         state["daily_day"], state["daily_attempts"] = day, 0
     return state
@@ -531,38 +523,10 @@ def _drive_roll(agent_id: str, wish_id: str, day: int, cursor: int) -> float:
     return int(raw[:8], 16) / 0xFFFFFFFF
 
 
-def _routine_entries(agent) -> list:
-    return list(agent.routine.entries) + [e for e in agent.routine._weekend
-                                           if e not in agent.routine.entries]
-
-
-def _work_locations(agent, world) -> list[str]:
-    return list(dict.fromkeys(e.location for e in _routine_entries(agent)
-                              if e.action == "work" and e.location in world.locations))
-
-
-def _work_location(agent, world, now: int) -> str:
+def _work_location(agent, now: int) -> str:
     dow = (now // DAY_MIN) % 7
     entries = agent.routine._table(dow)[0]
-    return next((e.location for e in entries if e.action == "work"
-                 and e.location in world.locations), "")
-
-
-def _has_income_ability(agent, world) -> bool:
-    return (agent.profile.daily_wage > 0 or bool(_work_locations(agent, world))
-            or any(loc.owner == agent.id and loc.price > 0 for loc in world.locations.values()))
-
-
-def _requirement_actionable(agent, world, req: Requirement) -> bool:
-    if req.kind == "location_visits":
-        return req.target in world.locations
-    if req.kind in ("talk_count", "friendship", "trust"):
-        return req.target in world.agents and req.target != agent.id
-    if req.kind in ("money", "money_gain"):
-        return _has_income_ability(agent, world)
-    if req.kind == "action_count":
-        return req.target in ("rest", "idle") or (req.target == "work" and bool(_work_locations(agent, world)))
-    return False
+    return next((e.location for e in entries if e.action == "work"), "")
 
 
 def _location_open_for(agent, world, location: str, now: int) -> bool:
@@ -573,15 +537,6 @@ def _location_open_for(agent, world, location: str, now: int) -> bool:
     if world.effect_active("rain") and loc.kind == "park":
         return False
     return not (loc.owner and loc.price > 0 and dow in loc.closed_days and loc.owner != agent.id)
-
-
-def _work_available(agent, world, location: str, now: int) -> bool:
-    loc = world.locations.get(location)
-    dow = (now // DAY_MIN) % 7
-    if loc is None or dow in agent.profile.off_days or not _location_open_for(agent, world, location, now):
-        return False
-    shop = loc.price > 0 and loc.owner
-    return not (shop and dow in loc.closed_days)
 
 
 def record_drive_blocked(agent, wish_id: str, now: int) -> None:
@@ -605,11 +560,7 @@ def social_drive_target(agent) -> str:
 def _blocked_memory(agent, wish: Wish, now: int) -> None:
     day = now // DAY_MIN + 1
     state = _drive_state(wish, day)
-    last_blocked = state.get("last_blocked_day", -1)
-    if last_blocked == day:
-        return
-    state["blocked_days"] = state["blocked_days"] + 1 if last_blocked == day - 1 else 1
-    state["last_blocked_day"] = day
+    state["blocked_days"] += 1
     last = state.get("last_frustration_day", -1)
     if (state["blocked_days"] >= DRIVE_FRUSTRATION_BLOCKED_DAYS
             and day - last >= DRIVE_FRUSTRATION_COOLDOWN_DAYS):
@@ -653,29 +604,20 @@ def next_wish_drive(agent, world, now: int, routine_action: str) -> dict | None:
                              if target.state.location == agent.state.location
                              else None)  # different-place contact is handled by existing meetup rules
         elif req.kind in ("money", "money_gain"):
-            work = _work_location(agent, world, now)
-            if _has_income_ability(agent, world) and work and _work_available(agent, world, work, now):
+            work = _work_location(agent, now)
+            if agent.profile.daily_wage > 0 and work and _location_open_for(agent, world, work, now):
                 directive = ({"action": "work"} if agent.state.location == work
                              else {"action": "move", "location": work})
         elif req.kind == "action_count" and req.target in DRIVE_ACTIONS:
-            work = _work_location(agent, world, now)
-            if req.target == "work" and work and _work_available(agent, world, work, now):
-                directive = ({"action": "work"} if agent.state.location == work
-                             else {"action": "move", "location": work})
-            elif req.target != "work":
+            if req.target != "work" or agent.state.location == _work_location(agent, now):
                 directive = {"action": req.target}
-        preparing_work = (directive is not None and directive.get("action") == "move"
-                          and (req.kind in ("money", "money_gain")
-                               or req.kind == "action_count" and req.target == "work"))
-        if not preparing_work:
-            state["attempt_days"][str(i)] = day
+        state["attempt_days"][str(i)] = day
         state["cursor"] = (i + 1) % len(wish.requirements)
         state["daily_attempts"] += 1
         if directive is None:
             _blocked_memory(agent, wish, now)
             continue
         state["blocked_days"] = 0
-        state["last_blocked_day"] = -1
         directive.update(wish_id=wish.id, requirement_index=i)
         return directive
     return None
