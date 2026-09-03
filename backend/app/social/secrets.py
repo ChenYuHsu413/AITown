@@ -37,6 +37,9 @@ class Secret:
     resolved: bool = False
     resolved_minute: int = -1
     resolution: str = ""             # one English line, e.g. "Xixi finally opened up to Aisi"
+    source_kind: str = ""
+    source_id: str = ""
+    social_enabled: bool = True
 
 
 class SecretRegistry:
@@ -45,11 +48,13 @@ class SecretRegistry:
     def __init__(self) -> None:
         self.secrets: dict[str, Secret] = {}
 
-    def add(self, owner: str, text: str, sensitivity: float, minute: int) -> Secret:
+    def add(self, owner: str, text: str, sensitivity: float, minute: int, *,
+            source_kind: str = "", source_id: str = "", social_enabled: bool = True) -> Secret:
         sid = uuid.uuid4().hex[:8]
         secret = Secret(
             id=sid, owner=owner, text=text,
             sensitivity=max(0.0, min(1.0, sensitivity)), created_minute=minute,
+            source_kind=source_kind, source_id=source_id, social_enabled=social_enabled,
         )
         self.secrets[sid] = secret
         return secret
@@ -61,7 +66,8 @@ class SecretRegistry:
         """Owner's secrets that still drive behaviour -- i.e. not yet resolved. A
         leaked-but-unresolved secret is still 'live' (the owner can still confide
         it, reflect on it), so only ``resolved`` filters here."""
-        return [s for s in self.secrets.values() if s.owner == owner and not s.resolved]
+        return [s for s in self.secrets.values() if s.owner == owner and not s.resolved
+                and s.social_enabled]
 
     def knows(self, secret_id: str, agent_id: str) -> bool:
         """True if the agent owns the secret or has been confided in."""
@@ -79,13 +85,13 @@ class SecretRegistry:
             s.leaked = True
             s.leaked_by = leaked_by
 
-    def resolve(self, secret_id: str, minute: int, resolution: str) -> bool:
+    def resolve(self, secret_id: str, minute: int, resolution: str, *, from_wish: bool = False) -> bool:
         """Lay a secret to rest once its worry has been acted on. Idempotent:
         returns True only on the first resolve (so callers emit the ripple once).
         From now on the secret is skipped as a confide/leak candidate and never
         injected as dialogue/reflection context."""
         s = self.secrets.get(secret_id)
-        if s is None or s.resolved:
+        if s is None or s.resolved or (s.source_kind == "wish" and not from_wish):
             return False
         s.resolved = True
         s.resolved_minute = minute

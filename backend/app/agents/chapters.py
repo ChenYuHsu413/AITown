@@ -20,7 +20,8 @@ template line stands in when the model fails, so closure never blocks.
 (prompt builders, decision rules), so a pre-chapter snapshot loads and behaves
 exactly as before until scripts/backfill_chapters.py initializes it.
 
-Phase 2 (wish generation) hooks in at ``end_interlude`` -- see the TODO there.
+Phase 2 wish generation runs after ``end_interlude`` at the daily boundary; this
+module keeps the chapter transition itself synchronous and model-free.
 """
 
 from __future__ import annotations
@@ -517,9 +518,8 @@ def end_interlude(agent: "Agent", day: int) -> Chapter | None:
     """At a day boundary: an interlude past its ``until_day`` lapses into ordinary
     days. Returns the new chapter (for the ``chapter_started`` beat) or None.
 
-    TODO(phase-2): this is the wish-generation hook. Instead of ``make_ordinary``,
-    phase 2 will generate a new wish here (from beliefs, relationships and the
-    chapter history) and open a fresh *pursuit* chapter -- same return contract."""
+    Wish generation is deliberately scheduled by SimulationEngine only after this
+    synchronous transition, so a slow provider never blocks daily settlement."""
     ch = agent.chapter
     if ch is None or ch.chapter_type != "interlude" or day < ch.until_day:
         return None

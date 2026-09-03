@@ -9,6 +9,8 @@ Eight tables:
     world_snapshots   latest serialized world state per run (resume foundation)
     snapshot_archive  pre-operation backups saved before destructive admin ops
     translation_cache display-layer English->zh translations (translate once, keep)
+    chapters          queryable life-chapter ledger
+    wishes            queryable private-wish ledger
     chapters          life-chapter ledger: one row per chapter per agent (started/closed)
 
 The events table mirrors the Event Contract exactly -- that was the point
@@ -154,6 +156,30 @@ class ChapterRow(Base):
     # row stays as the audit trail, flagged so readers skip it. Added to an existing
     # DB by the ALTER in Persistence.start.
     superseded: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class WishRow(Base):
+    """Queryable ledger; snapshots remain the resume source of truth."""
+    __tablename__ = "wishes"
+    wish_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(32), index=True, default="")
+    owner_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    statement: Mapped[str] = mapped_column(Text, default="")
+    motivation: Mapped[str] = mapped_column(Text, default="")
+    scale: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    created_day: Mapped[int] = mapped_column(Integer)
+    ended_day: Mapped[int] = mapped_column(Integer, default=0)
+    source_memory_refs: Mapped[list] = mapped_column(JSONB, default=list)
+    requirements: Mapped[list] = mapped_column(JSONB, default=list)
+    failure_conditions: Mapped[list] = mapped_column(JSONB, default=list)
+    progress: Mapped[float] = mapped_column(Float, default=0.0)
+    last_progress_day: Mapped[int] = mapped_column(Integer, default=0)
+    secret_id: Mapped[str] = mapped_column(String(32), default="")
+    related_chapter_id: Mapped[str] = mapped_column(String(32), default="")
+    outcome_reason: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
