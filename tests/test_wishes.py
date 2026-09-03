@@ -1,6 +1,7 @@
 """Phase-2 wish model, validation, lifecycle, privacy and persistence tests."""
 from __future__ import annotations
 import asyncio, copy, math, os, unittest
+from unittest import mock
 os.environ.update(AI_TOWN_LIVE="0", AI_TOWN_LANG="en", AI_TOWN_DB_URL="")
 
 from backend.app.agents import chapters, wishes
@@ -84,6 +85,25 @@ class Validation(unittest.TestCase):
             raw=proposal(self.refs,scale=scale); raw['requirements']=[]
             self.assertIsNone(wishes.validate_generation(raw,self.a,self.w,self.mat))
         raw=proposal(self.refs); raw['requirements']*=2
+        self.assertIsNone(wishes.validate_generation(raw,self.a,self.w,self.mat))
+
+    def test_major_actionable_requirements_must_be_feasible_for_owner(self):
+        self.a.routine=Routine([RoutineEntry(0,'rest','home_a')])
+        raw=proposal(self.refs,kind='action_count',target='work')
+        self.assertIsNone(wishes.validate_generation(raw,self.a,self.w,self.mat))
+        raw=proposal(self.refs,kind='talk_count',target=self.a.id)
+        self.assertIsNone(wishes.validate_generation(raw,self.a,self.w,self.mat))
+        self.a.profile.daily_wage=0
+        for loc in self.w.locations.values():
+            if loc.owner == self.a.id: loc.owner=''
+        raw=proposal(self.refs,kind='money_gain',target='')
+        self.assertIsNone(wishes.validate_generation(raw,self.a,self.w,self.mat))
+
+    def test_work_and_location_feasibility_accept_existing_paths(self):
+        self.a.routine=Routine([RoutineEntry(0,'rest','home_a'),RoutineEntry(600,'work','office')])
+        raw=proposal(self.refs,kind='action_count',target='work')
+        self.assertIsNotNone(wishes.validate_generation(raw,self.a,self.w,self.mat))
+        raw=proposal(self.refs,kind='location_visits',target='missing')
         self.assertIsNone(wishes.validate_generation(raw,self.a,self.w,self.mat))
 
 class Eligibility(unittest.TestCase):
@@ -225,7 +245,8 @@ class WishDrive(unittest.TestCase):
 
     def test_location_drive_attempts_move_without_direct_progress(self):
         w=drive_wish(self.a,'loc-drive','location_visits','park')
-        day=passing_day(self.a,w); now=(day-1)*DAY_MIN+12*60
+        day=passing_day(self.a,w)
+        now=(day-1)*DAY_MIN+12*60
         before=self.engine.decisions.router.usage.total_calls
         directive=wishes.next_wish_drive(self.a,self.world,now,'rest')
         self.assertEqual(directive['action'],'move'); self.assertEqual(directive['location'],'park')
@@ -268,22 +289,84 @@ class WishDrive(unittest.TestCase):
             second=wishes.next_wish_drive(self.a,self.world,now+10,'rest')
             self.assertEqual((second['wish_id'],second['requirement_index']),(major.id,1))
 
-    def test_blocked_attempts_throttle_generic_frustration_and_roundtrip(self):
+    def test_blocked_days_are_distinct_consecutive_and_private(self):
         w=drive_wish(self.a,'blocked-drive','location_visits','park')
-        for day in range(1,30):
-            if wishes._drive_roll(self.a.id,w.id,day,w.drive_state.get('cursor',0)) >= wishes.DRIVE_MAJOR_PROBABILITY:
-                continue
-            self.world.active_effects=[{'type':'rain','location':'','until':day*DAY_MIN+DAY_MIN}]
-            wishes.next_wish_drive(self.a,self.world,(day-1)*DAY_MIN+12*60,'rest')
-            if any('frustrating' in m.text for m in self.a.memory.items): break
+        w.requirements.append(wishes.Requirement('action_count',2,target='work'))
+        marker='PRIVATE_TITLE_STATEMENT_MOTIVATION'; w.title=marker; w.statement=marker; w.motivation=marker
+        self.world.active_effects=[{'type':'rain','location':'','until_minute':3*DAY_MIN}]
+        with mock.patch.object(wishes,'_drive_roll',return_value=0):
+            wishes.next_wish_drive(self.a,self.world,12*60,'rest')
+            wishes.next_wish_drive(self.a,self.world,12*60+30,'rest')
+        self.assertEqual(w.drive_state['blocked_days'],1)
+        self.assertFalse(any('frustrating' in m.text for m in self.a.memory.items))
+        with mock.patch.object(wishes,'_drive_roll',return_value=0):
+            wishes.next_wish_drive(self.a,self.world,DAY_MIN+12*60,'rest')
+            wishes.next_wish_drive(self.a,self.world,DAY_MIN+12*60+30,'rest')
         notes=[m for m in self.a.memory.items if 'frustrating' in m.text]
-        self.assertEqual(len(notes),1); self.assertNotIn(w.title,notes[0].text)
+        self.assertEqual(len(notes),1); self.assertNotIn(marker,notes[0].text)
+        self.assertEqual(notes[0].kind,'reflection'); self.assertEqual(notes[0].tags,[f'wish:{w.id}'])
+        self.assertEqual(w.drive_state['blocked_days'],0)
+
+    def test_success_resets_blocked_streak_and_gap_does_not_extend_it(self):
+        w=drive_wish(self.a,'reset-drive','location_visits','park')
+        wishes._blocked_memory(self.a,w,12*60)
+        wishes._blocked_memory(self.a,w,2*DAY_MIN+12*60)
+        self.assertEqual(w.drive_state['blocked_days'],1)
+        day=next(d for d in range(4,80) if wishes._drive_roll(self.a.id,w.id,d,0)<wishes.DRIVE_MAJOR_PROBABILITY)
+        now=(day-1)*DAY_MIN+12*60
+        directive=wishes.next_wish_drive(self.a,self.world,now,'rest')
+        self.assertIsNotNone(directive); self.assertEqual(w.drive_state['blocked_days'],0)
+        wishes._blocked_memory(self.a,w,now+2*DAY_MIN)
+        self.assertEqual(w.drive_state['blocked_days'],1)
+
+    def test_blocked_day_roundtrip_prevents_same_day_double_count(self):
+        w=drive_wish(self.a,'roundtrip-blocked','location_visits','park')
+        now=12*60; wishes._blocked_memory(self.a,w,now)
         payload=snapshot.capture(self.engine,self.world,self.engine.decisions)
         w2,e2=env(); snapshot.restore(payload,e2,w2,e2.decisions)
         restored=w2.agents[self.a.id].wishes[0]
-        same_day=restored.drive_state['daily_day']
-        before=len(w2.agents[self.a.id].memory.items)
-        wishes.next_wish_drive(w2.agents[self.a.id],w2,same_day*DAY_MIN-1,'rest')
-        self.assertEqual(len(w2.agents[self.a.id].memory.items),before)
+        wishes._blocked_memory(w2.agents[self.a.id],restored,now+30)
+        self.assertEqual(restored.drive_state['blocked_days'],1)
+
+    def test_v13_and_malformed_blocked_day_restore_safely(self):
+        w=drive_wish(self.a,'old-drive','location_visits','park')
+        wishes._blocked_memory(self.a,w,12*60)
+        payload=snapshot.capture(self.engine,self.world,self.engine.decisions)
+        payload['schema_version']=13
+        del payload['agents'][self.a.id]['wishes'][0]['drive_state']['last_blocked_day']
+        w2,e2=env(); snapshot.restore(payload,e2,w2,e2.decisions)
+        self.assertEqual(w2.agents[self.a.id].wishes[0].drive_state['last_blocked_day'],-1)
+        payload=snapshot.capture(self.engine,self.world,self.engine.decisions)
+        payload['agents'][self.a.id]['wishes'][0]['drive_state']['last_blocked_day']='bad'
+        snapshot.restore(payload,e2,w2,e2.decisions)
+        self.assertEqual(w2.agents[self.a.id].wishes[0].drive_state['last_blocked_day'],-1)
+
+    def test_action_work_moves_then_work_event_advances_without_llm(self):
+        self.a.routine=Routine([RoutineEntry(0,'rest','home_a'),RoutineEntry(600,'work','office')])
+        w=drive_wish(self.a,'work-drive','action_count','work',1)
+        day=passing_day(self.a,w); now=(day-1)*DAY_MIN+12*60
+        before=self.engine.decisions.router.usage.total_calls
+        move=wishes.next_wish_drive(self.a,self.world,now,'rest')
+        self.assertEqual((move['action'],move['location']),('move','office'))
+        self.assertEqual(w.requirements[0].current,0)
+        arrived=self.world.execute(self.a,'move','office',now,10)
+        self.assertEqual(arrived['verb'],'arrive'); self.assertEqual(w.requirements[0].current,0)
+        work=wishes.next_wish_drive(self.a,self.world,now+20,'rest')
+        self.assertEqual(work['action'],'work'); self.assertEqual(w.requirements[0].current,0)
+        result=self.world.execute(self.a,'work',None,now+20,30)
+        event=Event(now+20,'action',result['verb'],actor=self.a.id,location=result['location'])
+        self.assertTrue(wishes.update_from_event(w,self.a,event,day))
+        self.assertEqual(w.requirements[0].current,1)
+        self.assertEqual(self.engine.decisions.router.usage.total_calls,before)
+
+    def test_action_work_blocks_when_workplace_is_closed(self):
+        self.a.routine=Routine([RoutineEntry(0,'rest','home_a'),RoutineEntry(600,'work','cafe')])
+        w=drive_wish(self.a,'closed-work','action_count','work',1)
+        self.world.locations['cafe'].closed_days=[0]
+        now=12*60
+        with mock.patch.object(wishes,'_drive_roll',return_value=0):
+            self.assertIsNone(wishes.next_wish_drive(self.a,self.world,now,'rest'))
+        self.assertEqual(w.drive_state['blocked_days'],1)
+        self.assertEqual(w.requirements[0].current,0)
 
 if __name__ == "__main__": unittest.main()

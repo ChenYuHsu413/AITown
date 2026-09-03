@@ -54,7 +54,8 @@ if TYPE_CHECKING:
 #               secrets add source_kind/source_id/social_enabled. Missing fields keep
 #               the old no-wish / ordinary-secret behaviour.
 #   v12 -> v13: per-wish rule-drive attempt/cooldown/frustration state.
-SCHEMA_VERSION = 13
+#   v13 -> v14: last blocked simulation day for distinct/consecutive-day streaks.
+SCHEMA_VERSION = 14
 
 
 # ---- capture -------------------------------------------------------------

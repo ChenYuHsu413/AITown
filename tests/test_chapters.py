@@ -183,7 +183,7 @@ class SnapshotCompat(unittest.TestCase):
         chapters_mod.apply_closure(aisi, world, "abandoned", "I let the installation go, and that was my call.",
                                    "relieved", [{"id": "1", "text": "t"}], DAY)
         payload = snapshot_mod.capture(engine, world, engine.decisions)
-        self.assertEqual(payload["schema_version"], 13)
+        self.assertEqual(payload["schema_version"], 14)
         world2, engine2 = make_world()
         snapshot_mod.restore(payload, engine2, world2, engine2.decisions)
         a2 = world2.agents["aisi"]
