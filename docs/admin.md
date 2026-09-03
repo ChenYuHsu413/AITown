@@ -63,6 +63,33 @@ curl -X POST localhost:8000/api/admin/resolve-stale-secrets \
 Non-destructive (it only marks secrets resolved — nothing is deleted), but it still
 archives first and is fully reversible via the recovery flow below.
 
+### `POST /god/close_chapter`
+
+Closes a resident's current **pursuit** chapter right now (see
+`backend/app/agents/chapters.py`): one smart-tier closure reflection (or the template
+line if the model fails), the atomic state change (biography memory, chapter-related
+memories/beliefs down-weighted to 0.3×, interlude begins, landmark decoupled), a
+`chapter_closed` beat, then a snapshot. For testing and for matters that ended before
+the pipeline existed. Not dry-run gated (it is a narrative action, nothing is deleted).
+
+```bash
+curl -X POST localhost:8000/god/close_chapter -H 'Content-Type: application/json' \
+     -d '{"agent_id": "aisi", "outcome": "completed", "reason": "the installation lit up"}'
+# -> {"ok": true, "closed": {...history record...}, "now": {...the interlude chapter...}}
+# 409 when the resident has no pursuit chapter, or a closure is already in flight.
+```
+
+### `scripts/backfill_chapters.py` (one-shot, dry-run by default)
+
+Initializes every resident's chapter on a pre-chapter snapshot and retroactively
+closes pursuits that had already ended (Aisi's finished installation, ...). Stop the
+server first (its periodic snapshot would overwrite the backfilled one).
+
+```bash
+python scripts/backfill_chapters.py             # DRY RUN: proposed chapters, basis, closure material
+python scripts/backfill_chapters.py --execute   # archives to snapshot_archive, then applies + snapshots
+```
+
 ### `GET /api/admin/archives`
 
 Lists recent pre-operation backups (newest first), without the heavy payloads:

@@ -32,6 +32,7 @@ from ..llm.usage import LLMCall
 from ..social.rumors import RumorRegistry
 from ..social.secrets import SecretRegistry
 from ..world.world import Observation, World
+from . import chapters as chapters_mod
 from . import romance as romance_mod
 from . import transitions as transitions_mod
 from .agent import Agent
@@ -405,6 +406,11 @@ class DecisionEngine:
     dialogue_cap: int = 0
     _dialogues_today: int = 0
     _dialogue_day: int = -1
+    # Chapter-closure signal (set by the engine): (agent, outcome, trigger, reason).
+    # Fired when a decision-layer event ends a pursuit -- today, a resolved secret
+    # whose theme is the chapter's (see _resolve_secret). The engine owns the
+    # pipeline (LLM call + atomic apply + event); this layer only raises the flag.
+    on_chapter_signal: object = None
 
     def __post_init__(self) -> None:
         live = any(p.name != "mock" for chain in self.router.tiers.values() for p in chain)
@@ -504,7 +510,8 @@ class DecisionEngine:
             )
             if partner_free and now - last >= TALK_COOLDOWN_MIN and agent.state.current_action != "sleep" \
                     and self._social_gate(agent, partner_id, now):
-                memories = await agent.memory.retrieve_async(f"{partner.id.capitalize()} {obs.location}", k=5)
+                memories = await agent.memory.retrieve_async(
+                    f"{partner.id.capitalize()} {obs.location}", k=5, location=obs.location)
                 res = await self.router.generate(
                     task="should_talk",
                     messages=builders.should_talk_prompt(agent, partner.name, _resolve_mems(memories, world)),
@@ -610,6 +617,21 @@ class DecisionEngine:
                 else:
                     opts = ["park", "market", agent.home]
                     dest = opts[(minute_of_day // 160) % len(opts)]   # drift around town
+            # Interlude (just closed a chapter, see chapters.py): routine adherence dips
+            # a little -- now and then a work/rest slot becomes an aimless wander to a
+            # public place. The roll is sticky per (agent, 2-hour window) so a wander
+            # is a real stretch there, not a move-and-come-straight-back; deterministic
+            # so mock runs reproduce.
+            interlude_drift = False
+            if chapters_mod.in_interlude(agent) and not day_off_rest \
+                    and entry.action in ("work", "rest") and minute_of_day >= 9 * 60:
+                window = now // 120
+                seed = int(hashlib.sha256(f"drift|{agent.id}|{window}".encode()).hexdigest()[:8], 16)
+                if random.Random(seed).random() < chapters_mod.INTERLUDE_DRIFT_P:
+                    opts = [p for p in ("park", "market", "cafe") if p in world.locations]
+                    if opts:
+                        dest = opts[window % len(opts)]
+                        interlude_drift = True
             # Don't loiter at a shuttered door. If the routine points us at a shop
             # that's shunned (a bad rumor about its owner) or closed for the owner's
             # weekly day off, redirect -- whatever the action was. The owner is the
@@ -660,13 +682,16 @@ class DecisionEngine:
             until_next = agent.routine.next_boundary(minute_of_day, dow) - minute_of_day
             if agent.state.location != dest:
                 decision = Decision(
-                    "move", target_location=dest,
-                    duration=10, reason=f"routine: head to {dest}",
+                    "move", target_location=dest, duration=10,
+                    reason=(f"interlude: drifting over to {dest}" if interlude_drift
+                            else f"routine: head to {dest}"),
                 )
             else:
-                act = "rest" if (park_rained_out or day_off_rest) else entry.action
+                act = "rest" if (park_rained_out or day_off_rest or interlude_drift) else entry.action
                 reason = ("routine: rest (rained out)" if park_rained_out
-                          else "day off" if day_off_rest else f"routine: {entry.action}")
+                          else "day off" if day_off_rest
+                          else "interlude: drifting, nothing to push forward" if interlude_drift
+                          else f"routine: {entry.action}")
                 decision = Decision(
                     act, duration=max(15, min(until_next, 120)), reason=reason,
                 )
@@ -707,6 +732,9 @@ class DecisionEngine:
         p = 1.0 if f >= SOCIAL_TIER_FRIEND else 0.6 if f >= SOCIAL_TIER_ACQUAINT else 0.3
         if agent.profile.extraversion < INTROVERT_EXTRAVERSION:
             p *= 0.7
+        # Interlude: a little more socially forward than usual (see chapters.py).
+        if chapters_mod.in_interlude(agent):
+            p *= chapters_mod.INTERLUDE_SOCIAL_MULT
         # Post-rejection awkwardness: for a week the pair can barely face each other.
         if agent.state.awkward_until.get(partner_id, -1) >= now // (24 * 60):
             p *= romance_mod.AWKWARD_TALK_MULT
@@ -833,7 +861,8 @@ class DecisionEngine:
             return None
         # Deterministic per (day, agent): reproducible, and independent of call order.
         rng = random.Random(int(hashlib.sha256(f"meetup|{day}|{agent.id}".encode()).hexdigest()[:8], 16))
-        if rng.random() >= MEETUP_DAILY_P:
+        p_try = MEETUP_DAILY_P * (chapters_mod.INTERLUDE_MEETUP_MULT if chapters_mod.in_interlude(agent) else 1.0)
+        if rng.random() >= p_try:
             return None
         # Candidate friends: friendly enough, not on the per-pair cooldown, free of an
         # existing appointment, and not the agent themselves.
@@ -993,7 +1022,35 @@ class DecisionEngine:
         self.rewrite_goals_on_resolve(owner, secret, now)   # the worry's goal moves forward too
         owner.memory.suppress_theme(self.secret_subject(secret),
                                     self.secret_theme_keywords(secret), now)  # old anxiety fades
+        # A laid-to-rest worry that IS the current pursuit ends that chapter (Xixi
+        # finally asking Aisi; Xue coming to terms with the job question).
+        if self.on_chapter_signal is not None and chapters_mod.secret_matches_chapter(owner.chapter, secret):
+            self.on_chapter_signal(owner, "completed", "secret_resolved", resolution)
         return True
+
+    # ---- chapter closure: the one LLM call (smart tier, rare) ----------------
+
+    async def closure_reflection(self, agent: Agent, world: World, material: dict,
+                                 outcome: str) -> dict | None:
+        """Ask the smart tier for the biography line + residue + memory refs. Returns
+        the validated dict, or None on any failure (chain exhausted, timeout, junk) --
+        the engine then uses the rule-layer template line, so closure never blocks.
+        ``no_floor``: a canned mock line must not become someone's life story when a
+        real chain exists (mock-only runs still serve the deterministic mock)."""
+        try:
+            res = await self.router.generate(
+                task="chapter_closure",
+                messages=builders.chapter_closure_prompt(
+                    agent, material, outcome, chapters_mod.relationship_summary_lines(material, world)),
+                agent_id=agent.id, sim_minute=material["window"]["end_minute"],
+                schema={"type": "object"}, max_tokens=200,
+                validate=lambda r: chapters_mod.validate_closure_output(r.parsed, material) is not None,
+                per_call_timeout=30.0, no_floor=True,
+            )
+        except Exception as err:
+            print(f"[chapter] closure reflection failed for {agent.id} ({err!r}); using template line", flush=True)
+            return None
+        return chapters_mod.validate_closure_output(res.parsed, material)
 
     @staticmethod
     def secret_subject(secret) -> str:
@@ -1214,8 +1271,12 @@ class DecisionEngine:
                           "accepted": a.rel(b.id).romance >= romance_mod.ACCEPT_ROMANCE}
         # Query by the English/pinyin name, matching how memories are stored (a 2-char
         # zh name gets filtered to noise by the bag-of-words embedder -- see MockEmbedding).
-        a_mem = await a.memory.retrieve_async(b.id.capitalize(), k=3)
-        b_mem = await b.memory.retrieve_async(a.id.capitalize(), k=3)
+        # The place + whatever is explicitly on the table (a rumor, a confrontation)
+        # feed biography surfacing only -- the ordinary top-k query is unchanged.
+        a_topic = " ".join(x for x in (confront_text or "", (fwd or leak_fwd or {}).get("text", "")) if x)
+        b_topic = " ".join(x for x in ((rev or leak_rev or {}).get("text", ""),) if x)
+        a_mem = await a.memory.retrieve_async(b.id.capitalize(), k=3, location=a.state.location, topic=a_topic)
+        b_mem = await b.memory.retrieve_async(a.id.capitalize(), k=3, location=b.state.location, topic=b_topic)
         # A held impression of the other person rides into the dialogue context, so
         # the model naturally carries the weight of the relationship's history.
         a_imp = self._impression_of(a, b.id)
@@ -1546,9 +1607,10 @@ class DecisionEngine:
     @staticmethod
     def _impression_of(agent: Agent, other_id: str) -> str | None:
         """The agent's lasting impression of ``other_id`` -- but only once it's
-        confident enough to matter (else dialogue/trust stay uncoloured)."""
+        confident enough to matter (else dialogue/trust stay uncoloured). A belief
+        down-weighted by a chapter closure needs proportionally more confidence."""
         b = agent.semantic.about(other_id)
-        return b.text if b is not None and b.confidence >= BELIEF_CONTEXT_MIN else None
+        return b.text if b is not None and b.confidence * b.weight >= BELIEF_CONTEXT_MIN else None
 
     @staticmethod
     def _resolve_subject(agent: Agent, world: World, raw: object) -> tuple[str, str] | None:

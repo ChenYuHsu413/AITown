@@ -52,7 +52,17 @@ Notes:
 | action     | talk_start  | actor, target, location        | {actor} started talking with {target} at {loc} | {actor} 在 {loc} 開始與 {target} 交談 |
 | dialogue   | say         | actor, target, speech          | 💬 {actor}: {speech}                          | 💬 {actor}：{speech}                |
 | reflection | insight     | actor, speech                  | 💭 {actor}: {speech}                          | 💭 {actor}：{speech}                |
+| system     | chapter_closed  | actor, location, speech (biography line), detail (`outcome · title[ · reason]`) | 📖 {actor} closed a chapter — {speech} | 📖 {actor} 翻過了人生的一頁——{speech} |
+| system     | chapter_started | actor, location, speech (chapter title), detail (narrative) | 📗 {actor} began a new chapter: {speech} | 📗 {actor} 展開了新章節：{speech} |
 | system     | (reserved)  | —                              | —                                            | —                                   |
+
+Life-chapter events (see `backend/app/agents/chapters.py`): `chapter_closed` fires
+once per closed *pursuit* chapter with the first-person English biography line in
+`speech` (translate for zh display, like `insight`) and `outcome ∈ completed | failed |
+abandoned` at the head of `detail`. `chapter_started` fires when a new non-interlude
+chapter opens (today: the interlude lapsing into ordinary days; phase 2: a generated
+wish). Both are chronicle beats and land in the `events` table; the queryable ledger
+is the `chapters` table.
 
 Unknown verbs may appear in future versions (rumors, conflicts, world
 events). **Frontend must fall back gracefully**: if a verb has no

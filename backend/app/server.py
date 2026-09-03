@@ -23,6 +23,7 @@ from pathlib import Path
 from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
+from .agents import chapters as chapters_mod
 from .agents.core import MemoryItem
 from .agents.decision import DecisionEngine, belief_text_ok
 from .llm.factory import build_router
@@ -409,6 +410,7 @@ class Sim:
         self.engine.bus.subscribers.append(p.on_event)
         self.router.usage.on_record = p.on_llm_call
         self.engine.on_snapshot = self._take_snapshot   # snapshot at each daily settlement
+        self.engine.on_chapter_record = p.on_chapter    # chapter ledger (started / closed rows)
         self._snap_wall = time.monotonic()
         self._snap_minute = self.engine.now
         for agent in self.world.agents.values():
@@ -1198,6 +1200,35 @@ async def break_equipment(body: dict) -> JSONResponse:
     return JSONResponse({"ok": True, "location": lid, "broken": True})
 
 
+@app.post("/god/close_chapter")
+async def god_close_chapter(body: dict = Body(default={})) -> JSONResponse:
+    """God Mode: close an agent's current *pursuit* chapter now (testing, and the
+    retroactive fix for a matter that ended before the pipeline existed).
+      {"agent_id": "aisi", "outcome": "completed"|"failed"|"abandoned", "reason": "..."}
+    Runs the whole pipeline synchronously -- one smart-tier closure reflection (or the
+    template line if it fails), the atomic state change, the chapter_closed beat -- and
+    snapshots. 409 when the agent has no pursuit to close or one is already closing."""
+    assert sim is not None
+    b = body if isinstance(body, dict) else {}
+    agent = sim.world.agents.get(str(b.get("agent_id", "")))
+    if agent is None:
+        return JSONResponse({"error": "agent_id must be a known resident"}, status_code=400)
+    outcome = str(b.get("outcome", "completed")).strip().lower()
+    if outcome not in chapters_mod.OUTCOMES:
+        return JSONResponse({"error": f"outcome must be one of {list(chapters_mod.OUTCOMES)}"}, status_code=400)
+    if agent.chapter is None or agent.chapter.chapter_type != "pursuit":
+        return JSONResponse({"error": "agent has no pursuit chapter to close",
+                             "chapter": agent.chapter.to_dict() if agent.chapter else None}, status_code=409)
+    record = await sim.engine.close_chapter(agent, outcome, trigger="manual",
+                                            reason=str(b.get("reason", "")).strip())
+    if record is None:
+        return JSONResponse({"error": "a closure is already in flight for this agent"}, status_code=409)
+    if sim.persistence is not None:
+        sim._take_snapshot()
+    return JSONResponse({"ok": True, "agent_id": agent.id, "closed": record.to_dict(),
+                         "now": agent.chapter.to_dict() if agent.chapter else None})
+
+
 @app.get("/api/relationships")
 async def relationships() -> JSONResponse:
     """Town-wide social graph. One undirected edge per pair that has a
@@ -1254,6 +1285,7 @@ async def agent_detail(agent_id: str) -> JSONResponse:
             return sim.world.locations[sid].name
         return sid
 
+    ch = a.chapter
     return JSONResponse(
         {
             "id": a.id,
@@ -1262,6 +1294,19 @@ async def agent_detail(agent_id: str) -> JSONResponse:
             "occupation": a.profile.occupation,
             "traits": a.profile.traits,
             "goals": a.profile.goals,
+            # Life chapter (see agents/chapters.py); None = uninitialized (reads as ordinary).
+            "chapter": ({
+                "id": ch.id, "type": ch.chapter_type, "title": ch.title, "narrative": ch.narrative,
+                "started_on": ch.started_on, "goal": ch.goal, "until_day": ch.until_day,
+                "emotional_residue": ch.emotional_residue,
+            } if ch is not None else None),
+            "chapter_history": [
+                {"title": r.chapter.get("title", ""), "type": r.chapter.get("chapter_type", ""),
+                 "started_on": r.chapter.get("started_on", 0), "ended_on": r.ended_on,
+                 "outcome": r.outcome, "biography_line": r.biography_line,
+                 "emotional_residue": r.emotional_residue, "trigger": r.trigger}
+                for r in a.chapter_history
+            ][::-1],
             "beliefs": [
                 {
                     "subject": b.subject, "subject_name": subject_name(b.subject),
@@ -1278,7 +1323,8 @@ async def agent_detail(agent_id: str) -> JSONResponse:
                 "money": round(a.state.money, 2),
             },
             "memories": [
-                {"clock": fmt_time(m.minute), "text": m.text, "importance": m.importance, "kind": m.kind}
+                {"clock": fmt_time(m.minute), "text": m.text, "importance": m.importance, "kind": m.kind,
+                 "weight": m.weight}
                 for m in a.memory.items[-10:]
             ][::-1],
             "relationships": [
@@ -1691,6 +1737,7 @@ async def usage() -> JSONResponse:
             "estimated_cost": round(cost, 6),
             "budget_usd": sim.router.budget_usd,
             "dialogue_floor": dialogue_floor,
+            "chapters": dict(sim.engine.chapter_stats),   # closed / llm-written / template-written
             "by_task": [{"task": k, **{**v, "cost": round(v["cost"], 6)}} for k, v in
                         sorted(by_task.items(), key=lambda kv: -kv[1]["calls"])],
             "by_model": [{"model": k, **{**v, "cost": round(v["cost"], 6)}} for k, v in

@@ -29,7 +29,7 @@ from ..llm.embeddings import EmbeddingProvider, MockEmbedding
 from ..llm.usage import LLMCall
 from ..simulation.engine import Event
 from .models import (
-    Base, EventRow, LLMCallRow, MemoryRow, SimulationRun, SnapshotArchive,
+    Base, ChapterRow, EventRow, LLMCallRow, MemoryRow, SimulationRun, SnapshotArchive,
     TranslationCacheRow, WorldSnapshot,
 )
 
@@ -53,6 +53,11 @@ class _TransWrite:
     lang: str
     model: str
     gave_up: bool
+
+
+@dataclass
+class _ChapterWrite:
+    row: dict          # ChapterRow columns (chapter_id, agent_id, ... ) -- upserted
 
 
 class Persistence:
@@ -88,6 +93,11 @@ class Persistence:
         async with self.engine.begin() as conn:
             await conn.execute(sql_text("CREATE EXTENSION IF NOT EXISTS vector"))
             await conn.run_sync(Base.metadata.create_all)
+            # v11 additive migration: create_all never alters an existing table, so
+            # the memories column a biography memory writes must be added by hand
+            # (idempotent; a no-op on a fresh DB where create_all already made it).
+            await conn.execute(sql_text(
+                "ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_chapter_id VARCHAR(32) NOT NULL DEFAULT ''"))
 
         resumed = False
         if resume and restore_cb is not None:
@@ -142,6 +152,10 @@ class Persistence:
             text_hash=text_hash, source_text=source_text, translated_text=translated_text,
             lang=lang, model=model, gave_up=gave_up))
 
+    def on_chapter(self, row: dict) -> None:
+        """Queue a chapter-ledger upsert (chapter started / closed). Non-blocking."""
+        self._queue.put_nowait(_ChapterWrite(dict(row)))
+
     async def _flush_loop(self) -> None:
         while True:
             batch = [await self._queue.get()]
@@ -179,8 +193,18 @@ class Persistence:
                         run_id=self.run_id, agent_id=item.agent_id,
                         minute=item.item.minute, kind=item.item.kind,
                         importance=item.item.importance, text=item.item.text,
-                        embedding=emb,
+                        embedding=emb, source_chapter_id=item.item.source_chapter_id,
                     ))
+                elif isinstance(item, _ChapterWrite):
+                    row = {k: v for k, v in item.row.items() if k in ChapterRow.__table__.columns}
+                    row.setdefault("run_id", self.run_id)
+                    row["updated_at"] = datetime.utcnow()
+                    stmt = pg_insert(ChapterRow).values(**row)
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=[ChapterRow.chapter_id],
+                        set_={k: v for k, v in row.items() if k != "chapter_id"},
+                    )
+                    await s.execute(stmt)
                 elif isinstance(item, _SnapWrite):
                     # One row per run: upsert so only the newest snapshot survives.
                     stmt = pg_insert(WorldSnapshot).values(
@@ -324,17 +348,22 @@ class Persistence:
     def vector_retriever(self, agent_id: str, memory=None):
         """Returns an async (query, k) -> list[str] bound to one agent, matching
         EpisodicMemory's retrieval contract. When the agent has suppressed themes
-        (resolved worries), it over-fetches and re-ranks so a pre-resolution
-        reflection/rumor of that theme sinks (its effective similarity is halved)."""
+        (resolved worries) or chapter down-weights, it over-fetches and re-ranks so a
+        pre-resolution reflection/rumor of that theme sinks (its effective similarity
+        is halved) and a closed chapter's memory sinks by its weight. ``biography``
+        rows are never returned here -- EpisodicMemory surfaces those itself, only on
+        a topic/place match (see EpisodicMemory.biography_hits)."""
 
         async def retrieve(query: str, k: int = 5) -> list[str]:
             q_emb = await self.embedder.embed(query)
-            suppress = bool(memory is not None and memory.suppressed)
+            rerank = bool(memory is not None and (memory.suppressed or memory.has_downweights))
+            base = (MemoryRow.run_id == self.run_id, MemoryRow.agent_id == agent_id,
+                    MemoryRow.kind != "biography")
             async with self.session() as s:
-                if not suppress:
+                if not rerank:
                     rows = await s.execute(
                         select(MemoryRow.text)
-                        .where(MemoryRow.run_id == self.run_id, MemoryRow.agent_id == agent_id)
+                        .where(*base)
                         .order_by(MemoryRow.embedding.cosine_distance(q_emb))
                         .limit(k)
                     )
@@ -342,11 +371,17 @@ class Persistence:
                 dist = MemoryRow.embedding.cosine_distance(q_emb)
                 rows = (await s.execute(
                     select(MemoryRow.text, MemoryRow.kind, MemoryRow.minute, dist.label("d"))
-                    .where(MemoryRow.run_id == self.run_id, MemoryRow.agent_id == agent_id)
+                    .where(*base)
                     .order_by(dist).limit(k * 4)
                 )).all()
-            # halved weight == doubled distance for a penalized memory
-            ranked = sorted(rows, key=lambda r: r[3] * (2.0 if memory.penalty(r[0], r[1], r[2]) < 1.0 else 1.0))
+
+            # halved weight == doubled distance for a penalized memory; a chapter
+            # weight w scales the distance by 1/w (w=0.3 -> ~3.3x farther).
+            def eff(r):
+                d = r[3] * (2.0 if memory.penalty(r[0], r[1], r[2]) < 1.0 else 1.0)
+                w = memory.weight_of(r[0])
+                return d / w if w > 0 else float("inf")
+            ranked = sorted(rows, key=eff)
             return [r[0] for r in ranked[:k]]
 
         return retrieve

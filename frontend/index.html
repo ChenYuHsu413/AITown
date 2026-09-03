@@ -308,6 +308,9 @@ aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-h
 .blf-conf{font-family:var(--mono);font-size:10px;color:var(--faint)}
 .blf .bar{margin:3px 0 2px}
 .blf-text{font-size:12px;color:var(--faint);line-height:1.4}
+.chap{padding:5px 14px 7px;border-bottom:1px dashed var(--line)}
+.chap .blf-top b{font-weight:600}
+.chap-hist{opacity:.8}
 .trace{margin:6px 14px;padding:8px;border:1px solid var(--line);border-radius:6px;font-size:12px;background:var(--paper)}
 .trace .m{font-family:var(--mono);font-size:10px;color:var(--faint)}
 .trace b{color:var(--amber)}
@@ -582,7 +585,7 @@ let CHRON=[], chronOpen=false;      // chronicle state (declared early: applyLan
 const CHRON_VERBS=new Set(['confide','confronted','landmark_done','belief','broke',
   'rain_start','rain_end','festival_start','festival_end','leak','secret_born','week_close',
   'transition','milestone','romance_dating','romance_rejected','romance_partners',
-  'breakdown','repaired','met_up']);
+  'breakdown','repaired','met_up','chapter_closed','chapter_started']);
 
 /* ---------- i18n ---------- */
 const I18N={
@@ -636,6 +639,10 @@ const I18N={
     'chron.title':'CHRONICLE','chron.empty':'No notable events yet.',
     'chron.secret':"🔒 {who} started keeping something to themselves",
     'chron.replayHere':'⏪ Replay this moment','chron.noConvo':'(no dialogue recorded)',
+    chapterTitle:'LIFE CHAPTER', chapterHistory:'PAST CHAPTERS',
+    'chapter.pursuit':'pursuit','chapter.interlude':'interlude','chapter.ordinary':'ordinary days',
+    'chapter.since':'since D{n}','chapter.until':'until D{n}',
+    'chapter.out.completed':'✓ completed','chapter.out.failed':'✗ failed','chapter.out.abandoned':'– let go',
   },
   zh:{
     townName:'高柏小鎮', subtitle:'田野觀測站 · 10 位智能體', feedTitle:'事件動態', graphTitle:'關係圖', replayTitle:'回放', inspectorTitle:'智能體檢視器',
@@ -687,8 +694,19 @@ const I18N={
     'chron.title':'大事記','chron.empty':'尚無大事。',
     'chron.secret':'🔒 {who} 開始藏著心事',
     'chron.replayHere':'⏪ 回放這一刻','chron.noConvo':'(沒有對話記錄)',
+    chapterTitle:'人生章節', chapterHistory:'過往章節',
+    'chapter.pursuit':'追逐中','chapter.interlude':'空窗期','chapter.ordinary':'日常',
+    'chapter.since':'自 D{n}','chapter.until':'至 D{n}',
+    'chapter.out.completed':'✓ 做到了','chapter.out.failed':'✗ 沒做到','chapter.out.abandoned':'– 放下了',
   },
 };
+// Chapter titles the rules layer emits are a small fixed English set -> map them
+// deterministically for zh (no LLM round-trip); any other title (seeded pursuits,
+// future generated wishes) goes through the ordinary translate cache.
+const CHAPTER_ZH={'Ordinary days':'平常的日子','Between chapters':'章節之間',
+  'Building the light installation':'打造燈光裝置','Working up the courage to ask Aisi':'鼓起勇氣開口問艾斯',
+  'Deciding whether to quit':'決定要不要辭職'};
+const chapterTitle=s=>LANG==='zh'?(CHAPTER_ZH[s]||s):s;
 const LOC_ZH={home_a:'聽雨居',home_b:'望坡樓',cafe:'潮汐咖啡館',office:'川流事務所',park:'螢火公園',
   bakery:'爐心烘焙坊',market:'渡口市場'};  // keyed by location id ("水岸光影" set)
 const KINDS={home:'住家',cafe:'咖啡館',office:'辦公室',park:'公園',bakery:'烘焙坊',market:'市場'};
@@ -801,6 +819,8 @@ const EV_TMPL={
     meetup_arranged:(a,l,tg)=>`🗓️ ${a} and ${tg} arranged to meet at ${l}`,
     meetup_declined:(a,l,tg)=>`🙇 ${a} asked ${tg} to meet, but they passed`,
     met_up:(a,l,tg)=>`🫂 ${a} and ${tg} met up as planned at ${l}`,
+    chapter_closed:(a,l,tg,sp)=>`📖 ${a} closed a chapter — ${sp}`,
+    chapter_started:(a,l,tg,sp)=>`📗 ${a} began a new chapter: ${sp}`,
   },
   zh:{
     sleep:(a,l)=>`${a} 在 ${l} 就寢`, eat:(a,l)=>`${a} 在 ${l} 用餐`,
@@ -828,6 +848,8 @@ const EV_TMPL={
     meetup_arranged:(a,l,tg)=>`🗓️ ${a} 和 ${tg} 約好在 ${l} 見面`,
     meetup_declined:(a,l,tg)=>`🙇 ${a} 邀 ${tg} 見面，但對方婉拒了`,
     met_up:(a,l,tg)=>`🫂 ${a} 和 ${tg} 如約在 ${l} 碰了面`,
+    chapter_closed:(a,l,tg,sp)=>`📖 ${a} 翻過了人生的一頁——${sp}`,
+    chapter_started:(a,l,tg,sp)=>`📗 ${a} 展開了新章節：${chapterTitle(sp)}`,
   },
 };
 let LANG=localStorage.getItem('lang')||(navigator.language&&navigator.language.startsWith('zh')?'zh':'en');
@@ -1290,10 +1312,12 @@ function updateBrokenSigns(){                                    // 🛠️ over
 // swap in a cached translation -- the same pipeline the inspector/social/chronicle
 // panes already use. Dialogue (`say`) is NOT here: it's generated in zh and only
 // gets the deterministic name/place backstop.
-const TR_SPEECH_VERBS=new Set(['insight','belief','share_rumor']);
+const TR_SPEECH_VERBS=new Set(['insight','belief','share_rumor','chapter_closed','chapter_started']);
+// A chapter_started whose title has a fixed zh mapping needs no translation call.
+const trSpeechSkip=ev=>ev.verb==='chapter_started'&&!!CHAPTER_ZH[ev.speech];
 function renderEventText(span,ev){                   // render now; zh knowledge speech swaps to Chinese when ready
   span.textContent=evText(ev);
-  if(LANG!=='zh'||!TR_SPEECH_VERBS.has(ev.verb)) return;
+  if(LANG!=='zh'||!TR_SPEECH_VERBS.has(ev.verb)||trSpeechSkip(ev)) return;
   const sp=String(ev.speech||''); if(!sp.trim()||!/[A-Za-z]/.test(sp)) return;
   trFetch([sp]).then(()=>{
     if(LANG!=='zh') return;                          // switched away mid-flight
@@ -1495,6 +1519,15 @@ async function refreshInspector(id,scroll){
     <div class="kv"><b>${t('energy')}</b><div class="bar"><i style="width:${a.state.energy}%"></i></div><span>${a.state.energy}</span></div>
     <div class="kv"><b>${t('money')}</b><span class="money">💰 ${a.state.money??0}</span><span></span></div>
     <div class="kv"><b>${t('doing')}</b><span>${actName(a.state.action)} @ ${locByEn(a.state.location)}</span><span></span></div>
+    <div class="eyebrow">${t('chapterTitle')}</div>
+    <div class="chap"><div class="blf-top"><b class="chap-title"></b><span class="blf-conf">${
+      t('chapter.'+(a.chapter?a.chapter.type:'ordinary'))
+      +(a.chapter?' · '+t('chapter.since').replace('{n}',a.chapter.started_on):'')
+      +(a.chapter&&a.chapter.type==='interlude'?' · '+t('chapter.until').replace('{n}',a.chapter.until_day):'')
+    }</span></div><div class="blf-text chap-narr"></div></div>
+    ${(a.chapter_history&&a.chapter_history.length)?`<div class="eyebrow">${t('chapterHistory')}</div>`
+      +a.chapter_history.map(h=>`<div class="chap chap-hist"><div class="blf-top"><b class="chap-title"></b><span class="blf-conf">${
+        t('chapter.out.'+h.outcome)} · D${h.started_on}–D${h.ended_on}</span></div><div class="blf-text chap-bio"></div></div>`).join(''):''}
     <div class="eyebrow">${t('relationships')}</div>
     ${a.relationships.map(r=>`
       <div class="kv"><b>${agentName(r.id,r.name)}</b><div class="bar amber"><i style="width:${r.friendship}%"></i></div><span>${r.friendship}</span></div>`
@@ -1511,6 +1544,20 @@ async function refreshInspector(id,scroll){
       <span class="obs"></span><br><b>→ ${actName(tr.action)}</b> — <span class="rsn"></span></div>`).join('')||`<div class="placeholder">${t('noDecisions')}</div>`}`;
   // Fill free-form / user-content fields via textContent to avoid HTML injection.
   const trP=[];
+  {  // life chapter: fixed titles map locally; narrative / biography lines are English knowledge -> zh
+    const cur=box.querySelector('.chap:not(.chap-hist)');
+    const ct=a.chapter?a.chapter.title:'Ordinary days', cn=a.chapter?a.chapter.narrative:'';
+    cur.querySelector('.chap-title').textContent=chapterTitle(ct);
+    if(LANG==='zh'&&!CHAPTER_ZH[ct]) trP.push({el:cur.querySelector('.chap-title'),en:ct});
+    const narr=cur.querySelector('.chap-narr'); narr.textContent=cn; if(cn) trP.push({el:narr,en:cn});
+    box.querySelectorAll('.chap-hist').forEach((el,i)=>{
+      const h=a.chapter_history[i]; if(!h) return;
+      el.querySelector('.chap-title').textContent=chapterTitle(h.title);
+      if(LANG==='zh'&&!CHAPTER_ZH[h.title]) trP.push({el:el.querySelector('.chap-title'),en:h.title});
+      const bio=el.querySelector('.chap-bio'); bio.textContent=h.biography_line;
+      if(h.biography_line) trP.push({el:bio,en:h.biography_line});
+    });
+  }
   (a.beliefs||[]).forEach((b,i)=>{
     const el=box.querySelectorAll('.blf')[i]; if(!el) return;
     const sign=b.sentiment<0?'⊖ ':b.sentiment>0?'⊕ ':'';
@@ -2549,7 +2596,7 @@ function awayEvLabel(e){                                        // shared by the
 // code (confronted/milestone/...) aren't in TR_SPEECH_VERBS, so they stay templated.
 function trChronLabel(el, e){
   el.textContent=awayEvLabel(e);                               // composed now (English free text)
-  if(LANG!=='zh'||!TR_SPEECH_VERBS.has(e.verb)) return;
+  if(LANG!=='zh'||!TR_SPEECH_VERBS.has(e.verb)||trSpeechSkip(e)) return;
   const sp=String(e.speech||''); if(!sp.trim()||!/[A-Za-z]/.test(sp)) return;
   trFetch([sp]).then(()=>{
     if(LANG!=='zh') return;                                    // switched away mid-flight

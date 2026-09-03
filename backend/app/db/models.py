@@ -1,14 +1,15 @@
 """Database models (SQLAlchemy 2.0, async).
 
-Seven tables:
+Eight tables:
 
     simulation_runs   one row per server boot / script run
     events            structured events (Event Contract v1, verbatim)
-    memories          episodic memories + pgvector embedding
+    memories          episodic memories + pgvector embedding (+ source_chapter_id, v11)
     llm_calls         the cost ledger (was in-memory UsageTracker only)
     world_snapshots   latest serialized world state per run (resume foundation)
     snapshot_archive  pre-operation backups saved before destructive admin ops
     translation_cache display-layer English->zh translations (translate once, keep)
+    chapters          life-chapter ledger: one row per chapter per agent (started/closed)
 
 The events table mirrors the Event Contract exactly -- that was the point
 of the structured-events refactor.
@@ -70,6 +71,9 @@ class MemoryRow(Base):
     importance: Mapped[int] = mapped_column(Integer, default=1)
     text: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBED_DIM))
+    # v11: a ``biography`` memory traces back to the chapter it closed ("" otherwise).
+    # Added to an existing DB by the ALTER in Persistence.start (create_all won't).
+    source_chapter_id: Mapped[str] = mapped_column(String(32), default="")
 
 
 class LLMCallRow(Base):
@@ -120,6 +124,33 @@ class TranslationCacheRow(Base):
     model: Mapped[str] = mapped_column(String(64), default="")
     gave_up: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ChapterRow(Base):
+    """Life-chapter ledger (see agents/chapters.py): one row per chapter, upserted
+    on ``chapter_id`` -- written when a chapter starts and again when it closes
+    (outcome + biography line filled in). The world snapshot stays the resume
+    source of truth; this table is the queryable history (the future town paper)."""
+
+    __tablename__ = "chapters"
+
+    chapter_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(32), index=True, default="")
+    agent_id: Mapped[str] = mapped_column(String(32), index=True)
+    chapter_type: Mapped[str] = mapped_column(String(16))
+    title: Mapped[str] = mapped_column(String(200), default="")
+    narrative: Mapped[str] = mapped_column(Text, default="")
+    goal: Mapped[str] = mapped_column(Text, default="")
+    related_goal_id: Mapped[str] = mapped_column(String(16), default="")
+    related_landmark_id: Mapped[str] = mapped_column(String(32), default="")
+    started_on: Mapped[int] = mapped_column(Integer, default=0)      # sim day
+    ended_on: Mapped[int] = mapped_column(Integer, default=0)        # sim day (0 = still open)
+    outcome: Mapped[str] = mapped_column(String(16), default="")     # completed | failed | abandoned
+    biography_line: Mapped[str] = mapped_column(Text, default="")
+    emotional_residue: Mapped[str] = mapped_column(String(16), default="")
+    trigger: Mapped[str] = mapped_column(String(24), default="")
+    memory_refs: Mapped[list] = mapped_column(JSONB, default=list)   # [{"id","text"}]
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class SnapshotArchive(Base):

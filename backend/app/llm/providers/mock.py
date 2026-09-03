@@ -78,7 +78,27 @@ class MockProvider(LLMProvider):
         prompt = " ".join(m.get("content", "") for m in messages).lower()
 
         parsed: object
-        if "appraise" in prompt:
+        if "task: chapter_closure" in prompt:
+            # Deterministic closure reflection: a first-person line toned by the
+            # outcome, a residue, and the first listed memory id as its reference.
+            # Checked FIRST -- the closure prompt legitimately mentions other tasks'
+            # trigger words ("memories", "importance"), so it must not fall through.
+            raw = " ".join(m.get("content", "") for m in messages)
+            outcome = "completed"
+            for o in ("failed", "abandoned", "completed"):
+                if f"outcome: {o}" in prompt:
+                    outcome = o
+                    break
+            goal = raw.split("-- goal: ", 1)[1].split(". Outcome", 1)[0].strip() if "-- goal: " in raw else "that chapter"
+            g = (goal[:1].lower() + goal[1:]) if goal else goal
+            line, residue = {
+                "completed": (f"I set out to {g}, and after all those days I actually did it.", "fulfilled"),
+                "failed": (f"I tried to {g} and it slipped through my fingers; I'm still learning to carry that.", "unmoored"),
+                "abandoned": (f"I meant to {g}, but I chose to let it go, and I stand by that.", "relieved"),
+            }[outcome]
+            refs = re.findall(r"\[([0-9a-f]{8})\]", raw)[:2]
+            parsed = {"biography_line": line, "emotional_residue": residue, "memory_refs": refs}
+        elif "appraise" in prompt:
             negative = any(w in prompt for w in ("closing", "quit", "trouble", "bad"))
             parsed = {"sentiment": -0.6 if negative else 0.2}
         elif "distort" in prompt:

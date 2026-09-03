@@ -20,6 +20,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Callable
 
+from ..agents import chapters as chapters_mod
 from ..agents.agent import Agent
 from ..agents.core import MemoryItem
 from ..agents.decision import ConvPlan, DecisionEngine
@@ -166,6 +167,8 @@ _EN_TEMPLATES = {
     "meetup_arranged": "{actor} and {target} arranged to meet at {loc}",
     "meetup_declined": "{actor} asked {target} to meet, but they passed",
     "met_up": "{actor} and {target} met up as planned at {loc}",
+    "chapter_closed": "{actor} closed a chapter of their life — {text}",
+    "chapter_started": "{actor} began a new chapter: {text}",
 }
 
 # The town's living history: the notable beats worth remembering (see Sim.chronicle
@@ -176,7 +179,7 @@ CHRONICLE_VERBS = {
     "rain_start", "rain_end", "festival_start", "festival_end",
     "leak", "secret_born", "week_close", "transition", "milestone",
     "romance_dating", "romance_rejected", "romance_partners", "breakdown", "repaired",
-    "met_up",
+    "met_up", "chapter_closed", "chapter_started",
 }
 CHRONICLE_ICONS = {
     "confide": "🤫", "confronted": "⚖️", "landmark_done": "🎨", "belief": "💭",
@@ -185,7 +188,12 @@ CHRONICLE_ICONS = {
     "transition": "🔀", "milestone": "🤝",
     "romance_dating": "💕", "romance_rejected": "💔", "romance_partners": "💍",
     "breakdown": "🛠️", "repaired": "🔧", "met_up": "🫂",
+    "chapter_closed": "📖", "chapter_started": "📗",
 }
+
+# Chapter closure: wall-clock bound on the one smart-tier call; past it (or on a
+# whole-chain failure) the rule-layer template line is used -- closure never blocks.
+CLOSURE_TIMEOUT_S = 60.0
 
 
 def render_en(verb: str, actor: str, target: str, loc: str, text: str) -> str:
@@ -279,6 +287,15 @@ class SimulationEngine:
         self.dialogue_retry_stats: dict[str, int] = {
             "retried": 0, "recovered": 0, "exhausted": 0, "rounds_extra": 0,
         }
+        # ---- life chapters (see agents/chapters.py) ------------------------
+        self._closing: set[str] = set()             # agents with a closure in flight
+        self.chapter_stats: dict[str, int] = {"closed": 0, "llm": 0, "template": 0}
+        # Fired with a chapter-ledger row (dict) when a chapter starts or closes, so
+        # the host can persist it; None for headless runs.
+        self.on_chapter_record: Callable[[dict], None] | None = None
+        # The decision layer raises the flag (a resolved secret ending a pursuit);
+        # the engine owns the pipeline.
+        self.decisions.on_chapter_signal = self.request_chapter_close
 
     def bootstrap(self, start_minute: int) -> None:
         # Fresh scheduler each call so re-bootstrapping onto a restored world
@@ -459,6 +476,8 @@ class SimulationEngine:
             self._publish("system", "week_close", detail=detail)
         # Staged life changes take effect now, on the clean day boundary.
         self._apply_pending_transitions()
+        # Interludes that have run their course lapse into ordinary days.
+        self._advance_chapters()
         # Romance spark judged once per day per resident (see decision._maybe_ignite).
         for agent in self.world.agents.values():
             self.decisions._maybe_ignite(agent, self.world, self.now)
@@ -575,6 +594,10 @@ class SimulationEngine:
                      + (f" ({reason})" if reason else "")))
             self._publish("system", "transition", actor=agent,
                           location_id=agent.state.location, text=tid, detail=reason or tmpl.label)
+            # A life change that makes the current pursuit moot (a job-themed chapter
+            # vs quit/take-job/freelance) closes that chapter as completed.
+            if chapters_mod.goal_matches_chapter(agent.chapter, *tmpl.clears_goal):
+                self.request_chapter_close(agent, "completed", "transition", tmpl.label)
             # Friends hear about it.
             note = self._TRANSITION_RIPPLE.get(tid, "made a big change")
             for other in self.world.agents.values():
@@ -653,6 +676,11 @@ class SimulationEngine:
                     )
                     # Finishing the installation opens Aisi up a little (romance hook).
                     agent.profile.romantic_inclination = max(agent.profile.romantic_inclination, 0.50)
+                    # The finished piece closes the creator's pursuit chapter (this must
+                    # come first: the worry resolution below would otherwise race it
+                    # through the secret_resolved signal -- both are guarded anyway).
+                    if agent.chapter is not None and agent.chapter.related_landmark_id == done.get("id", ""):
+                        self.request_chapter_close(agent, "completed", "landmark", done.get("text", ""))
                     # The world fact settles the "will I ever finish it?" worry.
                     self._resolve_landmark_worries(agent, done.get("text", ""))
             if decision.action == "move":
@@ -903,6 +931,122 @@ class SimulationEngine:
                 target_name=be["subject_name"],
                 location_id=agent.state.location, text=be["text"], detail=detail, minute=at_minute,
             )
+
+    # ---- life chapters: the closure pipeline (see agents/chapters.py) --------
+
+    def request_chapter_close(self, agent: Agent, outcome: str, trigger: str, reason: str = "") -> bool:
+        """Signal entry point (landmark done / transition / secret resolved / God Mode):
+        if the agent is in a pursuit and no closure is in flight, launch the pipeline
+        in the background. Returns True if a closure was launched."""
+        if agent.chapter is None or agent.chapter.chapter_type != "pursuit" or agent.id in self._closing:
+            return False
+        self._closing.add(agent.id)
+        self._spawn(self._closure_task(agent, outcome, trigger, reason))
+        return True
+
+    async def _closure_task(self, agent: Agent, outcome: str, trigger: str, reason: str) -> None:
+        try:
+            await self._close_chapter_locked(agent, outcome, trigger, reason)
+        finally:
+            self._closing.discard(agent.id)
+
+    async def close_chapter(self, agent: Agent, outcome: str, trigger: str = "manual",
+                            reason: str = "", ended_minute: int | None = None,
+                            ) -> chapters_mod.ChapterRecord | None:
+        """Awaitable form (God Mode endpoint, backfill, tests): run the whole pipeline
+        now and return the history record (None if there was no pursuit to close or
+        one is already closing). ``ended_minute``: when the matter really ended, for a
+        retroactive closure (the model is told the true span, never the stale one)."""
+        if agent.chapter is None or agent.chapter.chapter_type != "pursuit" or agent.id in self._closing:
+            return None
+        self._closing.add(agent.id)
+        try:
+            return await self._close_chapter_locked(agent, outcome, trigger, reason, ended_minute)
+        finally:
+            self._closing.discard(agent.id)
+
+    async def _close_chapter_locked(self, agent: Agent, outcome: str, trigger: str,
+                                    reason: str, ended_minute: int | None = None,
+                                    ) -> chapters_mod.ChapterRecord | None:
+        """The pipeline: rule-assembled material -> ONE smart-tier reflection (bounded;
+        any failure falls back to the template line) -> the atomic rule-layer state
+        change -> the ``chapter_closed`` beat. The apply step runs in a ``finally`` so
+        a wedged or failed model can never leave the chapter half-closed."""
+        at = self.now
+        chapter = agent.chapter
+        material = chapters_mod.closure_material(agent, self.world, chapter, at, ended_minute)
+        out: dict | None = None
+        try:
+            out = await asyncio.wait_for(
+                self.decisions.closure_reflection(agent, self.world, material, outcome),
+                timeout=CLOSURE_TIMEOUT_S)
+        except Exception as err:
+            print(f"[chapter] closure reflection unavailable for {agent.id} ({err!r}); template line", flush=True)
+            out = None
+        finally:
+            if out is not None:
+                line, residue, refs, source = (out["biography_line"], out["emotional_residue"],
+                                               out["memory_refs"], "llm")
+            else:
+                line, residue, refs, source = (chapters_mod.template_biography(agent, chapter, outcome),
+                                               "", [], "template")
+            record = chapters_mod.apply_closure(
+                agent, self.world, outcome, line, residue, refs, at,
+                trigger=trigger, biography_source=source)
+        if record is None:
+            return None
+        self.chapter_stats["closed"] += 1
+        self.chapter_stats[source] += 1
+        title = record.chapter.get("title", "")
+        self._publish(
+            "system", "chapter_closed", actor=agent, location_id=agent.state.location,
+            text=record.biography_line, minute=at,
+            detail=f"{record.outcome} · {title}" + (f" · {reason}" if reason else ""),
+        )
+        self._emit_chapter_record(agent, record=record)
+        self._emit_chapter_record(agent, chapter=agent.chapter)   # the interlude, ledger only
+        return record
+
+    def _advance_chapters(self) -> None:
+        """Daily: an interlude past its span lapses into ordinary days (phase 2 will
+        open a new pursuit here instead -- see chapters.end_interlude)."""
+        day = self._last_day + 1                    # the sim day that just began (1-based)
+        for agent in self.world.agents.values():
+            new = chapters_mod.end_interlude(agent, day)
+            if new is not None:
+                self._publish("system", "chapter_started", actor=agent,
+                              location_id=agent.state.location, text=new.title, detail=new.narrative)
+                self._emit_chapter_record(agent, chapter=new)
+
+    def _emit_chapter_record(self, agent: Agent, chapter: chapters_mod.Chapter | None = None,
+                             record: chapters_mod.ChapterRecord | None = None) -> None:
+        """Hand a chapter-ledger row to the host (no-op headless)."""
+        if self.on_chapter_record is None:
+            return
+        if record is not None:
+            ch = record.chapter
+            row = {**{k: ch.get(k, "") for k in ("title", "narrative", "goal", "related_landmark_id")},
+                   "chapter_id": ch.get("id", ""), "agent_id": agent.id,
+                   "chapter_type": ch.get("chapter_type", "pursuit"),
+                   "related_goal_id": ch.get("related_goal_id") or "",
+                   "started_on": int(ch.get("started_on", 0)), "ended_on": record.ended_on,
+                   "outcome": record.outcome, "biography_line": record.biography_line,
+                   "emotional_residue": record.emotional_residue, "trigger": record.trigger,
+                   "memory_refs": list(record.memory_refs)}
+        elif chapter is not None:
+            row = {"chapter_id": chapter.id, "agent_id": agent.id, "chapter_type": chapter.chapter_type,
+                   "title": chapter.title, "narrative": chapter.narrative, "goal": chapter.goal,
+                   "related_goal_id": chapter.related_goal_id or "",
+                   "related_landmark_id": chapter.related_landmark_id,
+                   "started_on": chapter.started_on, "ended_on": 0, "outcome": "",
+                   "biography_line": "", "emotional_residue": chapter.emotional_residue,
+                   "trigger": "", "memory_refs": []}
+        else:
+            return
+        try:
+            self.on_chapter_record(row)
+        except Exception as err:
+            print(f"[chapter] ledger hook failed: {err}", flush=True)
 
     async def drain(self, end_minute: int) -> None:
         """Headless helper (run_day): settle every in-flight dialogue/reflection and

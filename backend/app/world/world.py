@@ -183,7 +183,7 @@ class World:
                     text=f"{{landmark:{lm['id']}}} at {{loc:{loc.id}}} is finished — "
                          f"{{agent:{agent.id}}}'s work. It looks wonderful.",
                 ))
-        return {"verb": "landmark_done", "location": loc.id, "text": lm["name"]}
+        return {"verb": "landmark_done", "location": loc.id, "text": lm["name"], "id": lm["id"]}
 
     # ---- execution (Level 0, pure rules) ----------------------------
 

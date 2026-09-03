@@ -6,6 +6,7 @@ Names are shown in Chinese in the UI; ids stay pinyin and all internal text
 
 from __future__ import annotations
 
+from backend.app.agents import chapters as chapters_mod
 from backend.app.agents.agent import Agent
 from backend.app.agents.core import AgentState, MemoryItem, Profile
 from backend.app.agents.routine import Routine, RoutineEntry, hm
@@ -56,6 +57,45 @@ ORIENTATION_BIAS = {
     "oula":    {"same": 1.0, "other": 0.2},
     "xue":     {"same": 0.5, "other": 0.5},
 }
+
+
+# ---- life chapters (2026-09 chapter-closure phase 1) ------------------------
+# An in-progress matter is a *pursuit chapter*, not a static goal: it lives on
+# agent.chapter (goal text, title, narrative) and is closed by the pipeline in
+# agents/chapters.py when the matter ends (landmark done, life transition, the
+# worry's secret laid to rest, or God Mode). The other seven residents' goals are
+# open-ended standing aims and stay on profile.goals (ordinary chapter).
+# Field order: (goal, title, narrative, landmark_id).
+SEED_PURSUITS = {
+    "aisi": ("Finish the interactive light installation in the park",
+             "Building the light installation",
+             "I'm in the middle of building an interactive light installation in the park -- "
+             "afternoons and weekends go into it, and I won't rest easy until it lights up whole.",
+             "installation"),
+    "xixi": ("Work up the courage to ask Aisi to teach me programming",
+             "Working up the courage to ask Aisi",
+             "I've been trying to work up the courage to ask Aisi to teach me programming; "
+             "every time I'm near her I rehearse it and then freeze.",
+             ""),
+    "xue": ("Figure out whether to quit her job",
+            "Deciding whether to quit",
+            "I'm quietly weighing whether to quit my job -- the office wears on me, and I "
+            "haven't decided which way to jump.",
+            ""),
+}
+
+
+def seed_chapters(agents: list[Agent], day: int = 1) -> None:
+    """Install the seeded pursuit chapters (fresh start only; a resumed run restores
+    its own from the snapshot). Residents without a pursuit stay chapter=None,
+    which every reader treats as ordinary days."""
+    for a in agents:
+        spec = SEED_PURSUITS.get(a.id)
+        if spec is None:
+            continue
+        goal, title, narrative, landmark_id = spec
+        chapters_mod.start_pursuit(
+            a, chapters_mod.make_pursuit(goal, title, narrative, day, landmark_id=landmark_id))
 
 
 def build_locations() -> list[Location]:
@@ -238,7 +278,7 @@ def build_agents() -> list[Agent]:
             id="xixi", name="希希", age=19, occupation="Student",
             personality={"extraversion": 0.4, "agreeableness": 0.6, "openness": 0.8, "neuroticism": 0.5},
             gender="male", traits=["shy", "curious", "technical"],
-            goals=[{"goal": "Work up the courage to ask Aisi to teach me programming", "priority": 0.75}],
+            goals=[],          # his "ask Aisi to teach me" matter is a pursuit chapter (SEED_PURSUITS)
             daily_wage=15.0,   # part-time
         ),
         state=AgentState(location="home_a"),
@@ -269,7 +309,7 @@ def build_agents() -> list[Agent]:
             id="aisi", name="艾斯", age=24, occupation="Engineer",
             personality={"extraversion": 0.5, "agreeableness": 0.6, "openness": 0.95, "neuroticism": 0.5},
             gender="female", traits=["creative", "focused", "night-owl"],
-            goals=[{"goal": "Finish the interactive light installation in the park", "priority": 0.85}],
+            goals=[],          # the installation is a pursuit chapter (SEED_PURSUITS), closed on landmark_done
             daily_wage=30.0,
         ),
         state=AgentState(location="home_a"),
@@ -299,7 +339,7 @@ def build_agents() -> list[Agent]:
             id="xue", name="雪", age=31, occupation="Office Worker",
             personality={"extraversion": 0.4, "agreeableness": 0.6, "openness": 0.5, "neuroticism": 0.6},
             gender="female", traits=["quiet", "loyal", "stressed"],
-            goals=[{"goal": "Figure out whether to quit her job", "priority": 0.9}],
+            goals=[],          # "quit or not" is a pursuit chapter (SEED_PURSUITS), closed by a transition
             daily_wage=60.0,
         ),
         state=AgentState(location="home_b"),
@@ -389,6 +429,7 @@ def build_agents() -> list[Agent]:
         a.profile.romantic_inclination = ROMANTIC_INCLINATION.get(a.id, 0.45)
         if a.id in ORIENTATION_BIAS:
             a.profile.orientation_bias = dict(ORIENTATION_BIAS[a.id])
+    seed_chapters(residents)                  # the three in-progress matters become pursuit chapters
     return residents
 
 

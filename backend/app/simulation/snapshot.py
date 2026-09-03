@@ -46,7 +46,11 @@ if TYPE_CHECKING:
 #             confession/awkward state (ride in the existing dicts) and the mutable
 #             romantic_inclination. Older snapshots load with romance at 0.
 #   v9 -> v10: equipment faults -- per-location `broken`. Older snapshots load un-broken.
-SCHEMA_VERSION = 10
+#   v10 -> v11: life chapters -- per-agent `chapter` (current) + `chapter_history`, memory
+#             `weight`/`source_chapter_id`/`tags` and belief `weight` (all ride in the
+#             existing dicts via overlay), landmark `decoupled`. A v10 snapshot loads with
+#             chapter=None (read as ordinary), every weight 1.0 -- see scripts/backfill_chapters.py.
+SCHEMA_VERSION = 11
 
 
 # ---- capture -------------------------------------------------------------
@@ -99,6 +103,9 @@ def _capture_agent(agent) -> dict:
             "importance_since_reflection": agent.memory.importance_since_reflection,
         },
         "semantic": {"beliefs": [dataclasses.asdict(b) for b in agent.semantic.beliefs]},
+        # v11: the current life chapter (None = uninitialized -> ordinary) + history.
+        "chapter": agent.chapter.to_dict() if agent.chapter is not None else None,
+        "chapter_history": [r.to_dict() for r in agent.chapter_history],
     }
 
 
@@ -203,6 +210,7 @@ def _restore_agent(agent, adata: dict) -> None:
             items.append(item)
         agent.memory.items = items
         agent.memory.importance_since_reflection = mem.get("importance_since_reflection", 0)
+        agent.memory.invalidate_weights()   # v11 weights ride on the items; rebuild the lookup lazily
 
     if "semantic" in adata:                      # v2+; a v1 snapshot simply keeps the empty default
         sem = adata.get("semantic") or {}
@@ -214,6 +222,15 @@ def _restore_agent(agent, adata: dict) -> None:
             _overlay(b, bd)
             beliefs.append(b)
         agent.semantic.beliefs = beliefs
+
+    # v11+: chapters. Absent (older snapshot) -> chapter stays None (implicit ordinary).
+    if isinstance(adata.get("chapter"), dict):
+        from ..agents.chapters import Chapter
+        agent.chapter = Chapter.from_dict(adata["chapter"])
+    if isinstance(adata.get("chapter_history"), list):
+        from ..agents.chapters import ChapterRecord
+        agent.chapter_history = [ChapterRecord.from_dict(r) for r in adata["chapter_history"]
+                                 if isinstance(r, dict)]
 
 
 def _restore_rumors(rdata: dict) -> dict:

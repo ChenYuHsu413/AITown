@@ -134,12 +134,17 @@ def dialogue_locale_directive() -> str:
 
 
 def character_card(agent: "Agent", name: str | None = None, speech: bool = False) -> str:
+    """Self-description = the fixed personality (traits, never changes) + the current
+    life chapter's narrative ("where I am right now"). A pursuit's goal lives on the
+    chapter, so a finished matter drops out of the card the moment it closes. Standing
+    aims (profile.goals) only show during ordinary days -- an interlude or a pursuit
+    is what the character is about right then."""
+    from ...agents import chapters as chapters_mod
     p = agent.profile
     traits = ", ".join(p.traits)
-    card = (
-        f"{name or p.name}, {p.age}, {p.occupation}. Traits: {traits}. "
-        f"Top goal: {p.goals[0]['goal'] if p.goals else 'none'}."
-    )
+    card = f"{name or p.name}, {p.age}, {p.occupation}. Traits: {traits}. {chapters_mod.narrative(agent)}"
+    if chapters_mod.chapter_type(agent) == "ordinary" and p.goals:
+        card += f" Standing aim: {p.goals[0]['goal']}."
     # Speech style is only worth its tokens where the reader hears the voice --
     # i.e. dialogue; should_talk/decision/reflection leave it off.
     if speech and p.speech_style:
@@ -425,6 +430,55 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
                 f"{character_card(agent, name=agent.id.capitalize())}\n"
                 "Events today:\n" + "\n".join(f"- {e}" for e in day_events[-15:])
                 + secrets_block + transitions_block
+            ),
+        },
+    ]
+
+
+def chapter_closure_prompt(agent: "Agent", material: dict, outcome: str,
+                           relationship_lines: list[str]) -> list[dict]:
+    """The one LLM call of chapter closure (smart tier, rare). Input is rule-assembled:
+    the chapter's top memories (with stable ids), a Python-computed relationship
+    summary, and the outcome. Output: a first-person English biography line toned by
+    the outcome, an emotional residue word, and which memory ids it drew on."""
+    from ...agents import chapters as chapters_mod
+    ch = material["chapter"]
+    tone = {
+        "completed": "you did it -- quiet pride or fulfilment, not boasting",
+        "failed": "it didn't work out -- honest, a little sore, not self-pitying",
+        "abandoned": "you chose to let it go -- settled, owning the choice",
+    }.get(outcome, "you did it")
+    residues = ", ".join(chapters_mod.RESIDUES)
+    mems = "\n".join(f"  [{m['id']}] {m['text']}" for m in material["memories"]) or "  (no specific memories)"
+    rels = "\n".join(f"  - {l}" for l in relationship_lines)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You write the closing line of a chapter in a life-sim character's life. "
+                'Respond ONLY with JSON: {"biography_line": "...", "emotional_residue": "<word>", '
+                '"memory_refs": ["<id>", ...]}. '
+                '"biography_line" is ONE sentence (max ~35 words), FIRST PERSON, in English, that '
+                f"sums up what this chapter was and how it ended -- tone: {tone}. It must be "
+                "specific to the memories given (no invented facts). Any duration, count or "
+                "specific number may ONLY come from the listed memories or the day span given "
+                "below; if the material doesn't say, leave it out entirely. "
+                f'"emotional_residue" is exactly one of: {residues} -- the mood colouring the next '
+                'few days. "memory_refs" lists the ids of the listed memories the line draws on. '
+                "Task: chapter_closure."
+                + roster_directive(english_only=True)
+                + roster_gender_directive(english_only=True)
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"{character_card(agent, name=agent.id.capitalize())}\n"
+                f"Chapter now closing: \"{ch.get('title', '')}\" -- goal: {ch.get('goal') or ch.get('title', '')}. "
+                f"Outcome: {outcome}. It ran from Day {material['window']['start_day']} to "
+                f"Day {material['window']['end_day']} (about {material['window']['days']} days).\n"
+                f"Memories from this chapter:\n{mems}\n"
+                f"People during this chapter:\n{rels}"
             ),
         },
     ]

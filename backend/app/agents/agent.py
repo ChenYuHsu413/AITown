@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .chapters import Chapter, ChapterRecord
 from .core import AgentState, EpisodicMemory, Profile, SemanticMemory
 from .routine import Routine
 
@@ -38,6 +39,10 @@ class Agent:
     memory: EpisodicMemory = field(default_factory=EpisodicMemory)
     semantic: SemanticMemory = field(default_factory=SemanticMemory)
     relationships: dict[str, Relationship] = field(default_factory=dict)
+    # Life chapters (see chapters.py). ``None`` = not yet initialized, read as an
+    # ordinary chapter everywhere; ``chapter_history`` is append-only.
+    chapter: Chapter | None = None
+    chapter_history: list[ChapterRecord] = field(default_factory=list)
 
     @property
     def id(self) -> str:

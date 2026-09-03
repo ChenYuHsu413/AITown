@@ -88,9 +88,17 @@ class MemoryItem:
     minute: int
     text: str
     importance: int = 1                     # 1..10
-    kind: str = "observation"               # observation | conversation | reflection | rumor | secret
+    kind: str = "observation"               # observation | conversation | reflection | rumor | secret | biography
     rumor_id: str = ""                      # set when this memory records a rumor
     secret_id: str = ""                     # set when this memory records a confided secret
+    # Chapter closure (see agents/chapters.py): a closed chapter's memories keep
+    # their text but their retrieval score is scaled by ``weight`` (default 1.0;
+    # 0.3 once the chapter is over -- never deleted). A ``biography`` memory is the
+    # chapter's one-line legacy: ``source_chapter_id`` traces it back to the
+    # history record, ``tags`` (theme words + "loc:<id>") decide when it surfaces.
+    weight: float = 1.0
+    source_chapter_id: str = ""
+    tags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -107,6 +115,7 @@ class Belief:
     formed_minute: int = 0
     last_reinforced_minute: int = 0
     source_count: int = 1                   # experiences backing this belief
+    weight: float = 1.0                     # chapter-closure down-weight (gates prompt context; see chapters.py)
 
 
 class SemanticMemory:
@@ -176,27 +185,88 @@ class EpisodicMemory:
     def add(self, item: MemoryItem) -> None:
         self.items.append(item)
         self.importance_since_reflection += item.importance
+        if item.weight != 1.0:
+            self._weights = None
         if self.on_add is not None:
             self.on_add(item)
 
-    async def retrieve_async(self, query: str, k: int = 5) -> list[str]:
+    # ---- chapter-closure weights (see agents/chapters.py) -------------------
+    # Down-weighted memories keep their text; only their retrieval score shrinks.
+    # The pgvector retriever re-ranks by these same in-memory weights (looked up
+    # by text), so the snapshot is the single source of truth for them.
+    _weights: dict[str, float] | None = None
+
+    def invalidate_weights(self) -> None:
+        self._weights = None
+
+    def weight_of(self, text: str) -> float:
+        if self._weights is None:
+            self._weights = {m.text: m.weight for m in self.items if m.weight != 1.0}
+        return self._weights.get(text, 1.0)
+
+    @property
+    def has_downweights(self) -> bool:
+        self.weight_of("")               # build the lookup if needed
+        return bool(self._weights)
+
+    # ---- biography surfacing -------------------------------------------------
+    # A biography memory never enters the ordinary top-k. It surfaces only when
+    # (1) the query shares >= BIOGRAPHY_TOPIC_MIN theme words with it (the topic is
+    # explicitly on the table), or (2) the agent is at the place it is tagged with.
+    BIOGRAPHY_TOPIC_MIN = 2
+
+    def biography_hits(self, query: str, location: str = "") -> list[str]:
+        q_words = {w.strip(".,;:!?'\"()-").lower() for w in query.split()}
+        out: list[str] = []
+        for m in self.items:
+            if m.kind != "biography":
+                continue
+            theme = {t for t in m.tags if ":" not in t}
+            by_topic = len(q_words & theme) >= self.BIOGRAPHY_TOPIC_MIN
+            by_place = bool(location) and f"loc:{location}" in m.tags
+            if by_topic or by_place:
+                out.append(m.text)
+        return out
+
+    async def retrieve_async(self, query: str, k: int = 5, location: str = "",
+                             topic: str = "") -> list[str]:
+        """``location`` / ``topic`` only feed biography surfacing (place match; what
+        the conversation is explicitly about) -- the ordinary top-k query is unchanged."""
+        bio = self.biography_hits(f"{query} {topic}".strip(), location)
         if self.vector_search is not None:
             try:
-                return await self.vector_search(query, k)
+                got = await self.vector_search(query, k)
+                return self._merge_bio(bio, got, k)
             except Exception:
                 pass  # DB hiccup -> keyword fallback below
-        return self.retrieve(query, k)
+        return self._merge_bio(bio, self._rank(query, k), k)
 
-    def retrieve(self, query: str, k: int = 5) -> list[str]:
-        """Score = keyword overlap + importance + recency. Same contract as
-        the future vector search: (query, k) -> list[str]."""
+    @staticmethod
+    def _merge_bio(bio: list[str], rest: list[str], k: int) -> list[str]:
+        if not bio:
+            return rest
+        seen = set(bio)
+        return (bio + [t for t in rest if t not in seen])[:max(k, len(bio))]
+
+    def retrieve(self, query: str, k: int = 5, location: str = "") -> list[str]:
+        """Keyword top-k (see ``_rank``) with biography entries prepended only when
+        ``biography_hits`` says the topic/place is live. Same contract as the
+        vector search: (query, k) -> list[str]."""
+        return self._merge_bio(self.biography_hits(query, location), self._rank(query, k), k)
+
+    def _rank(self, query: str, k: int) -> list[str]:
+        """Score = keyword overlap + importance + recency, scaled by the chapter
+        weight. Biography entries never rank here."""
         q_words = {w for w in query.lower().split() if len(w) > 2}
         scored: list[tuple[float, MemoryItem]] = []
         latest = self.items[-1].minute if self.items else 0
         for m in self.items:
+            if m.kind == "biography":
+                continue
             overlap = len(q_words & set(m.text.lower().split()))
             recency = 1.0 - min((latest - m.minute) / (24 * 60), 1.0)
-            score = (overlap * 2.0 + m.importance * 0.3 + recency) * self.penalty(m.text, m.kind, m.minute)
+            score = ((overlap * 2.0 + m.importance * 0.3 + recency)
+                     * self.penalty(m.text, m.kind, m.minute) * m.weight)
             if score > 0:
                 scored.append((score, m))
         scored.sort(key=lambda t: t[0], reverse=True)
