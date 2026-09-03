@@ -485,8 +485,6 @@ def apply_closure(agent: "Agent", world: "World", outcome: str, biography_line: 
         tags.append(f"loc:{loc_id}")
     if ch.related_landmark_id:
         tags.append(f"landmark:{ch.related_landmark_id}")
-    if any(w.id == ch.related_goal_id for w in getattr(agent, "wishes", [])):
-        tags.append("private:wish")
     bio = MemoryItem(minute=now, text=biography_line, importance=9, kind="biography",
                      source_chapter_id=ch.id, tags=tags)
     before = agent.memory.importance_since_reflection

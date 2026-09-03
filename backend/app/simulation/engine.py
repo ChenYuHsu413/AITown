@@ -377,7 +377,7 @@ class SimulationEngine:
         wish.progress_marks += 1
         if wish.progress_marks % wishes_mod.PROGRESS_MEMORY_EVERY == 0:
             agent.memory.add(MemoryItem(minute=self.now, importance=2,
-                text="I made observable progress on a private intention."))
+                text=f"I made observable progress on a private intention: {wish.title}."))
         self._emit_wish_record(wish)
         result = wishes_mod.outcome(wish, day)
         if result:
@@ -1006,7 +1006,6 @@ class SimulationEngine:
         a wedged or failed model can never leave the chapter half-closed."""
         at = self.now
         chapter = agent.chapter
-        linked_wish = wishes_mod.active_wish_for_chapter(agent, chapter.id)
         material = chapters_mod.closure_material(agent, self.world, chapter, at, ended_minute,
                                                  aftermath_window, forbid_terms)
         out: dict | None = None
@@ -1032,7 +1031,7 @@ class SimulationEngine:
         self.chapter_stats["closed"] += 1
         self.chapter_stats[source] += 1
         title = record.chapter.get("title", "")
-        private_wish = linked_wish is not None
+        private_wish = trigger.startswith("wish_")
         self._publish(
             "system", "chapter_closed", actor=agent, location_id=agent.state.location,
             text="" if private_wish else record.biography_line, minute=at,
@@ -1041,10 +1040,6 @@ class SimulationEngine:
         )
         self._emit_chapter_record(agent, record=record)
         self._emit_chapter_record(agent, chapter=agent.chapter)   # the interlude, ledger only
-        if linked_wish is not None and wishes_mod.finish(
-                linked_wish, self.decisions.secrets, record.outcome, record.ended_on,
-                reason or f"chapter closed via {trigger}"):
-            self._emit_wish_record(linked_wish)
         return record
 
     def _advance_chapters(self) -> None:
@@ -1061,7 +1056,6 @@ class SimulationEngine:
     def _advance_wishes(self) -> None:
         day = self._last_day + 1
         for agent in self.world.agents.values():
-            self.reconcile_agent_wishes(agent, day)
             for wish in list(agent.wishes):
                 if wish.status != "active":
                     continue
@@ -1132,46 +1126,21 @@ class SimulationEngine:
         day = self.now // DAY_MIN + 1
         try:
             if wish.scale == "major":
-                record = wishes_mod.closed_record_for_wish(agent, wish)
-                if record is not None:
-                    if wishes_mod.finish(wish, self.decisions.secrets, record.outcome,
-                                         record.ended_on, "reconciled from closed chapter"):
-                        self._emit_wish_record(wish)
-                    return
                 record = await self.close_chapter(agent, status, trigger=f"wish_{status}", reason=reason)
                 if record is None:
                     return
             else:
                 agent.memory.add(MemoryItem(minute=self.now, importance=4, kind="reflection",
-                    text=f"I {status} a private intention ({reason}).",
+                    text=f"I {status} a small intention: {wish.statement} ({reason})",
                     tags=[f"wish:{wish.id}"]))
             if wishes_mod.finish(wish, self.decisions.secrets, status, day, reason):
                 self._emit_wish_record(wish)
         finally:
             self._wish_finishing.discard(wish.id)
 
-    def reconcile_agent_wishes(self, agent: Agent, day: int | None = None) -> int:
-        """Rule-only, idempotent repair of Wish/Chapter interrupted states."""
-        history_before = len(agent.chapter_history)
-        changed = wishes_mod.reconcile(agent, self.decisions.secrets,
-                                       day or self.now // DAY_MIN + 1)
-        for wish in changed:
-            self._emit_wish_record(wish)
-        for record in agent.chapter_history[history_before:]:
-            self._emit_chapter_record(agent, record=record)
-        if len(agent.chapter_history) > history_before:
-            self._emit_chapter_record(agent, chapter=agent.chapter)
-        return len(changed)
-
-    def reconcile_wishes(self) -> int:
-        return sum(self.reconcile_agent_wishes(a) for a in self.world.agents.values())
-
     def _emit_wish_record(self, wish) -> None:
         if self.on_wish_record is not None:
-            try:
-                self.on_wish_record(wish.to_dict())
-            except Exception as err:
-                print(f"[wish] ledger hook failed: {err}", flush=True)
+            self.on_wish_record(wish.to_dict())
 
     def _emit_chapter_record(self, agent: Agent, chapter: chapters_mod.Chapter | None = None,
                              record: chapters_mod.ChapterRecord | None = None) -> None:

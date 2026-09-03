@@ -221,8 +221,6 @@ class EpisodicMemory:
         for m in self.items:
             if m.kind != "biography":
                 continue
-            if "private:wish" in m.tags:
-                continue
             theme = {t for t in m.tags if ":" not in t}
             by_topic = len(q_words & theme) >= self.BIOGRAPHY_TOPIC_MIN
             by_place = bool(location) and f"loc:{location}" in m.tags

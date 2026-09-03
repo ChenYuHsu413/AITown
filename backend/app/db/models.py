@@ -9,6 +9,7 @@ Eight tables:
     world_snapshots   latest serialized world state per run (resume foundation)
     snapshot_archive  pre-operation backups saved before destructive admin ops
     translation_cache display-layer English->zh translations (translate once, keep)
+    chapters          queryable life-chapter ledger
     wishes            queryable private-wish ledger
     chapters          life-chapter ledger: one row per chapter per agent (started/closed)
 
