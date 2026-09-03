@@ -24,7 +24,6 @@ from ..agents import chapters as chapters_mod
 from ..agents.agent import Agent
 from ..agents.core import MemoryItem
 from ..agents.decision import ConvPlan, DecisionEngine
-from ..agents import wishes as wishes_mod
 from ..llm.prompts import builders
 from ..llm.router import ProvidersExhausted
 from ..world.world import World
@@ -66,7 +65,6 @@ try:
 except ValueError:
     DIALOGUE_RETRY_WAIT_S = 30.0
 REFLECT_TIMEOUT_S = 45.0       # wall-clock: a reflection past this is abandoned (retried, see below)
-WISH_GENERATION_TIMEOUT_S = 45.0
 # Reflection patient retry (task 3, mirrors dialogue): belief/secret/life_decision
 # quality must never be a canned mock line, so a whole-chain failure brews a pause and
 # re-runs the chain. If every round is still exhausted, the reflection is simply SKIPPED
@@ -295,13 +293,9 @@ class SimulationEngine:
         # Fired with a chapter-ledger row (dict) when a chapter starts or closes, so
         # the host can persist it; None for headless runs.
         self.on_chapter_record: Callable[[dict], None] | None = None
-        self.on_wish_record: Callable[[dict], None] | None = None
-        self._wish_generating: set[str] = set()
-        self._wish_finishing: set[str] = set()
         # The decision layer raises the flag (a resolved secret ending a pursuit);
         # the engine owns the pipeline.
         self.decisions.on_chapter_signal = self.request_chapter_close
-        self.decisions.on_wish_abandon = self._on_wish_abandon
 
     def bootstrap(self, start_minute: int) -> None:
         # Fresh scheduler each call so re-bootstrapping onto a restored world
@@ -364,24 +358,6 @@ class SimulationEngine:
             verb, ev.actor_name, ev.target_name, ev.location_name, text
         )
         self.bus.publish(ev)
-        self._progress_wishes(ev)
-
-    def _progress_wishes(self, ev: Event) -> None:
-        day = ev.minute // DAY_MIN + 1
-        for agent in self.world.agents.values():
-            for wish in list(agent.wishes):
-                if wishes_mod.update_from_event(wish, agent, ev, day):
-                    self._wish_progressed(agent, wish, day)
-
-    def _wish_progressed(self, agent: Agent, wish, day: int) -> None:
-        wish.progress_marks += 1
-        if wish.progress_marks % wishes_mod.PROGRESS_MEMORY_EVERY == 0:
-            agent.memory.add(MemoryItem(minute=self.now, importance=2,
-                text=f"I made observable progress on a private intention: {wish.title}."))
-        self._emit_wish_record(wish)
-        result = wishes_mod.outcome(wish, day)
-        if result:
-            self._request_wish_finish(agent, wish, *result)
 
     # Conversation-borne beats (confide/confront) carry a time window so the UI can
     # pull the actual dialogue lines said around them from /api/history.
@@ -502,8 +478,6 @@ class SimulationEngine:
         self._apply_pending_transitions()
         # Interludes that have run their course lapse into ordinary days.
         self._advance_chapters()
-        self._advance_wishes()
-        self._schedule_wish_generation()
         # Romance spark judged once per day per resident (see decision._maybe_ignite).
         for agent in self.world.agents.values():
             self.decisions._maybe_ignite(agent, self.world, self.now)
@@ -1031,20 +1005,18 @@ class SimulationEngine:
         self.chapter_stats["closed"] += 1
         self.chapter_stats[source] += 1
         title = record.chapter.get("title", "")
-        private_wish = trigger.startswith("wish_")
         self._publish(
             "system", "chapter_closed", actor=agent, location_id=agent.state.location,
-            text="" if private_wish else record.biography_line, minute=at,
-            detail=(f"{record.outcome} · A private chapter" if private_wish else
-                    f"{record.outcome} · {title}" + (f" · {reason}" if reason else "")),
+            text=record.biography_line, minute=at,
+            detail=f"{record.outcome} · {title}" + (f" · {reason}" if reason else ""),
         )
         self._emit_chapter_record(agent, record=record)
         self._emit_chapter_record(agent, chapter=agent.chapter)   # the interlude, ledger only
         return record
 
     def _advance_chapters(self) -> None:
-        """Daily: an expired interlude first becomes ordinary; wish generation is
-        considered later in the same settlement and runs in a background task."""
+        """Daily: an interlude past its span lapses into ordinary days (phase 2 will
+        open a new pursuit here instead -- see chapters.end_interlude)."""
         day = self._last_day + 1                    # the sim day that just began (1-based)
         for agent in self.world.agents.values():
             new = chapters_mod.end_interlude(agent, day)
@@ -1052,95 +1024,6 @@ class SimulationEngine:
                 self._publish("system", "chapter_started", actor=agent,
                               location_id=agent.state.location, text=new.title, detail=new.narrative)
                 self._emit_chapter_record(agent, chapter=new)
-
-    def _advance_wishes(self) -> None:
-        day = self._last_day + 1
-        for agent in self.world.agents.values():
-            for wish in list(agent.wishes):
-                if wish.status != "active":
-                    continue
-                if wishes_mod.update_state(wish, agent, day):
-                    self._emit_wish_record(wish)
-                result = wishes_mod.outcome(wish, day)  # completion wins over deadline failure
-                if result:
-                    self._request_wish_finish(agent, wish, *result)
-
-    def _schedule_wish_generation(self) -> None:
-        day = self._last_day + 1
-        active_major = sum(1 for a in self.world.agents.values()
-                           if wishes_mod.active_wish(a, "major"))
-        for agent in self.world.agents.values():
-            if agent.id in self._wish_generating or not wishes_mod.generation_slot(agent.id, day):
-                continue
-            ok, memories = wishes_mod.generation_eligible(agent, day, active_major)
-            if not ok:
-                continue
-            material = wishes_mod.material_for_prompt(agent, self.world, memories, self.decisions.secrets)
-            digest = hashlib.sha1(repr(material["memories"]).encode()).hexdigest()
-            if digest == agent.wish_last_material_hash:
-                continue
-            agent.wish_last_attempt_minute = self.now
-            agent.wish_last_material_hash = digest
-            agent.wish_next_attempt_day = wishes_mod.retry_day(agent.id, day)
-            self._wish_generating.add(agent.id)
-            self._spawn(self._wish_generation_task(agent, material, day))
-
-    async def _wish_generation_task(self, agent: Agent, material: dict, day: int) -> None:
-        try:
-            try:
-                async with self._reflect_sem:
-                    clean = await asyncio.wait_for(
-                        self.decisions.generate_wish(agent, self.world, material, self.now),
-                        timeout=WISH_GENERATION_TIMEOUT_S)
-            except Exception:
-                clean = None
-            # Recheck after await: another event may have changed their life.
-            if clean is None:
-                return
-            if agent.chapter is not None and agent.chapter.chapter_type != "ordinary":
-                return
-            wish = wishes_mod.install(agent, self.decisions.secrets, clean, day)
-            if wish is None:
-                return
-            self._emit_wish_record(wish)
-            if wish.scale == "major":
-                # Content-free public beat: private wish text never enters the bus.
-                self._publish("system", "chapter_started", actor=agent,
-                              location_id=agent.state.location, text="A private pursuit", detail="")
-                self._emit_chapter_record(agent, chapter=agent.chapter)
-        finally:
-            self._wish_generating.discard(agent.id)
-
-    def _request_wish_finish(self, agent: Agent, wish, status: str, reason: str) -> bool:
-        if wish.status != "active" or wish.id in self._wish_finishing:
-            return False
-        self._wish_finishing.add(wish.id)
-        self._spawn(self._finish_wish_task(agent, wish, status, reason))
-        return True
-
-    def _on_wish_abandon(self, agent: Agent, wish, reason: str, refs: list[dict]) -> None:
-        self._request_wish_finish(agent, wish, "abandoned",
-                                  reason or "I chose to let this intention go after repeated frustration.")
-
-    async def _finish_wish_task(self, agent: Agent, wish, status: str, reason: str) -> None:
-        day = self.now // DAY_MIN + 1
-        try:
-            if wish.scale == "major":
-                record = await self.close_chapter(agent, status, trigger=f"wish_{status}", reason=reason)
-                if record is None:
-                    return
-            else:
-                agent.memory.add(MemoryItem(minute=self.now, importance=4, kind="reflection",
-                    text=f"I {status} a small intention: {wish.statement} ({reason})",
-                    tags=[f"wish:{wish.id}"]))
-            if wishes_mod.finish(wish, self.decisions.secrets, status, day, reason):
-                self._emit_wish_record(wish)
-        finally:
-            self._wish_finishing.discard(wish.id)
-
-    def _emit_wish_record(self, wish) -> None:
-        if self.on_wish_record is not None:
-            self.on_wish_record(wish.to_dict())
 
     def _emit_chapter_record(self, agent: Agent, chapter: chapters_mod.Chapter | None = None,
                              record: chapters_mod.ChapterRecord | None = None) -> None:

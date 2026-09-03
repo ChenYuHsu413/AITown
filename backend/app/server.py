@@ -411,7 +411,6 @@ class Sim:
         self.router.usage.on_record = p.on_llm_call
         self.engine.on_snapshot = self._take_snapshot   # snapshot at each daily settlement
         self.engine.on_chapter_record = p.on_chapter    # chapter ledger (started / closed rows)
-        self.engine.on_wish_record = p.on_wish          # wish ledger (snapshot remains source of truth)
         self._snap_wall = time.monotonic()
         self._snap_minute = self.engine.now
         for agent in self.world.agents.values():
@@ -1295,7 +1294,6 @@ async def agent_detail(agent_id: str) -> JSONResponse:
             "occupation": a.profile.occupation,
             "traits": a.profile.traits,
             "goals": a.profile.goals,
-            "wishes": [w.to_dict() for w in a.wishes],
             # Life chapter (see agents/chapters.py); None = uninitialized (reads as ordinary).
             "chapter": ({
                 "id": ch.id, "type": ch.chapter_type, "title": ch.title, "narrative": ch.narrative,

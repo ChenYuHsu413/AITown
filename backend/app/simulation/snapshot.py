@@ -50,10 +50,7 @@ if TYPE_CHECKING:
 #             `weight`/`source_chapter_id`/`tags` and belief `weight` (all ride in the
 #             existing dicts via overlay), landmark `decoupled`. A v10 snapshot loads with
 #             chapter=None (read as ordinary), every weight 1.0 -- see scripts/backfill_chapters.py.
-#   v11 -> v12: self-grown wishes + generation cooldown/dedup state; wish-linked
-#               secrets add source_kind/source_id/social_enabled. Missing fields keep
-#               the old no-wish / ordinary-secret behaviour.
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 11
 
 
 # ---- capture -------------------------------------------------------------
@@ -109,10 +106,6 @@ def _capture_agent(agent) -> dict:
         # v11: the current life chapter (None = uninitialized -> ordinary) + history.
         "chapter": agent.chapter.to_dict() if agent.chapter is not None else None,
         "chapter_history": [r.to_dict() for r in agent.chapter_history],
-        "wishes": [w.to_dict() for w in agent.wishes],
-        "wish_generation": {"next_attempt_day": agent.wish_next_attempt_day,
-                            "last_attempt_minute": agent.wish_last_attempt_minute,
-                            "last_material_hash": agent.wish_last_material_hash},
     }
 
 
@@ -238,21 +231,6 @@ def _restore_agent(agent, adata: dict) -> None:
         from ..agents.chapters import ChapterRecord
         agent.chapter_history = [ChapterRecord.from_dict(r) for r in adata["chapter_history"]
                                  if isinstance(r, dict)]
-    if isinstance(adata.get("wishes"), list):
-        from ..agents.wishes import Wish
-        restored, seen = [], set()
-        for raw in adata["wishes"]:
-            w = Wish.from_dict(raw) if isinstance(raw, dict) else None
-            if w is not None and w.owner_id == agent.id and w.id not in seen:
-                restored.append(w); seen.add(w.id)
-        agent.wishes = restored
-    wg = adata.get("wish_generation") or {}
-    try:
-        agent.wish_next_attempt_day = int(wg.get("next_attempt_day", agent.wish_next_attempt_day))
-        agent.wish_last_attempt_minute = int(wg.get("last_attempt_minute", agent.wish_last_attempt_minute))
-        agent.wish_last_material_hash = str(wg.get("last_material_hash", agent.wish_last_material_hash))
-    except (TypeError, ValueError):
-        pass
 
 
 def _restore_rumors(rdata: dict) -> dict:
@@ -286,8 +264,7 @@ def _restore_secrets(sdata: dict) -> dict:
             continue
         secret = Secret(id=data.get("id", sid), owner=data.get("owner", ""), text=data.get("text", ""))
         for key in ("sensitivity", "created_minute", "leaked", "leaked_by",
-                    "about", "resolved", "resolved_minute", "resolution",
-                    "source_kind", "source_id", "social_enabled"):
+                    "about", "resolved", "resolved_minute", "resolution"):
             if key in data:                          # about/resolution absent on pre-v7 snapshots -> defaults
                 setattr(secret, key, data[key])
         confided = data.get("confided_to")

@@ -78,17 +78,7 @@ class MockProvider(LLMProvider):
         prompt = " ".join(m.get("content", "") for m in messages).lower()
 
         parsed: object
-        if "task: wish_generation" in prompt:
-            raw = " ".join(m.get("content", "") for m in messages)
-            ids = re.findall(r'"id":"([0-9a-f]{8})"', raw)
-            parsed = ({"no_wish": True} if not ids else {
-                "title": "Spend more time around town",
-                "statement": "I want to spend more time at the park and notice what changes there.",
-                "motivation": "Recent experiences made the town feel worth noticing.",
-                "scale": "major", "source_memory_refs": ids[:2],
-                "requirements": [{"kind": "location_visits", "target": "park", "threshold": 2, "unit": "visits"}],
-                "failure_conditions": [{"kind": "deadline", "days": 14}]})
-        elif "task: chapter_closure" in prompt:
+        if "task: chapter_closure" in prompt:
             # Deterministic closure reflection: a first-person line toned by the
             # outcome, a residue, and the first listed memory id as its reference.
             # Checked FIRST -- the closure prompt legitimately mentions other tasks'

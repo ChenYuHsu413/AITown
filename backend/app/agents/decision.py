@@ -35,7 +35,6 @@ from ..world.world import Observation, World
 from . import chapters as chapters_mod
 from . import romance as romance_mod
 from . import transitions as transitions_mod
-from . import wishes as wishes_mod
 from .agent import Agent
 from .core import Belief, MemoryItem
 
@@ -412,7 +411,6 @@ class DecisionEngine:
     # whose theme is the chapter's (see _resolve_secret). The engine owns the
     # pipeline (LLM call + atomic apply + event); this layer only raises the flag.
     on_chapter_signal: object = None
-    on_wish_abandon: object = None
 
     def __post_init__(self) -> None:
         live = any(p.name != "mock" for chain in self.router.tiers.values() for p in chain)
@@ -1185,7 +1183,7 @@ class DecisionEngine:
         share_rumor -- the world only sees a rumor appear, never the leak itself)."""
         candidates = [
             s for s in self.secrets.secrets.values()
-            if not s.leaked and not s.resolved and s.social_enabled  # wish secrets wait for phase 3
+            if not s.leaked and not s.resolved                        # a resolved worry is no longer leak-worthy
             and s.owner != b.id and b.id in s.confided_to
             and s.owner != c.id and not self.secrets.knows(s.id, c.id)
         ]
@@ -1681,16 +1679,6 @@ class DecisionEngine:
                            "confidence": round(final_conf, 2)})
         return events
 
-    # ---- rare wish generation (smart; backgrounded by the engine) ----
-
-    async def generate_wish(self, agent: Agent, world: World, material: dict, now: int) -> dict | None:
-        res = await self.router.generate(
-            task="wish_generation", messages=builders.wish_generation_prompt(agent, material),
-            agent_id=agent.id, sim_minute=now, schema={"type": "object"}, max_tokens=420,
-            no_floor=True,
-        )
-        return wishes_mod.validate_generation(res.parsed, agent, world, material)
-
     # ---- Level 3: reflection -----------------------------------------
 
     def should_reflect(self, agent: Agent) -> bool:
@@ -1717,16 +1705,9 @@ class DecisionEngine:
             if now // (24 * 60) - agent.state.last_transition_day >= transitions_mod.TRANSITION_COOLDOWN_DAYS:
                 offer += [(t.id, t.label) for t in transitions_mod.available_for(agent, world)]
             offer += self._romance_options(agent, world, now)
-        wish = wishes_mod.active_wish(agent)
-        frustration = []
-        if wish is not None:
-            frustration = [{"id": chapters_mod.memory_id(agent.id, m), "text": m.text}
-                           for m in agent.memory.items
-                           if m.minute >= (wish.created_day - 1) * 24 * 60 and m.importance >= 4][-6:]
         res = await self.router.generate(
             task="reflection",
-            messages=builders.reflection_prompt(agent, events, open_secrets, offer or None,
-                                                wish=wish, frustration=frustration),
+            messages=builders.reflection_prompt(agent, events, open_secrets, offer or None),
             agent_id=agent.id,
             sim_minute=now,
             schema={"type": "object"},
@@ -1751,15 +1732,6 @@ class DecisionEngine:
             self._resolve_reflected_secrets(agent, res.parsed.get("resolved_secret_ids"), open_secrets, now)
             if offer:
                 romance_events = self._stage_life_decision(agent, world, res.parsed.get("life_decision"), now)
-            abandon = res.parsed.get("wish_abandonment")
-            if (wish is not None and isinstance(abandon, dict) and abandon.get("abandon") is True
-                    and str(abandon.get("wish_id", "")) == wish.id):
-                refs = [str(x) for x in abandon.get("frustration_memory_refs", [])]
-                allowed = {m["id"] for m in frustration}
-                ok, grounded = wishes_mod.validate_abandon(
-                    agent, wish, now // (24 * 60) + 1, refs, allowed)
-                if ok and self.on_wish_abandon is not None:
-                    self.on_wish_abandon(agent, wish, str(abandon.get("reason", "")).strip(), grounded)
         for ins in insights:
             agent.memory.add(MemoryItem(minute=now, text=ins, importance=5, kind="reflection"))
         return insights, belief_events, secret_born, romance_events

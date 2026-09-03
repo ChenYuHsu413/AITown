@@ -84,9 +84,6 @@ def _baseline_reject(parsed: object, task: str) -> str | None:
     if task == "chapter_closure":
         if _is_garbage_text(parsed.get("biography_line")):
             return "garbage biography line"
-    if task == "wish_generation" and not parsed.get("no_wish"):
-        if _is_garbage_text(parsed.get("title")) or _is_garbage_text(parsed.get("statement")):
-            return "garbage wish"
     return None
 
 TASK_TIERS: dict[str, str] = {
@@ -102,7 +99,6 @@ TASK_TIERS: dict[str, str] = {
     "reflection": "smart",
     "life_goal_update": "smart",
     "chapter_closure": "smart",   # rare (once per closed chapter); see agents/chapters.py
-    "wish_generation": "smart",   # rare, staggered at day boundaries
 }
 
 

@@ -366,8 +366,7 @@ def decision_prompt(agent: "Agent", observation: str, memories: list[str], actio
 
 
 def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list | None = None,
-                      transitions: list | None = None, wish=None,
-                      frustration: list[dict] | None = None) -> list[dict]:
+                      transitions: list | None = None) -> list[dict]:
     # The character's own still-open worries, offered back so reflection can retire
     # the ones today's experience has settled. Ids are opaque handles the sim maps
     # back to secrets; the model only judges which are done.
@@ -388,15 +387,6 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
         opts = "\n".join(f"  [{tid}] {label}" for tid, label in transitions)
         transitions_block = "\nLife changes you could choose right now:\n" + opts
         decision_key = '"life_decision": {"action": "<id>", "reason": "..."} | null, '
-    wish_key = ""
-    wish_block = ""
-    if wish is not None:
-        wish_key = ('"wish_abandonment": {"wish_id":"<id>","abandon":true|false,'
-                    '"reason":"...","frustration_memory_refs":["<id>"]} | null, ')
-        evidence = "\n".join(f"  [{m['id']}] {m['text']}" for m in (frustration or [])) or "  (none)"
-        wish_block = (f"\nActive private wish [{wish.id}]: {wish.statement}\n"
-                      f"Progress: {wish.progress:.2f}; created Day {wish.created_day}.\n"
-                      "Candidate post-creation frustration evidence:\n" + evidence)
     return [
         {
             "role": "system",
@@ -404,7 +394,7 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
                 "You produce end-of-day reflection for a life-sim character. Respond ONLY with JSON: "
                 '{"insights": ["...", "..."], '
                 '"beliefs": [{"subject": "<name>", "text": "...", "confidence": 0.0-1.0, "sentiment": -1.0-1.0}], '
-                + resolved_key + decision_key + wish_key +
+                + resolved_key + decision_key +
                 '"new_secret": {"text": "...", "sensitivity": 0.0-1.0} | null}. '
                 '"insights" are 1-2 short takeaways from today. '
                 '"beliefs" are 0-2 LASTING impressions about a specific person or place -- formed ONLY when '
@@ -426,9 +416,6 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
                    "resolve built over many days, not a single bad afternoon). This is rare: the vast "
                    "majority of reflections MUST return null. When you do choose, give the id and a reason "
                    "grounded in the accumulated evidence. " if transitions else "")
-                + ('"wish_abandonment" may target only the listed wish. Set abandon true only with concrete, '
-                   "cited post-creation frustration or sustained stagnation; otherwise null. Use only listed ids. "
-                   if wish is not None else "")
                 + "Write all text in English (this is internal knowledge, translated for display separately). "
                 "Task: reflection."
                 + roster_directive(english_only=True)
@@ -442,7 +429,7 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
                 # come back with roster names the sim can resolve.
                 f"{character_card(agent, name=agent.id.capitalize())}\n"
                 "Events today:\n" + "\n".join(f"- {e}" for e in day_events[-15:])
-                + secrets_block + transitions_block + wish_block
+                + secrets_block + transitions_block
             ),
         },
     ]
@@ -509,28 +496,6 @@ def chapter_closure_prompt(agent: "Agent", material: dict, outcome: str,
                 + aftermath
             ),
         },
-    ]
-
-
-def wish_generation_prompt(agent: "Agent", material: dict) -> list[dict]:
-    """Strict English-only proposal; rules validate every reference and primitive."""
-    import json
-    schema = ('{"no_wish":true} OR {"title":"...","statement":"...","motivation":"...",'
-              '"scale":"small|major","source_memory_refs":["id"],"requirements":'
-              '[{"kind":"...","target":"...","threshold":1,"unit":"count"}],'
-              '"failure_conditions":[{"kind":"deadline","days":14}]}')
-    return [
-        {"role": "system", "content": (
-            "Propose one genuinely emerging private wish for this life-sim resident, or no wish. "
-            "Use only supplied facts; never invent past events, people, places, objects, abilities, predicates, or code. "
-            "Do not repeat or resurrect a completed, failed, or abandoned chapter. Revisiting a theme requires "
-            "new cited evidence and a different observable aim. Copy source ids exactly from Memories. "
-            "Use only supplied requirement kinds and legal targets. Major wishes need executable requirements; "
-            "small wishes are modest ordinary-life intentions. Return no_wish if evidence is insufficient. "
-            f"All text is English. Respond ONLY with strict JSON matching {schema}. Task: wish_generation."
-            + roster_directive(english_only=True) + roster_gender_directive(english_only=True))},
-        {"role": "user", "content": f"{character_card(agent, name=agent.id.capitalize())}\n"
-         "Grounded material and affordances:\n" + json.dumps(material, ensure_ascii=True, separators=(",", ":"))},
     ]
 
 
