@@ -15,8 +15,12 @@ SCALES = ("small", "major")
 STATUSES = ("active", "completed", "failed", "abandoned")
 REQUIREMENT_KINDS = ("action_count", "location_visits", "talk_count", "friendship", "trust",
                      "money", "money_gain", "event_count")
-ALLOWED_ACTIONS = ("sleep", "eat", "work", "rest", "idle", "arrive", "talk_start", "repaired")
+DRIVE_ACTIONS = ("work", "rest", "idle")
+ALLOWED_ACTIONS = DRIVE_ACTIONS
 ALLOWED_EVENTS = ("day_summary", "repaired", "meetup_arranged", "met_up", "transition")
+ACTIONABLE_REQUIREMENTS = ("location_visits", "talk_count", "friendship", "trust",
+                           "money", "money_gain", "action_count")
+PASSIVE_REQUIREMENTS = ("event_count",)
 
 MATERIAL_MIN_COUNT = 3
 MATERIAL_MIN_IMPORTANCE = 10
@@ -30,7 +34,15 @@ MIN_WISH_DAYS = 2
 MAX_WISH_DAYS = 120
 PROGRESS_MEMORY_EVERY = 3
 COUNTED_EVENT_KEYS_MAX = 256
+REQUIREMENTS_MAX = 8
 GENERATION_ROLLING_DAYS = 14
+DRIVE_MAJOR_DAILY_ATTEMPTS = 2
+DRIVE_SMALL_DAILY_ATTEMPTS = 1
+DRIVE_MAJOR_PROBABILITY = 0.70
+DRIVE_SMALL_PROBABILITY = 0.20
+DRIVE_SOCIAL_MEETUP_PROBABILITY = 0.55
+DRIVE_FRUSTRATION_BLOCKED_DAYS = 2
+DRIVE_FRUSTRATION_COOLDOWN_DAYS = 3
 ABANDON_MIN_DAYS = 5
 ABANDON_STALE_DAYS = 3
 _FRUSTRATION_WORDS = ("failed", "couldn't", "cannot", "unable", "stuck", "setback",
@@ -92,6 +104,7 @@ class Wish:
     outcome_reason: str = ""
     counted_event_keys: list[str] = field(default_factory=list)
     progress_marks: int = 0
+    drive_state: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -110,7 +123,7 @@ class Wish:
                    for k in int_fields):
                 return None
             reqs = [Requirement.from_dict(r) for r in raw["requirements"]]
-            if not reqs or any(r is None for r in reqs):
+            if not reqs or len(reqs) > REQUIREMENTS_MAX or any(r is None for r in reqs):
                 return None
             if len({(r.kind, r.target) for r in reqs}) != len(reqs):
                 return None
@@ -145,6 +158,36 @@ class Wish:
                     or len(keys) > COUNTED_EVENT_KEYS_MAX):
                 return None
             w.counted_event_keys = keys
+            drive = raw.get("drive_state", {})
+            if (not isinstance(drive, dict) or set(drive) - {
+                    "attempt_days", "cursor", "blocked_days", "last_frustration_day",
+                    "daily_day", "daily_attempts"}):
+                return None
+            attempts = drive.get("attempt_days", {})
+            if (not isinstance(attempts, dict)
+                    or len(attempts) > len(reqs)
+                    or any(not isinstance(k, str) or not isinstance(v, int) or isinstance(v, bool)
+                           or v < 0 or not k.isdigit() or int(k) >= len(reqs)
+                           for k, v in attempts.items())):
+                return None
+            drive_ints = ("cursor", "blocked_days", "last_frustration_day",
+                          "daily_day", "daily_attempts")
+            if any(k in drive and (not isinstance(drive[k], int) or isinstance(drive[k], bool))
+                   for k in drive_ints):
+                return None
+            try:
+                cursor = int(drive.get("cursor", 0))
+                blocked = int(drive.get("blocked_days", 0))
+                frustration_day = int(drive.get("last_frustration_day", -1))
+                daily_day = int(drive.get("daily_day", -1))
+                daily_attempts = int(drive.get("daily_attempts", 0))
+            except (TypeError, ValueError):
+                return None
+            if min(cursor, blocked, daily_attempts) < 0 or frustration_day < -1 or daily_day < -1:
+                return None
+            w.drive_state = {"attempt_days": dict(attempts), "cursor": cursor,
+                             "blocked_days": blocked, "last_frustration_day": frustration_day,
+                             "daily_day": daily_day, "daily_attempts": daily_attempts}
             if (w.scale not in SCALES or w.status not in STATUSES
                     or not all((w.id.strip(), w.owner_id.strip(), w.title.strip(), w.statement.strip()))
                     or w.created_day < 1 or w.ended_day < 0
@@ -192,6 +235,8 @@ def reconcile(agent, secrets, day: int) -> list[Wish]:
                       "reconciliation: missing or invalid linked pursuit chapter"):
                 changed.append(wish)
         elif wish.status != "active" and current_match:
+            secrets.resolve(wish.secret_id, (max(day, wish.ended_day) - 1) * DAY_MIN,
+                            wish.outcome_reason or "reconciled terminal wish", from_wish=True)
             # The wish outcome is persisted truth; close the dangling chapter without
             # inventing biography or publishing a synthetic chronicle beat.
             old = agent.chapter
@@ -267,7 +312,9 @@ def material_for_prompt(agent, world, memories: list[dict], secrets) -> dict:
             "money": agent.state.money, "occupation": agent.profile.occupation,
             "personality": dict(agent.profile.personality), "secrets": safe_secrets,
             "agents": list(world.agents), "locations": list(world.locations),
-            "actions": list(ALLOWED_ACTIONS), "events": list(ALLOWED_EVENTS)}
+            "actions": list(ALLOWED_ACTIONS), "events": list(ALLOWED_EVENTS),
+            "actionable_requirement_kinds": list(ACTIONABLE_REQUIREMENTS),
+            "passive_requirement_kinds": list(PASSIVE_REQUIREMENTS)}
 
 
 def _finite_positive(x, lo=1, hi=10000) -> bool:
@@ -342,7 +389,9 @@ def validate_generation(raw: object, agent, world, material: dict) -> dict | Non
         if r.current >= r.threshold:
             return None
         reqs.append(r)
-    if not reqs:
+    if not reqs or len(reqs) > REQUIREMENTS_MAX:
+        return None
+    if scale == "major" and not any(r.kind in ACTIONABLE_REQUIREMENTS for r in reqs):
         return None
     effort = sum(r.threshold - r.current for r in reqs)
     if scale == "major" and effort < 2:
@@ -457,3 +506,118 @@ def validate_abandon(agent, wish: Wish, day: int, memory_refs: list[str],
     refs = [m for m in refs if any(w in m.text.lower() for w in _FRUSTRATION_WORDS)]
     if not refs: return False, []
     return abandonment_score(agent, wish, day, refs) >= 0, [{"id": memory_id(agent.id,m),"text":m.text} for m in refs]
+
+
+def _drive_state(wish: Wish, day: int) -> dict:
+    state = wish.drive_state
+    if not state:
+        state.update(attempt_days={}, cursor=0, blocked_days=0,
+                     last_frustration_day=-1, daily_day=day, daily_attempts=0)
+    if state.get("daily_day") != day:
+        state["daily_day"], state["daily_attempts"] = day, 0
+    return state
+
+
+def _drive_roll(agent_id: str, wish_id: str, day: int, cursor: int) -> float:
+    raw = hashlib.sha256(f"wish-drive|{agent_id}|{wish_id}|{day}|{cursor}".encode()).hexdigest()
+    return int(raw[:8], 16) / 0xFFFFFFFF
+
+
+def _work_location(agent, now: int) -> str:
+    dow = (now // DAY_MIN) % 7
+    entries = agent.routine._table(dow)[0]
+    return next((e.location for e in entries if e.action == "work"), "")
+
+
+def _location_open_for(agent, world, location: str, now: int) -> bool:
+    loc = world.locations.get(location)
+    if loc is None:
+        return False
+    dow = (now // DAY_MIN) % 7
+    if world.effect_active("rain") and loc.kind == "park":
+        return False
+    return not (loc.owner and loc.price > 0 and dow in loc.closed_days and loc.owner != agent.id)
+
+
+def record_drive_blocked(agent, wish_id: str, now: int) -> None:
+    wish = next((w for w in agent.wishes if w.id == wish_id and w.status == "active"), None)
+    if wish is not None:
+        _blocked_memory(agent, wish, now)
+
+
+def social_drive_target(agent) -> str:
+    """Highest-priority resident target for the existing meetup system."""
+    active = sorted((w for w in agent.wishes if w.status == "active"),
+                    key=lambda w: (w.scale != "major", w.created_day, w.id))
+    for wish in active:
+        req = next((r for r in wish.requirements if not r.completed
+                    and r.kind in ("talk_count", "friendship", "trust")), None)
+        if req is not None:
+            return req.target
+    return ""
+
+
+def _blocked_memory(agent, wish: Wish, now: int) -> None:
+    day = now // DAY_MIN + 1
+    state = _drive_state(wish, day)
+    state["blocked_days"] += 1
+    last = state.get("last_frustration_day", -1)
+    if (state["blocked_days"] >= DRIVE_FRUSTRATION_BLOCKED_DAYS
+            and day - last >= DRIVE_FRUSTRATION_COOLDOWN_DAYS):
+        agent.memory.add(MemoryItem(
+            minute=now, importance=4, kind="reflection",
+            text="Repeated real-world obstacles blocked my private intention; the setback felt frustrating.",
+            tags=[f"wish:{wish.id}"]))
+        state["last_frustration_day"] = day
+        state["blocked_days"] = 0
+
+
+def next_wish_drive(agent, world, now: int, routine_action: str) -> dict | None:
+    """Return one soft, rule-only directive for a discretionary decision slot."""
+    if routine_action not in ("rest", "idle"):
+        return None
+    day = now // DAY_MIN + 1
+    active = [w for w in agent.wishes if w.status == "active"]
+    active.sort(key=lambda w: (w.scale != "major", w.created_day, w.id))
+    for wish in active:
+        state = _drive_state(wish, day)
+        cap = DRIVE_MAJOR_DAILY_ATTEMPTS if wish.scale == "major" else DRIVE_SMALL_DAILY_ATTEMPTS
+        probability = DRIVE_MAJOR_PROBABILITY if wish.scale == "major" else DRIVE_SMALL_PROBABILITY
+        if state["daily_attempts"] >= cap or _drive_roll(agent.id, wish.id, day, state["cursor"]) >= probability:
+            continue
+        candidates = [(i, r) for i, r in enumerate(wish.requirements)
+                      if not r.completed and r.kind in ACTIONABLE_REQUIREMENTS
+                      and state["attempt_days"].get(str(i)) != day]
+        if not candidates:
+            continue
+        candidates.sort(key=lambda x: (-(1.0 - min(1.0, x[1].current / x[1].threshold)),
+                                       (x[0] - state["cursor"]) % len(wish.requirements)))
+        i, req = candidates[0]
+        directive = None
+        if req.kind == "location_visits":
+            if agent.state.location != req.target and _location_open_for(agent, world, req.target, now):
+                directive = {"action": "move", "location": req.target}
+        elif req.kind in ("talk_count", "friendship", "trust"):
+            target = world.agents.get(req.target)
+            if target is not None and target.state.current_action != "sleep":
+                directive = ({"action": "talk_bias", "target": target.id}
+                             if target.state.location == agent.state.location
+                             else None)  # different-place contact is handled by existing meetup rules
+        elif req.kind in ("money", "money_gain"):
+            work = _work_location(agent, now)
+            if agent.profile.daily_wage > 0 and work and _location_open_for(agent, world, work, now):
+                directive = ({"action": "work"} if agent.state.location == work
+                             else {"action": "move", "location": work})
+        elif req.kind == "action_count" and req.target in DRIVE_ACTIONS:
+            if req.target != "work" or agent.state.location == _work_location(agent, now):
+                directive = {"action": req.target}
+        state["attempt_days"][str(i)] = day
+        state["cursor"] = (i + 1) % len(wish.requirements)
+        state["daily_attempts"] += 1
+        if directive is None:
+            _blocked_memory(agent, wish, now)
+            continue
+        state["blocked_days"] = 0
+        directive.update(wish_id=wish.id, requirement_index=i)
+        return directive
+    return None

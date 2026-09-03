@@ -53,7 +53,8 @@ if TYPE_CHECKING:
 #   v11 -> v12: self-grown wishes + generation cooldown/dedup state; wish-linked
 #               secrets add source_kind/source_id/social_enabled. Missing fields keep
 #               the old no-wish / ordinary-secret behaviour.
-SCHEMA_VERSION = 12
+#   v12 -> v13: per-wish rule-drive attempt/cooldown/frustration state.
+SCHEMA_VERSION = 13
 
 
 # ---- capture -------------------------------------------------------------

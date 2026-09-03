@@ -6,9 +6,10 @@ os.environ.update(AI_TOWN_LIVE="0",AI_TOWN_LANG="en",AI_TOWN_DB_URL="")
 from backend.app.agents import chapters, wishes
 from backend.app.agents.core import MemoryItem
 from backend.app.agents.decision import DecisionEngine
+from backend.app.agents.routine import Routine, RoutineEntry
 from backend.app.llm.factory import build_router
 from backend.app.simulation import snapshot
-from backend.app.simulation.engine import SimulationEngine
+from backend.app.simulation.engine import DAY_MIN, Scheduler, SimulationEngine
 from backend.app.world.world import World
 from data.seed import build_agents, build_locations, seed_secrets
 
@@ -134,9 +135,51 @@ class WishFlow(unittest.TestCase):
             "failure_conditions":[]},a,world,mat)
         wish=wishes.install(a,e.decisions.secrets,clean,1)
         wishes.finish(wish,e.decisions.secrets,'failed',2,'persisted outcome')
+        secret=e.decisions.secrets.secrets[wish.secret_id]
+        secret.resolved=False; secret.resolved_minute=-1; secret.resolution=''
         self.assertEqual(e.reconcile_wishes(),1); self.assertEqual(a.chapter.chapter_type,'interlude')
+        self.assertTrue(secret.resolved)
         self.assertEqual(a.chapter_history[-1].biography_line,'')
         self.assertEqual(e.reconcile_wishes(),0)
+
+    def test_normal_tick_drives_move_then_arrive_progress_without_llm(self):
+        async def run():
+            world,e,a,_=setup()
+            a.routine=Routine([RoutineEntry(0,'rest','home_a')]); a.state.location='home_a'
+            a.memory.importance_since_reflection=0
+            wish=wishes.Wish('natural-drive',a.id,'Private','PRIVATE_MARKER stays hidden.','Private',
+                'small','active',1,requirements=[wishes.Requirement('location_visits',1,target='park')])
+            a.wishes=[wish]
+            day=next(d for d in range(1,100) if wishes._drive_roll(a.id,wish.id,d,0)<wishes.DRIVE_SMALL_PROBABILITY)
+            start=(day-1)*DAY_MIN+12*60
+            e.now=start; e._last_day=start//DAY_MIN; e.scheduler=Scheduler(); e.scheduler.schedule(a.id,start)
+            e._last_decision_at[a.id]=start-1
+            before=e.decisions.router.usage.total_calls
+            await e.tick(); await settle(e)
+            self.assertEqual(a.state.location,'park')
+            self.assertEqual(wish.status,'completed')
+            self.assertEqual(wish.requirements[0].current,1)
+            self.assertEqual(e.decisions.router.usage.total_calls,before)
+            self.assertTrue(any(ev.verb=='arrive' and ev.actor==a.id for ev in e.bus.events))
+        asyncio.run(run())
+
+    def test_social_drive_does_not_bypass_talk_cooldown(self):
+        async def run():
+            world,e,a,_=setup(); target=world.agents['ange']
+            a.routine=Routine([RoutineEntry(0,'rest','home_a')]); a.state.location='home_a'
+            target.state.location='home_a'; target.state.current_action='rest'; target.state.busy_until=0
+            wish=wishes.Wish('social-hard-limit',a.id,'PRIVATE_MARKER','PRIVATE_MARKER stays hidden.',
+                'Private','major','active',1,
+                requirements=[wishes.Requirement('talk_count',2,target=target.id)])
+            a.wishes=[wish]
+            day=next(d for d in range(1,80) if wishes._drive_roll(a.id,wish.id,d,0)<wishes.DRIVE_MAJOR_PROBABILITY)
+            now=(day-1)*DAY_MIN+12*60; a.state.last_talk_minute[target.id]=now
+            obs=world.observe(a,now-1,now); before=e.decisions.router.usage.total_calls
+            decision=await e.decisions.decide(a,world,obs,now)
+            self.assertNotEqual(decision.action,'talk')
+            self.assertEqual(e.decisions.router.usage.total_calls,before)
+            self.assertEqual(a.rel(target.id).friendship,30)
+        asyncio.run(run())
 
     def test_daily_settlement_advances_relationship_and_money_requirements(self):
         async def run():
@@ -158,7 +201,7 @@ class WishFlow(unittest.TestCase):
                 a.wish_next_attempt_day=999
             world.agents['jiji'].rel('ange').friendship+=2
             world.agents['ange'].rel('jiji').trust+=2
-            e.now=24*60; e._last_day=1; e._daily_settlement(); await settle(e)
+            e.now=DAY_MIN; e._last_day=1; e._daily_settlement(); await settle(e)
             self.assertTrue(all(w.status=='completed' for w in made))
             self.assertEqual(e.decisions.router.usage.total_calls,0)
         asyncio.run(run())

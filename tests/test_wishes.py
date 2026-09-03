@@ -6,6 +6,7 @@ os.environ.update(AI_TOWN_LIVE="0", AI_TOWN_LANG="en", AI_TOWN_DB_URL="")
 from backend.app.agents import chapters, wishes
 from backend.app.agents.core import MemoryItem
 from backend.app.agents.decision import DecisionEngine
+from backend.app.agents.routine import Routine, RoutineEntry
 from backend.app.llm.factory import build_router
 from backend.app.llm.prompts import builders
 from backend.app.simulation import snapshot
@@ -32,6 +33,15 @@ def proposal(refs,scale="major",kind="location_visits",target="park",threshold=2
             "motivation":"Recent experiences made this matter.","scale":scale,
             "source_memory_refs":[refs[0]["id"]],"requirements":[{"kind":kind,"target":target,"threshold":threshold,"unit":"count"}],
             "failure_conditions":[{"kind":"deadline","days":14}]}
+
+def drive_wish(a, wid, kind, target='', threshold=2, scale='major'):
+    w=wishes.Wish(wid,a.id,'Private','A private statement stays hidden.','Private',scale,'active',1,
+                  requirements=[wishes.Requirement(kind,threshold,target=target)])
+    a.wishes.append(w); return w
+
+def passing_day(a,w,cursor=0,limit=80):
+    p=wishes.DRIVE_MAJOR_PROBABILITY if w.scale=='major' else wishes.DRIVE_SMALL_PROBABILITY
+    return next(d for d in range(1,limit) if wishes._drive_roll(a.id,w.id,d,cursor)<p)
 
 class Validation(unittest.TestCase):
     def setUp(self):
@@ -206,5 +216,74 @@ class SnapshotAndAbandon(unittest.TestCase):
         old=MemoryItem(-100,"A frustrating setback happened before this wish existed.",8); low.memory.add(old)
         self.assertFalse(wishes.validate_abandon(low,low.wishes[0],10,[chapters.memory_id(low.id,old)])[0])
         low.wishes[0].progress=.9; self.assertLess(wishes.abandonment_score(low,low.wishes[0],10,low.memory.items[-3:]),0)
+
+class WishDrive(unittest.TestCase):
+    def setUp(self):
+        self.world,self.engine=env(); self.a=ordinary(self.world)
+        self.a.routine=Routine([RoutineEntry(0,'rest','home_a')])
+        self.a.state.location='home_a'; self.a.state.energy=80
+
+    def test_location_drive_attempts_move_without_direct_progress(self):
+        w=drive_wish(self.a,'loc-drive','location_visits','park')
+        day=passing_day(self.a,w); now=(day-1)*DAY_MIN+12*60
+        before=self.engine.decisions.router.usage.total_calls
+        directive=wishes.next_wish_drive(self.a,self.world,now,'rest')
+        self.assertEqual(directive['action'],'move'); self.assertEqual(directive['location'],'park')
+        self.assertEqual(w.requirements[0].current,0); self.assertEqual(self.a.state.location,'home_a')
+        self.assertEqual(self.engine.decisions.router.usage.total_calls,before)
+
+    def test_social_and_money_drives_do_not_mutate_state(self):
+        target=self.world.agents['ange']; target.state.location=self.a.state.location
+        social=drive_wish(self.a,'social-drive','friendship',target.id,40)
+        day=passing_day(self.a,social); now=(day-1)*DAY_MIN+12*60
+        friendship=self.a.rel(target.id).friendship
+        self.assertEqual(wishes.next_wish_drive(self.a,self.world,now,'rest')['action'],'talk_bias')
+        self.assertEqual(self.a.rel(target.id).friendship,friendship)
+        social.status='completed'; self.a.wishes=[]
+        self.a.routine=Routine([RoutineEntry(0,'rest','home_a'),RoutineEntry(600,'work','office')])
+        self.a.profile.daily_wage=20
+        money=drive_wish(self.a,'money-drive','money_gain','',10)
+        day=passing_day(self.a,money); now=(day-1)*DAY_MIN+12*60
+        wallet=self.a.state.money
+        directive=wishes.next_wish_drive(self.a,self.world,now,'rest')
+        self.assertIn(directive['action'],('move','work')); self.assertEqual(self.a.state.money,wallet)
+
+    def test_hard_context_and_daily_cap(self):
+        w=drive_wish(self.a,'cap-drive','location_visits','park')
+        day=passing_day(self.a,w); now=(day-1)*DAY_MIN+12*60
+        self.assertIsNone(wishes.next_wish_drive(self.a,self.world,now,'work'))
+        self.assertIsNotNone(wishes.next_wish_drive(self.a,self.world,now,'rest'))
+        self.assertIsNone(wishes.next_wish_drive(self.a,self.world,now+30,'rest'))
+        self.assertEqual(w.drive_state['daily_attempts'],1)
+
+    def test_multiple_requirements_rotate_reproducibly_and_major_wins(self):
+        major=drive_wish(self.a,'multi-drive','location_visits','park')
+        major.requirements.append(wishes.Requirement('location_visits',2,target='market'))
+        small=drive_wish(self.a,'small-drive','location_visits','cafe',scale='small')
+        day=passing_day(self.a,major,0); now=(day-1)*DAY_MIN+12*60
+        first=wishes.next_wish_drive(self.a,self.world,now,'rest')
+        self.assertEqual(first['wish_id'],major.id); self.assertEqual(first['requirement_index'],0)
+        # The daily cap permits the second unmet major requirement; small cannot steal it.
+        if wishes._drive_roll(self.a.id,major.id,day,1)<wishes.DRIVE_MAJOR_PROBABILITY:
+            second=wishes.next_wish_drive(self.a,self.world,now+10,'rest')
+            self.assertEqual((second['wish_id'],second['requirement_index']),(major.id,1))
+
+    def test_blocked_attempts_throttle_generic_frustration_and_roundtrip(self):
+        w=drive_wish(self.a,'blocked-drive','location_visits','park')
+        for day in range(1,30):
+            if wishes._drive_roll(self.a.id,w.id,day,w.drive_state.get('cursor',0)) >= wishes.DRIVE_MAJOR_PROBABILITY:
+                continue
+            self.world.active_effects=[{'type':'rain','location':'','until':day*DAY_MIN+DAY_MIN}]
+            wishes.next_wish_drive(self.a,self.world,(day-1)*DAY_MIN+12*60,'rest')
+            if any('frustrating' in m.text for m in self.a.memory.items): break
+        notes=[m for m in self.a.memory.items if 'frustrating' in m.text]
+        self.assertEqual(len(notes),1); self.assertNotIn(w.title,notes[0].text)
+        payload=snapshot.capture(self.engine,self.world,self.engine.decisions)
+        w2,e2=env(); snapshot.restore(payload,e2,w2,e2.decisions)
+        restored=w2.agents[self.a.id].wishes[0]
+        same_day=restored.drive_state['daily_day']
+        before=len(w2.agents[self.a.id].memory.items)
+        wishes.next_wish_drive(w2.agents[self.a.id],w2,same_day*DAY_MIN-1,'rest')
+        self.assertEqual(len(w2.agents[self.a.id].memory.items),before)
 
 if __name__ == "__main__": unittest.main()

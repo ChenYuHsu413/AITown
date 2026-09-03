@@ -533,6 +533,8 @@ def wish_generation_prompt(agent: "Agent", material: dict) -> list[dict]:
             "Do not repeat or resurrect a completed, failed, or abandoned chapter. Revisiting a theme requires "
             "new cited evidence and a different observable aim. Copy source ids exactly from Memories. "
             "Use only supplied requirement kinds and legal targets. Major wishes need executable requirements; "
+            "a major wish must include at least one directly actionable requirement and must not rely only on "
+            "passive observable outcomes. "
             "small wishes are modest ordinary-life intentions. Return no_wish if evidence is insufficient. "
             f"All text is English. Respond ONLY with strict JSON matching {schema}. Task: wish_generation."
             + roster_directive(english_only=True) + roster_gender_directive(english_only=True))},
