@@ -952,21 +952,27 @@ class SimulationEngine:
 
     async def close_chapter(self, agent: Agent, outcome: str, trigger: str = "manual",
                             reason: str = "", ended_minute: int | None = None,
+                            aftermath_window: tuple[int, int] | None = None,
+                            forbid_terms: tuple[str, ...] = (),
                             ) -> chapters_mod.ChapterRecord | None:
         """Awaitable form (God Mode endpoint, backfill, tests): run the whole pipeline
         now and return the history record (None if there was no pursuit to close or
         one is already closing). ``ended_minute``: when the matter really ended, for a
-        retroactive closure (the model is told the true span, never the stale one)."""
+        retroactive closure (the model is told the true span, never the stale one);
+        ``aftermath_window`` / ``forbid_terms``: see chapters.closure_material."""
         if agent.chapter is None or agent.chapter.chapter_type != "pursuit" or agent.id in self._closing:
             return None
         self._closing.add(agent.id)
         try:
-            return await self._close_chapter_locked(agent, outcome, trigger, reason, ended_minute)
+            return await self._close_chapter_locked(agent, outcome, trigger, reason, ended_minute,
+                                                    aftermath_window, forbid_terms)
         finally:
             self._closing.discard(agent.id)
 
     async def _close_chapter_locked(self, agent: Agent, outcome: str, trigger: str,
                                     reason: str, ended_minute: int | None = None,
+                                    aftermath_window: tuple[int, int] | None = None,
+                                    forbid_terms: tuple[str, ...] = (),
                                     ) -> chapters_mod.ChapterRecord | None:
         """The pipeline: rule-assembled material -> ONE smart-tier reflection (bounded;
         any failure falls back to the template line) -> the atomic rule-layer state
@@ -974,7 +980,8 @@ class SimulationEngine:
         a wedged or failed model can never leave the chapter half-closed."""
         at = self.now
         chapter = agent.chapter
-        material = chapters_mod.closure_material(agent, self.world, chapter, at, ended_minute)
+        material = chapters_mod.closure_material(agent, self.world, chapter, at, ended_minute,
+                                                 aftermath_window, forbid_terms)
         out: dict | None = None
         try:
             out = await asyncio.wait_for(

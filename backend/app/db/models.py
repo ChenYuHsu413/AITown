@@ -150,6 +150,10 @@ class ChapterRow(Base):
     emotional_residue: Mapped[str] = mapped_column(String(16), default="")
     trigger: Mapped[str] = mapped_column(String(24), default="")
     memory_refs: Mapped[list] = mapped_column(JSONB, default=list)   # [{"id","text"}]
+    # A retracted closure (re-closed with a different outcome) is never deleted: the
+    # row stays as the audit trail, flagged so readers skip it. Added to an existing
+    # DB by the ALTER in Persistence.start.
+    superseded: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

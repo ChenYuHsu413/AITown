@@ -98,6 +98,8 @@ class Persistence:
             # (idempotent; a no-op on a fresh DB where create_all already made it).
             await conn.execute(sql_text(
                 "ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_chapter_id VARCHAR(32) NOT NULL DEFAULT ''"))
+            await conn.execute(sql_text(
+                "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS superseded BOOLEAN NOT NULL DEFAULT FALSE"))
 
         resumed = False
         if resume and restore_cb is not None:
@@ -332,6 +334,36 @@ class Persistence:
             s.add(row)
             await s.commit()
             return row.id
+
+    async def load_archive(self, archive_id: int) -> dict | None:
+        """One archived pre-operation payload by id (the selective-restore source)."""
+        async with self.session() as s:
+            row = (await s.execute(
+                select(SnapshotArchive).where(SnapshotArchive.id == archive_id))).scalar_one_or_none()
+            return None if row is None else {"id": row.id, "run_id": row.run_id, "minute": row.minute,
+                                             "reason": row.reason, "payload": row.payload}
+
+    async def supersede_chapters(self, chapter_ids: list[str]) -> int:
+        """Flag retracted chapter-ledger rows (kept as the audit trail). Synchronous."""
+        from sqlalchemy import update
+        if not chapter_ids:
+            return 0
+        async with self.session() as s:
+            res = await s.execute(update(ChapterRow).where(ChapterRow.chapter_id.in_(chapter_ids))
+                                  .values(superseded=True, updated_at=datetime.utcnow()))
+            await s.commit()
+            return int(res.rowcount or 0)
+
+    async def delete_biography_rows(self, agent_id: str, source_chapter_id: str) -> int:
+        """Remove a retracted biography from the memories table (a wrong near-permanent
+        fact must not stay retrievable). The archive keeps the pre-state. Synchronous."""
+        from sqlalchemy import delete
+        async with self.session() as s:
+            res = await s.execute(delete(MemoryRow).where(
+                MemoryRow.run_id == self.run_id, MemoryRow.agent_id == agent_id,
+                MemoryRow.kind == "biography", MemoryRow.source_chapter_id == source_chapter_id))
+            await s.commit()
+            return int(res.rowcount or 0)
 
     async def list_archives(self, limit: int = 20) -> list[dict]:
         """Recent pre-operation backups (newest first), without the heavy payloads

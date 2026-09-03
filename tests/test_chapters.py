@@ -246,6 +246,56 @@ class LLMFallback(unittest.TestCase):
         self.assertEqual(len(aisi.chapter_history), 1)
 
 
+class ClosureMaterialWindow(unittest.TestCase):
+    """A: material is filtered to the chapter span; aftermath only when asked for."""
+
+    def setUp(self):
+        self.world, self.engine = make_world()
+        self.aisi = self.world.agents["aisi"]
+        mem = self.aisi.memory
+        mem.add(MemoryItem(minute=1 * DAY + 60, importance=6, text="Wired {landmark:installation} at {loc:park} all afternoon."))
+        mem.add(MemoryItem(minute=2 * DAY + 60, importance=8, text="I finished {landmark:installation} at {loc:park}. It's done at last."))
+        mem.add(MemoryItem(minute=2 * DAY + 900, importance=5, text="Talked with {agent:xixi} at {loc:park}.", kind="conversation"))
+        mem.add(MemoryItem(minute=40 * DAY, importance=7, text="I need to focus on my light installation project."))
+        mem.add(MemoryItem(minute=41 * DAY, importance=5, text="Talked with {agent:oula} at {loc:cafe}.", kind="conversation"))
+        mem.add(MemoryItem(minute=90 * DAY, importance=9, text="The light installation deadline feels distant when my attention drifts."))
+
+    def test_out_of_window_memories_excluded(self):
+        mat = chapters_mod.closure_material(self.aisi, self.world, self.aisi.chapter, 100 * DAY,
+                                            ended_minute=2 * DAY + 60)
+        texts = [m["text"] for m in mat["memories"]]
+        self.assertTrue(any("Wired" in t for t in texts))
+        self.assertTrue(any("I finished" in t for t in texts))
+        self.assertFalse(any("focus on my light" in t for t in texts))      # Day 41: after the end
+        self.assertFalse(any("deadline feels distant" in t for t in texts))  # Day 91: after the end
+        self.assertEqual(mat["window"]["start_day"], 1)
+        self.assertEqual(mat["window"]["end_day"], 3)
+        self.assertEqual(mat["aftermath"], [])
+        # relationship summary counts only in-window talks
+        ids = [x["id"] for x in mat["relationships"]["most_interacted"]]
+        self.assertIn("xixi", ids)
+        self.assertNotIn("oula", ids)
+
+    def test_aftermath_window_is_labelled_separately(self):
+        mat = chapters_mod.closure_material(self.aisi, self.world, self.aisi.chapter, 100 * DAY,
+                                            ended_minute=2 * DAY + 60, aftermath_window=(34, 64),
+                                            forbid_terms=("finished",))
+        self.assertEqual([m["text"] for m in mat["aftermath"]], ["I need to focus on my light installation project."])
+        self.assertFalse(any("focus on my light" in m["text"] for m in mat["memories"]))
+        prompt = builders.chapter_closure_prompt(self.aisi, mat, "abandoned", ["x"])
+        self.assertIn("Afterwards", prompt[1]["content"])
+        self.assertIn("Day 34 to Day 64", prompt[1]["content"])
+        self.assertIn("Never use these words", prompt[0]["content"])
+        # forbidden term gate + aftermath ids accepted as refs
+        aft_id = mat["aftermath"][0]["id"]
+        self.assertIsNone(chapters_mod.validate_closure_output(
+            {"biography_line": "I finished the piece I set out to build, in the end."}, mat))
+        ok = chapters_mod.validate_closure_output(
+            {"biography_line": "I let the installation go and never really went back to it.",
+             "emotional_residue": "relieved", "memory_refs": [aft_id]}, mat)
+        self.assertEqual(ok["memory_refs"], [{"id": aft_id, "text": "I need to focus on my light installation project."}])
+
+
 class PromptAndSignals(unittest.TestCase):
     def test_character_card_uses_chapter_narrative(self):
         world, _ = make_world()

@@ -451,6 +451,19 @@ def chapter_closure_prompt(agent: "Agent", material: dict, outcome: str,
     residues = ", ".join(chapters_mod.RESIDUES)
     mems = "\n".join(f"  [{m['id']}] {m['text']}" for m in material["memories"]) or "  (no specific memories)"
     rels = "\n".join(f"  - {l}" for l in relationship_lines)
+    # Aftermath: what happened AFTER the chapter was already over. Given only for a
+    # closure that must know whether they ever went back (typically abandoned): it is
+    # not part of the pursuit, and it must not be narrated as if it were.
+    aftermath = ""
+    if material.get("aftermath"):
+        w = material.get("aftermath_window") or ["?", "?"]
+        aft = "\n".join(f"  [{m['id']}] {m['text']}" for m in material["aftermath"])
+        aftermath = (f"\nAfterwards -- the ripples AFTER this chapter was already over (Day {w[0]} to Day {w[1]}; "
+                     f"NOT part of the chapter, and they show what they did or did not go back to):\n{aft}")
+    forbid = ""
+    if material.get("forbid_terms"):
+        forbid = (" Never use these words or the meaning they carry, because it did not happen: "
+                  + ", ".join(material["forbid_terms"]) + ".")
     return [
         {
             "role": "system",
@@ -465,7 +478,8 @@ def chapter_closure_prompt(agent: "Agent", material: dict, outcome: str,
                 "below; if the material doesn't say, leave it out entirely. "
                 f'"emotional_residue" is exactly one of: {residues} -- the mood colouring the next '
                 'few days. "memory_refs" lists the ids of the listed memories the line draws on. '
-                "Task: chapter_closure."
+                + forbid +
+                " Task: chapter_closure."
                 + roster_directive(english_only=True)
                 + roster_gender_directive(english_only=True)
             ),
@@ -479,6 +493,7 @@ def chapter_closure_prompt(agent: "Agent", material: dict, outcome: str,
                 f"Day {material['window']['end_day']} (about {material['window']['days']} days).\n"
                 f"Memories from this chapter:\n{mems}\n"
                 f"People during this chapter:\n{rels}"
+                + aftermath
             ),
         },
     ]

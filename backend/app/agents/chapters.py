@@ -280,30 +280,59 @@ def secret_matches_chapter(chapter: Chapter | None, secret) -> bool:
 # ---- closure material (rules) ------------------------------------------------------
 
 
+def _top_related(agent: "Agent", chapter: Chapter, lo: int, hi: int) -> list[MemoryItem]:
+    """Chapter-related memories with lo <= minute < hi, top-N by importance x weight,
+    returned in time order."""
+    related = [m for m in agent.memory.items if lo <= m.minute < hi and is_related_memory(m, chapter)]
+    related.sort(key=lambda m: (m.importance * m.weight, m.minute), reverse=True)
+    top = related[:CLOSURE_MEMORIES_N]
+    top.sort(key=lambda m: m.minute)
+    return top
+
+
+def _mem_dicts(agent: "Agent", items: list[MemoryItem]) -> list[dict]:
+    return [{"id": memory_id(agent.id, m), "text": m.text, "minute": m.minute,
+             "importance": m.importance} for m in items]
+
+
 def closure_material(agent: "Agent", world: "World", chapter: Chapter, now: int,
-                     ended_minute: int | None = None) -> dict:
+                     ended_minute: int | None = None,
+                     aftermath_window: tuple[int, int] | None = None,
+                     forbid_terms: tuple[str, ...] = ()) -> dict:
     """Assemble what the closure reflection sees: the chapter's high-importance
     memories (top-N by importance x weight, with stable ids), a Python-computed
-    relationship summary for the chapter window, and the window itself.
+    relationship summary, and the window itself -- ALL filtered to the chapter's
+    span (``started_on`` through the end day, inclusive). A memory from after the
+    chapter ended is never part of the pursuit's story.
 
     ``ended_minute`` is when the matter actually ended when that is earlier than
     ``now`` (a retroactive closure: the landmark finished on Day 3, the closure runs
     on Day 102). The span given to the model must be the true one -- it is the only
-    duration the model may quote."""
+    duration the model may quote.
+
+    ``aftermath_window`` (first_day, last_day): optionally ALSO hand the model the
+    related memories from after the chapter closed, labelled as such -- for an
+    abandoned chapter the closure should know whether they ever went back to it.
+    ``forbid_terms``: words the biography line must not contain (a closure whose
+    outcome forbids a meaning, e.g. "asked" for a never-asked question)."""
     start_min = (chapter.started_on - 1) * DAY_MIN
     end_min = now if ended_minute is None else max(start_min, min(ended_minute, now))
-    related = [m for m in agent.memory.items if is_related_memory(m, chapter)]
-    related.sort(key=lambda m: (m.importance * m.weight, m.minute), reverse=True)
-    top = related[:CLOSURE_MEMORIES_N]
-    top.sort(key=lambda m: m.minute)
-    memories = [{"id": memory_id(agent.id, m), "text": m.text, "minute": m.minute,
-                 "importance": m.importance} for m in top]
+    end_excl = (end_min // DAY_MIN + 1) * DAY_MIN          # through the end of the end day
+    top = _top_related(agent, chapter, start_min, end_excl)
+    related_count = sum(1 for m in agent.memory.items if is_related_memory(m, chapter))
+
+    aftermath: list[dict] = []
+    if aftermath_window is not None:
+        a_lo = (int(aftermath_window[0]) - 1) * DAY_MIN
+        a_hi = int(aftermath_window[1]) * DAY_MIN
+        aftermath = _mem_dicts(agent, _top_related(agent, chapter, max(a_lo, end_excl), a_hi))
 
     # Who they interacted with most during the chapter (conversation memories in
     # the window), who helped (trusted + talked to), who rubbed them wrong (conflict).
     talks: dict[str, int] = {}
     for m in agent.memory.items:
-        if m.kind == "conversation" and m.minute >= start_min and "Talked with {agent:" in m.text:
+        if (m.kind == "conversation" and start_min <= m.minute < end_excl
+                and "Talked with {agent:" in m.text):
             oid = m.text.split("{agent:", 1)[1].split("}", 1)[0]
             talks[oid] = talks.get(oid, 0) + 1
     most = sorted(talks.items(), key=lambda kv: -kv[1])[:3]
@@ -314,8 +343,11 @@ def closure_material(agent: "Agent", world: "World", chapter: Chapter, now: int,
         "window": {"start_minute": start_min, "end_minute": end_min,
                    "start_day": start_min // DAY_MIN + 1, "end_day": end_min // DAY_MIN + 1,
                    "days": max(1, (end_min - start_min) // DAY_MIN + 1)},
-        "memories": memories,
-        "related_count": len(related),
+        "memories": _mem_dicts(agent, top),
+        "aftermath": aftermath,
+        "aftermath_window": list(aftermath_window) if aftermath_window else None,
+        "forbid_terms": [t for t in forbid_terms if t],
+        "related_count": related_count,
         "relationships": {
             "most_interacted": [{"id": oid, "talks": n} for oid, n in most],
             "helped": helpers,
@@ -373,17 +405,22 @@ def validate_closure_output(parsed: object, material: dict) -> dict | None:
     # in it must come from the material -- a listed memory or the true day span.
     # (The prompt also forbids it; this is the cheap mechanical backstop.)
     import re as _re
+    given = list(material.get("memories", [])) + list(material.get("aftermath", []))
     allowed = set()
-    for m in material.get("memories", []):
+    for m in given:
         allowed.update(_re.findall(r"\d+", m.get("text", "")))
     win = material.get("window") or {}
     allowed.update(str(win[k]) for k in ("days", "start_day", "end_day") if k in win)
     if any(n not in allowed for n in _re.findall(r"\d+", line)):
         return None
+    # Forbidden meanings for this closure (e.g. "asked" on a question never asked).
+    for term in material.get("forbid_terms", []):
+        if _re.search(rf"\b{_re.escape(term)}\b", line, _re.I):
+            return None
     residue = str(parsed.get("emotional_residue") or "").strip().lower()
     if residue not in RESIDUES:
         residue = ""
-    valid_ids = {m["id"]: m["text"] for m in material.get("memories", [])}
+    valid_ids = {m["id"]: m["text"] for m in given}
     refs = []
     for r in (parsed.get("memory_refs") or []):
         rid = str(r).strip()
