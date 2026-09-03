@@ -44,12 +44,7 @@ class PromptProbe:
         async def wrapped(a, b, world, now, **kw):
             plan = await orig(a, b, world, now, **kw)
             if agent_id in (a.id, b.id):
-                prompt = plan.messages[-1]["content"]
-                # Measure Aisi's own card/memory block. The other speaker may
-                # legitimately remember the completed public landmark.
-                own = (prompt.split("A: ", 1)[1].split("\nB: ", 1)[0]
-                       if a.id == agent_id else prompt.split("\nB: ", 1)[1])
-                self.prompts.append((now, a.state.location, own))
+                self.prompts.append((now, a.state.location, plan.messages[-1]["content"]))
             return plan
         engine.decisions.start_conversation = wrapped
 
@@ -120,7 +115,7 @@ class ClosureFlow(unittest.TestCase):
               f"after@park {rate(after_at_park):.0%} ({len(after_at_park)}), "
               f"after elsewhere {rate(after_elsewhere):.0%} ({len(after_elsewhere)})")
         self.assertGreater(len(before), 0)
-        self.assertGreater(r_before, r_after)                # active pursuit context dominates before closure
+        self.assertEqual(r_before, 1.0)                      # the pursuit narrative was in every card
         self.assertLess(r_after, r_before)
         for _, loc, txt in after_elsewhere:
             self.assertNotIn("installation", txt.lower())    # away from the park: gone from her context
