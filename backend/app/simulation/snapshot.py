@@ -129,10 +129,11 @@ def restore(payload: dict, engine: "SimulationEngine", world: "World",
 
     minute = int(payload.get("minute", engine.now))
 
+    seen_wish_ids: set[str] = set()
     for aid, adata in (payload.get("agents") or {}).items():
         agent = world.agents.get(aid)
         if agent is not None and isinstance(adata, dict):
-            _restore_agent(agent, adata)
+            _restore_agent(agent, adata, world, seen_wish_ids)
 
     if "rumors" in payload:
         decisions.rumors.rumors = _restore_rumors(payload.get("rumors") or {})
@@ -166,6 +167,8 @@ def restore(payload: dict, engine: "SimulationEngine", world: "World",
     if "chronicle" in payload:  # v6+; older snapshots keep the empty history
         engine.chronicle = [dict(c) for c in (payload.get("chronicle") or []) if isinstance(c, dict)]
 
+    engine.reconcile_wishes()
+
     return minute
 
 
@@ -178,7 +181,7 @@ def _overlay(obj, data: dict) -> None:
             setattr(obj, key, value)
 
 
-def _restore_agent(agent, adata: dict) -> None:
+def _restore_agent(agent, adata: dict, world: "World", seen_wish_ids: set[str]) -> None:
     _overlay(agent.state, adata.get("state") or {})
 
     prof = adata.get("profile") or {}                # v8+; older snapshots keep seed occupation/wage/goals
@@ -239,12 +242,18 @@ def _restore_agent(agent, adata: dict) -> None:
         agent.chapter_history = [ChapterRecord.from_dict(r) for r in adata["chapter_history"]
                                  if isinstance(r, dict)]
     if isinstance(adata.get("wishes"), list):
-        from ..agents.wishes import Wish
-        restored, seen = [], set()
+        from ..agents.wishes import ALLOWED_ACTIONS, ALLOWED_EVENTS, Wish
+        restored = []
         for raw in adata["wishes"]:
             w = Wish.from_dict(raw) if isinstance(raw, dict) else None
-            if w is not None and w.owner_id == agent.id and w.id not in seen:
-                restored.append(w); seen.add(w.id)
+            targets_ok = w is not None and all(
+                (r.kind not in ("talk_count", "friendship", "trust") or r.target in world.agents)
+                and (r.kind != "location_visits" or r.target in world.locations)
+                and (r.kind != "action_count" or r.target in ALLOWED_ACTIONS)
+                and (r.kind != "event_count" or r.target in ALLOWED_EVENTS)
+                for r in (w.requirements if w is not None else []))
+            if w is not None and targets_ok and w.owner_id == agent.id and w.id not in seen_wish_ids:
+                restored.append(w); seen_wish_ids.add(w.id)
         agent.wishes = restored
     wg = adata.get("wish_generation") or {}
     try:

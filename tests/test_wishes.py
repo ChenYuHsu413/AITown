@@ -1,12 +1,13 @@
 """Phase-2 wish model, validation, lifecycle, privacy and persistence tests."""
 from __future__ import annotations
-import asyncio, copy, os, unittest
+import asyncio, copy, math, os, unittest
 os.environ.update(AI_TOWN_LIVE="0", AI_TOWN_LANG="en", AI_TOWN_DB_URL="")
 
 from backend.app.agents import chapters, wishes
 from backend.app.agents.core import MemoryItem
 from backend.app.agents.decision import DecisionEngine
 from backend.app.llm.factory import build_router
+from backend.app.llm.prompts import builders
 from backend.app.simulation import snapshot
 from backend.app.simulation.engine import Event, SimulationEngine, DAY_MIN
 from backend.app.world.world import World
@@ -54,6 +55,27 @@ class Validation(unittest.TestCase):
         vals=[wishes.generation_threshold(n) for n in range(8)]
         self.assertEqual(vals[:4],[10]*4); self.assertGreater(vals[-1],vals[4]); self.assertTrue(all(x<100 for x in vals))
 
+    def test_requirements_start_from_live_state_and_must_need_work(self):
+        cases=(('friendship','ange',self.a.rel('ange').friendship),
+               ('trust','ange',self.a.rel('ange').trust),('money','',self.a.state.money))
+        for kind,target,current in cases:
+            raw=proposal(self.refs,scale='small',kind=kind,target=target,threshold=current)
+            self.assertIsNone(wishes.validate_generation(raw,self.a,self.w,self.mat))
+            raw['requirements'][0]['threshold']=current+1
+            clean=wishes.validate_generation(raw,self.a,self.w,self.mat)
+            self.assertEqual(clean['requirements'][0].current,current)
+            self.assertEqual(clean['requirements'][0].baseline,current)
+        raw=proposal(self.refs,kind='money_gain',target='',threshold=5)
+        r=wishes.validate_generation(raw,self.a,self.w,self.mat)['requirements'][0]
+        self.assertEqual((r.current,r.baseline),(0,self.a.state.money))
+
+    def test_empty_and_duplicate_requirements_are_rejected(self):
+        for scale in ('small','major'):
+            raw=proposal(self.refs,scale=scale); raw['requirements']=[]
+            self.assertIsNone(wishes.validate_generation(raw,self.a,self.w,self.mat))
+        raw=proposal(self.refs); raw['requirements']*=2
+        self.assertIsNone(wishes.validate_generation(raw,self.a,self.w,self.mat))
+
 class Eligibility(unittest.TestCase):
     def test_insufficient_material_and_same_attempt_do_not_call(self):
         w,e=env(); a=ordinary(w); a.wish_last_attempt_minute=max(m.minute for m in a.memory.items)
@@ -92,6 +114,40 @@ class ProgressAndPrivacy(unittest.TestCase):
         corpus=" ".join((x.text+x.detail+x.text_en) for x in self.e.bus.events)
         self.assertNotIn(self.wish.statement,corpus)
 
+    def test_secret_marker_is_redacted_from_public_prompts_and_memories(self):
+        marker='ULTRAVIOLET_WREN_9341'
+        self.wish.title=marker+' title'; self.wish.statement='I want '+marker+' to remain mine.'
+        self.a.chapter.title=self.wish.title; self.a.chapter.goal=self.wish.statement
+        self.a.chapter.narrative='I am pursuing '+marker+'.'
+        other=self.w.agents['ange']
+        prompts=(builders.dialogue_prompt(self.a,other,[],[]),
+                 builders.should_talk_prompt(self.a,other.name,[]),
+                 builders.decision_prompt(self.a,'A quiet room',[],['rest']))
+        for prompt in prompts:
+            self.assertNotIn(marker,str(prompt))
+        reflection=builders.reflection_prompt(self.a,[],wish=self.wish,frustration=[])
+        self.assertIn(marker,str(reflection))
+        self.e._wish_progressed(self.a,self.wish,1)
+        self.assertNotIn(marker,' '.join(m.text for m in self.a.memory.items))
+        self.assertIn(marker,str(self.wish.to_dict()))
+
+    def test_actorless_global_event_does_not_advance_private_wish(self):
+        self.wish.requirements=[wishes.Requirement('event_count',1,target='transition')]
+        ev=Event(500,'system','transition')
+        self.assertFalse(wishes.update_from_event(self.wish,self.a,ev,1))
+
+    def test_event_dedup_history_is_bounded(self):
+        self.wish.requirements=[wishes.Requirement('action_count',1000,target='rest')]
+        for i in range(wishes.COUNTED_EVENT_KEYS_MAX+20):
+            wishes.update_from_event(self.wish,self.a,Event(i,'action','rest',actor=self.a.id),1)
+        self.assertEqual(len(self.wish.counted_event_keys),wishes.COUNTED_EVENT_KEYS_MAX)
+
+    def test_private_wish_biography_never_surfaces(self):
+        marker='ULTRAVIOLET_WREN_9341'
+        self.a.chapter.goal=marker; self.a.chapter.theme=[marker.lower()]
+        chapters.apply_closure(self.a,self.w,'completed',f'I completed {marker}.','fulfilled',[],500)
+        self.assertEqual(self.a.memory.biography_hits(marker,'park'),[])
+
 class SnapshotAndAbandon(unittest.TestCase):
     def test_old_and_malformed_snapshot(self):
         w,e=env(); p=snapshot.capture(e,w,e.decisions); p["schema_version"]=11
@@ -99,6 +155,38 @@ class SnapshotAndAbandon(unittest.TestCase):
         w2,e2=env(); snapshot.restore(p,e2,w2,e2.decisions); self.assertTrue(all(not a.wishes for a in w2.agents.values()))
         p=snapshot.capture(e,w,e.decisions); p["agents"]["jiji"]["wishes"]=[{"bad":True}]
         snapshot.restore(p,e2,w2,e2.decisions); self.assertEqual(w2.agents["jiji"].wishes,[])
+
+    def test_nested_malformed_wishes_are_skipped_whole(self):
+        w,e=env(); a=ordinary(w); refs=material(a); mat=wishes.material_for_prompt(a,w,refs,e.decisions.secrets)
+        good=wishes.install(a,e.decisions.secrets,wishes.validate_generation(proposal(refs),a,w,mat),1).to_dict()
+        bad=[]
+        for mutate in (
+            lambda x:x['requirements'][0].update(kind='unknown'),
+            lambda x:x['requirements'][0].update(threshold=math.nan),
+            lambda x:x.update(progress='0.5'),
+            lambda x:x.update(failure_conditions=[{'kind':'deadline'}]),
+            lambda x:x.update(requirements=[]),
+            lambda x:x['requirements'][0].update(target='missing-place')):
+            item=copy.deepcopy(good); item['id']+='x'; mutate(item); bad.append(item)
+        p=snapshot.capture(e,w,e.decisions); p['agents'][a.id]['wishes']=bad+[good]
+        w2,e2=env(); snapshot.restore(p,e2,w2,e2.decisions)
+        self.assertEqual([x.id for x in w2.agents[a.id].wishes],[good['id']])
+        r=wishes.Requirement.from_dict({'kind':'action_count','target':'rest','threshold':2,
+                                        'current':2,'completed':False})
+        self.assertTrue(r.completed)
+
+    def test_material_window_excludes_preclosure_and_biography(self):
+        w,e=env(); a=ordinary(w)
+        old=MemoryItem(100,'Old dominant park memory should not return after closure.',10)
+        bio=MemoryItem(4*DAY_MIN,'Biography alone must not trigger generation.',9,kind='biography')
+        new=MemoryItem(5*DAY_MIN,'A fresh concrete experience after closure can support a wish.',5)
+        a.memory.items=[old,bio,new]
+        old_ch=chapters.make_pursuit('old park matter','Old', 'Old',1)
+        a.chapter_history=[chapters.ChapterRecord(old_ch.to_dict(),4,'completed','done','fulfilled')]
+        got=wishes.eligible_material(a,-1,6)
+        self.assertEqual([x['text'] for x in got],[new.text])
+        a.chapter_history=[]; a.memory.items=[old]
+        self.assertEqual(wishes.eligible_material(a,-1,100),[])
     def test_roundtrip_linkage_and_cooldown(self):
         w,e=env(); a=ordinary(w); refs=material(a); mat=wishes.material_for_prompt(a,w,refs,e.decisions.secrets)
         wi=wishes.install(a,e.decisions.secrets,wishes.validate_generation(proposal(refs),a,w,mat),3)

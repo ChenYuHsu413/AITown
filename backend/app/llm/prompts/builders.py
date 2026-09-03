@@ -133,7 +133,8 @@ def dialogue_locale_directive() -> str:
             "never the English/pinyin form: " + "; ".join(parts) + ".")
 
 
-def character_card(agent: "Agent", name: str | None = None, speech: bool = False) -> str:
+def character_card(agent: "Agent", name: str | None = None, speech: bool = False,
+                   owner_private: bool = False) -> str:
     """Self-description = the fixed personality (traits, never changes) + the current
     life chapter's narrative ("where I am right now"). A pursuit's goal lives on the
     chapter, so a finished matter drops out of the card the moment it closes. Standing
@@ -142,7 +143,13 @@ def character_card(agent: "Agent", name: str | None = None, speech: bool = False
     from ...agents import chapters as chapters_mod
     p = agent.profile
     traits = ", ".join(p.traits)
-    card = f"{name or p.name}, {p.age}, {p.occupation}. Traits: {traits}. {chapters_mod.narrative(agent)}"
+    narrative = chapters_mod.narrative(agent)
+    if (not owner_private and agent.chapter is not None
+            and agent.chapter.chapter_type == "pursuit" and agent.chapter.related_goal_id
+            and any(w.id == agent.chapter.related_goal_id and w.status == "active"
+                    for w in agent.wishes)):
+        narrative = "I am focused on a private matter right now."
+    card = f"{name or p.name}, {p.age}, {p.occupation}. Traits: {traits}. {narrative}"
     if chapters_mod.chapter_type(agent) == "ordinary" and p.goals:
         card += f" Standing aim: {p.goals[0]['goal']}."
     # Speech style is only worth its tokens where the reader hears the voice --
@@ -440,7 +447,7 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
             "content": (
                 # Present the reflecting agent by their English name too, so beliefs
                 # come back with roster names the sim can resolve.
-                f"{character_card(agent, name=agent.id.capitalize())}\n"
+                f"{character_card(agent, name=agent.id.capitalize(), owner_private=True)}\n"
                 "Events today:\n" + "\n".join(f"- {e}" for e in day_events[-15:])
                 + secrets_block + transitions_block + wish_block
             ),
@@ -500,7 +507,7 @@ def chapter_closure_prompt(agent: "Agent", material: dict, outcome: str,
         {
             "role": "user",
             "content": (
-                f"{character_card(agent, name=agent.id.capitalize())}\n"
+                f"{character_card(agent, name=agent.id.capitalize(), owner_private=True)}\n"
                 f"Chapter now closing: \"{ch.get('title', '')}\" -- goal: {ch.get('goal') or ch.get('title', '')}. "
                 f"Outcome: {outcome}. It ran from Day {material['window']['start_day']} to "
                 f"Day {material['window']['end_day']} (about {material['window']['days']} days).\n"
@@ -529,7 +536,7 @@ def wish_generation_prompt(agent: "Agent", material: dict) -> list[dict]:
             "small wishes are modest ordinary-life intentions. Return no_wish if evidence is insufficient. "
             f"All text is English. Respond ONLY with strict JSON matching {schema}. Task: wish_generation."
             + roster_directive(english_only=True) + roster_gender_directive(english_only=True))},
-        {"role": "user", "content": f"{character_card(agent, name=agent.id.capitalize())}\n"
+        {"role": "user", "content": f"{character_card(agent, name=agent.id.capitalize(), owner_private=True)}\n"
          "Grounded material and affordances:\n" + json.dumps(material, ensure_ascii=True, separators=(",", ":"))},
     ]
 

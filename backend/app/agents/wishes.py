@@ -8,7 +8,7 @@ import re
 import uuid
 from dataclasses import asdict, dataclass, field
 
-from .chapters import DAY_MIN, make_pursuit, memory_id
+from .chapters import DAY_MIN, ChapterRecord, make_interlude, make_pursuit, interlude_days, memory_id
 from .core import MemoryItem
 
 SCALES = ("small", "major")
@@ -16,8 +16,7 @@ STATUSES = ("active", "completed", "failed", "abandoned")
 REQUIREMENT_KINDS = ("action_count", "location_visits", "talk_count", "friendship", "trust",
                      "money", "money_gain", "event_count")
 ALLOWED_ACTIONS = ("sleep", "eat", "work", "rest", "idle", "arrive", "talk_start", "repaired")
-ALLOWED_EVENTS = ("day_summary", "breakdown", "repaired", "meetup_arranged", "met_up",
-                  "rain_start", "rain_end", "festival_start", "festival_end", "transition")
+ALLOWED_EVENTS = ("day_summary", "repaired", "meetup_arranged", "met_up", "transition")
 
 MATERIAL_MIN_COUNT = 3
 MATERIAL_MIN_IMPORTANCE = 10
@@ -30,6 +29,8 @@ MAJOR_THRESHOLD_STEP = 2
 MIN_WISH_DAYS = 2
 MAX_WISH_DAYS = 120
 PROGRESS_MEMORY_EVERY = 3
+COUNTED_EVENT_KEYS_MAX = 256
+GENERATION_ROLLING_DAYS = 14
 ABANDON_MIN_DAYS = 5
 ABANDON_STALE_DAYS = 3
 _FRUSTRATION_WORDS = ("failed", "couldn't", "cannot", "unable", "stuck", "setback",
@@ -48,11 +49,23 @@ class Requirement:
 
     @classmethod
     def from_dict(cls, raw: dict) -> "Requirement | None":
+        if not isinstance(raw, dict) or set(raw) - {
+            "kind", "threshold", "current", "unit", "completed", "target", "baseline"
+        }:
+            return None
         try:
+            if any(isinstance(raw.get(k, 0), bool) or not isinstance(raw.get(k, 0), (int, float))
+                   for k in ("threshold", "current", "baseline")):
+                return None
             r = cls(kind=str(raw["kind"]), threshold=float(raw["threshold"]),
                     current=float(raw.get("current", 0)), unit=str(raw.get("unit", "count")),
                     target=str(raw.get("target", "")), baseline=float(raw.get("baseline", 0)))
-            r.completed = bool(raw.get("completed", r.current >= r.threshold))
+            if (r.kind not in REQUIREMENT_KINDS or not _finite_positive(r.threshold)
+                    or not all(math.isfinite(x) for x in (r.current, r.baseline))
+                    or not isinstance(raw.get("target", ""), str)
+                    or not isinstance(raw.get("unit", "count"), str)):
+                return None
+            r.completed = r.current >= r.threshold
             return r
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
@@ -86,18 +99,60 @@ class Wish:
     @classmethod
     def from_dict(cls, raw: dict) -> "Wish | None":
         try:
-            reqs = [x for x in (Requirement.from_dict(r) for r in raw.get("requirements", [])) if x]
+            if not isinstance(raw, dict) or not isinstance(raw.get("requirements"), list):
+                return None
+            string_fields = ("id", "owner_id", "title", "statement", "scale", "status",
+                             "secret_id", "related_chapter_id")
+            if any(k in raw and not isinstance(raw[k], str) for k in string_fields):
+                return None
+            int_fields = ("created_day", "ended_day", "last_progress_day", "progress_marks")
+            if any(k in raw and (not isinstance(raw[k], int) or isinstance(raw[k], bool))
+                   for k in int_fields):
+                return None
+            reqs = [Requirement.from_dict(r) for r in raw["requirements"]]
+            if not reqs or any(r is None for r in reqs):
+                return None
+            if len({(r.kind, r.target) for r in reqs}) != len(reqs):
+                return None
+            refs = raw.get("source_memory_refs", [])
+            if not isinstance(refs, list) or any(not isinstance(x, dict) for x in refs):
+                return None
+            safe_refs = []
+            for ref in refs:
+                if not isinstance(ref.get("id", ""), str) or not isinstance(ref.get("text", ""), str):
+                    return None
+                safe_refs.append({"id": ref["id"], "text": ref["text"]})
+            failure = _validate_failure_conditions(raw.get("failure_conditions", []))
+            if failure is None:
+                return None
+            progress = raw.get("progress", 0.0)
+            if (isinstance(progress, bool) or not isinstance(progress, (int, float))
+                    or not math.isfinite(progress) or not 0 <= progress <= 1):
+                return None
             w = cls(id=str(raw["id"]), owner_id=str(raw["owner_id"]), title=str(raw["title"]),
                     statement=str(raw["statement"]), motivation=str(raw.get("motivation", "")),
                     scale=str(raw["scale"]), status=str(raw.get("status", "active")),
-                    created_day=int(raw["created_day"]), requirements=reqs)
-            for k in ("ended_day", "source_memory_refs", "failure_conditions", "progress",
-                      "last_progress_day", "secret_id", "related_chapter_id", "outcome_reason",
-                      "counted_event_keys", "progress_marks"):
-                if k in raw:
-                    setattr(w, k, raw[k])
-            if w.scale not in SCALES or w.status not in STATUSES or not w.id or not w.owner_id:
+                    created_day=int(raw["created_day"]), requirements=reqs,
+                    ended_day=int(raw.get("ended_day", 0)), source_memory_refs=safe_refs,
+                    failure_conditions=failure, progress=float(progress),
+                    last_progress_day=int(raw.get("last_progress_day", 0)),
+                    secret_id=str(raw.get("secret_id", "")),
+                    related_chapter_id=str(raw.get("related_chapter_id", "")),
+                    outcome_reason=str(raw.get("outcome_reason", "")),
+                    progress_marks=int(raw.get("progress_marks", 0)))
+            keys = raw.get("counted_event_keys", [])
+            if (not isinstance(keys, list) or any(not isinstance(x, str) for x in keys)
+                    or len(keys) > COUNTED_EVENT_KEYS_MAX):
                 return None
+            w.counted_event_keys = keys
+            if (w.scale not in SCALES or w.status not in STATUSES
+                    or not all((w.id.strip(), w.owner_id.strip(), w.title.strip(), w.statement.strip()))
+                    or w.created_day < 1 or w.ended_day < 0
+                    or (w.status == "active" and w.ended_day != 0)
+                    or (w.status != "active" and w.ended_day < w.created_day)
+                    or w.last_progress_day < 0 or w.progress_marks < 0):
+                return None
+            w.progress = sum(min(1.0, r.current / r.threshold) for r in reqs) / len(reqs)
             return w
         except (KeyError, TypeError, ValueError):
             return None
@@ -107,8 +162,63 @@ def active_wish(agent, scale: str | None = None) -> Wish | None:
     return next((w for w in agent.wishes if w.status == "active" and (scale is None or w.scale == scale)), None)
 
 
-def eligible_material(agent, since_minute: int = -1) -> list[dict]:
-    good = [m for m in agent.memory.items if m.minute > since_minute and m.kind != "biography"
+def active_wish_for_chapter(agent, chapter_id: str) -> Wish | None:
+    return next((w for w in agent.wishes if w.scale == "major" and w.status == "active"
+                 and w.related_chapter_id == chapter_id), None)
+
+
+def closed_record_for_wish(agent, wish: Wish) -> ChapterRecord | None:
+    return next((r for r in reversed(agent.chapter_history)
+                 if str(r.chapter.get("id", "")) == wish.related_chapter_id
+                 and str(r.chapter.get("related_goal_id", "")) == wish.id), None)
+
+
+def reconcile(agent, secrets, day: int) -> list[Wish]:
+    """Repair interrupted Wish/Chapter pairs without LLM calls or public events."""
+    changed: list[Wish] = []
+    for wish in agent.wishes:
+        if wish.scale != "major":
+            continue
+        record = closed_record_for_wish(agent, wish)
+        current_match = (agent.chapter is not None and agent.chapter.chapter_type == "pursuit"
+                         and agent.chapter.id == wish.related_chapter_id
+                         and agent.chapter.related_goal_id == wish.id)
+        if wish.status == "active" and record is not None:
+            if finish(wish, secrets, record.outcome, record.ended_on,
+                      "reconciled from closed chapter"):
+                changed.append(wish)
+        elif wish.status == "active" and not current_match:
+            if finish(wish, secrets, "failed", day,
+                      "reconciliation: missing or invalid linked pursuit chapter"):
+                changed.append(wish)
+        elif wish.status != "active" and current_match:
+            # The wish outcome is persisted truth; close the dangling chapter without
+            # inventing biography or publishing a synthetic chronicle beat.
+            old = agent.chapter
+            agent.chapter_history.append(ChapterRecord(
+                chapter=old.to_dict(), ended_on=max(day, wish.ended_day), outcome=wish.status,
+                biography_line="", emotional_residue="", trigger="reconciliation",
+                biography_source="reconciliation"))
+            residue = "fulfilled" if wish.status == "completed" else (
+                "unmoored" if wish.status == "failed" else "relieved")
+            agent.chapter = make_interlude(residue, day, day + interlude_days(residue, agent))
+            wish.outcome_reason = (wish.outcome_reason + "; " if wish.outcome_reason else "") + \
+                                  "reconciliation: dangling pursuit repaired"
+            changed.append(wish)
+    return changed
+
+
+def material_start_minute(agent, day: int) -> int:
+    if agent.chapter_history:
+        return agent.chapter_history[-1].ended_on * DAY_MIN
+    return max(0, (day - GENERATION_ROLLING_DAYS - 1) * DAY_MIN)
+
+
+def eligible_material(agent, since_minute: int = -1, day: int | None = None) -> list[dict]:
+    floor = since_minute
+    if day is not None:
+        floor = max(floor, material_start_minute(agent, day) - 1)
+    good = [m for m in agent.memory.items if m.minute > floor and m.kind != "biography"
             and m.importance >= 3 and len(m.text.strip()) >= 24
             and not re.fullmatch(r"(?i)(ok|fine|nothing|the usual)[.! ]*", m.text.strip())]
     good.sort(key=lambda m: (m.importance, m.minute), reverse=True)
@@ -125,7 +235,7 @@ def generation_eligible(agent, day: int, active_major_count: int) -> tuple[bool,
         return False, []
     if day < agent.wish_next_attempt_day:
         return False, []
-    material = eligible_material(agent, agent.wish_last_attempt_minute)
+    material = eligible_material(agent, agent.wish_last_attempt_minute, day)
     if len(material) < MATERIAL_MIN_COUNT:
         return False, material
     if sum(m["importance"] for m in material) < generation_threshold(active_major_count):
@@ -161,7 +271,22 @@ def material_for_prompt(agent, world, memories: list[dict], secrets) -> dict:
 
 
 def _finite_positive(x, lo=1, hi=10000) -> bool:
-    return isinstance(x, (int, float)) and math.isfinite(float(x)) and lo <= float(x) <= hi
+    return (not isinstance(x, bool) and isinstance(x, (int, float))
+            and math.isfinite(float(x)) and lo <= float(x) <= hi)
+
+
+def _validate_failure_conditions(raw: object) -> list[dict] | None:
+    if not isinstance(raw, list):
+        return None
+    out = []
+    for fc in raw:
+        if (not isinstance(fc, dict) or set(fc) != {"kind", "days"}
+                or fc.get("kind") != "deadline"
+                or not isinstance(fc.get("days"), int) or isinstance(fc.get("days"), bool)
+                or not _finite_positive(fc.get("days"), MIN_WISH_DAYS, MAX_WISH_DAYS)):
+            return None
+        out.append({"kind": "deadline", "days": int(fc["days"])})
+    return out
 
 
 def validate_generation(raw: object, agent, world, material: dict) -> dict | None:
@@ -183,7 +308,7 @@ def validate_generation(raw: object, agent, world, material: dict) -> dict | Non
         refs.append({"id": str(rid), "text": provided[str(rid)]["text"]})
     if not refs:
         return None
-    reqs = []
+    reqs, seen = [], set()
     for rr in raw.get("requirements", []):
         if not isinstance(rr, dict) or set(rr) - {"kind", "target", "threshold", "unit"}:
             return None
@@ -200,25 +325,33 @@ def validate_generation(raw: object, agent, world, material: dict) -> dict | Non
             return None
         if r.kind in ("friendship", "trust") and r.threshold > 100:
             return None
-        if r.kind in ("money", "money_gain"):
+        key = (r.kind, r.target)
+        if key in seen:
+            return None
+        seen.add(key)
+        if r.kind in ("friendship", "trust"):
+            r.current = r.baseline = getattr(agent.rel(r.target), r.kind)
+        elif r.kind == "money":
+            r.current = r.baseline = agent.state.money
+        elif r.kind == "money_gain":
             r.baseline = agent.state.money
+            r.current = 0
             r.unit = "currency"
+        else:
+            r.current = r.baseline = 0
+        if r.current >= r.threshold:
+            return None
         reqs.append(r)
-    effort = sum(r.threshold if r.kind not in ("friendship", "trust", "money")
-                 else max(1, r.threshold - r.baseline) for r in reqs)
+    if not reqs:
+        return None
+    effort = sum(r.threshold - r.current for r in reqs)
     if scale == "major" and effort < 2:
         return None
     if scale == "small" and effort > 12:
         return None
-    if scale == "major" and not reqs:
+    failure = _validate_failure_conditions(raw.get("failure_conditions", []))
+    if failure is None:
         return None
-    failure = []
-    for fc in raw.get("failure_conditions", []):
-        if not isinstance(fc, dict) or set(fc) - {"kind", "days"} or fc.get("kind") != "deadline":
-            return None
-        if not _finite_positive(fc.get("days"), MIN_WISH_DAYS, MAX_WISH_DAYS):
-            return None
-        failure.append({"kind": "deadline", "days": int(fc["days"])})
     return {"title": title[:120], "statement": statement[:400],
             "motivation": str(raw.get("motivation", ""))[:500], "scale": scale,
             "source_memory_refs": refs, "requirements": reqs, "failure_conditions": failure}
@@ -239,7 +372,7 @@ def install(agent, secrets, clean: dict, day: int) -> Wish | None:
                     source_kind="wish", source_id=w.id, social_enabled=False)
     w.secret_id = s.id
     if w.scale == "major":
-        ch = make_pursuit(w.statement, w.title, f"I am pursuing this now: {w.statement}", day)
+        ch = make_pursuit(w.statement, w.title, "I am focused on a private matter right now.", day)
         ch.related_goal_id = w.id
         w.related_chapter_id = ch.id
         agent.chapter = ch
@@ -261,11 +394,13 @@ def update_from_event(wish: Wish, agent, ev, day: int) -> bool:
                or (r.kind == "location_visits" and ev.actor == agent.id and ev.verb == "arrive" and ev.location == r.target)
                or (r.kind == "talk_count" and ev.verb == "talk_start"
                    and {ev.actor, ev.target} == {agent.id, r.target})
-               or (r.kind == "event_count" and ev.verb == r.target and (not ev.actor or ev.actor == agent.id)))
+               or (r.kind == "event_count" and ev.verb == r.target and ev.actor == agent.id))
         if hit and not r.completed:
             r.current += 1; r.completed = r.current >= r.threshold; changed = True
     if changed:
-        wish.counted_event_keys.append(key); wish.last_progress_day = day
+        wish.counted_event_keys.append(key)
+        del wish.counted_event_keys[:-COUNTED_EVENT_KEYS_MAX]
+        wish.last_progress_day = day
         wish.progress = sum(min(1, r.current / r.threshold) for r in wish.requirements) / max(1, len(wish.requirements))
     return changed
 
