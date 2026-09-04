@@ -175,6 +175,71 @@ class GenerationGenderGate(unittest.TestCase):
         self.assertTrue(reflection_gender_ok({}))
 
 
+class RosterPrecondition(unittest.TestCase):
+    """A gender check without the roster answers "fine" to everything. That silence
+    is the dangerous failure -- it once made a whole-cache replay report a clean bill
+    of health it had never actually checked -- so the gates raise instead."""
+
+    def setUp(self):
+        make_world()
+        self._saved = list(builders._ROSTER)
+
+    def tearDown(self):
+        builders.set_roster(self._saved)
+
+    def _clear(self):
+        builders.set_roster([])
+        self.assertFalse(builders.roster_loaded())
+
+    def test_gender_gates_raise_instead_of_passing(self):
+        self._clear()
+        # exactly the text each gate exists to catch
+        for call in (lambda: gender_ok("Chatted with Xixi — she seems well."),
+                     lambda: translate_gender_ok("Aisi is reliable.", "艾斯很可靠，我信任他。"),
+                     lambda: reflection_gender_ok({"insights": ["Xixi said she is tired."]})):
+            with self.assertRaises(builders.RosterNotLoadedError):
+                call()
+
+    def test_it_raises_even_on_input_that_would_short_circuit(self):
+        """Empty/irrelevant input must not skip the check and report success."""
+        self._clear()
+        for call in (lambda: gender_ok(""),
+                     lambda: translate_gender_ok("", ""),
+                     lambda: reflection_gender_ok(None)):
+            with self.assertRaises(builders.RosterNotLoadedError):
+                call()
+
+    def test_the_bare_run_is_counted(self):
+        self._clear()
+        before = builders.GATE_REJECTS["roster_missing"]
+        with self.assertRaises(builders.RosterNotLoadedError):
+            gender_ok("Xixi said she is tired.")
+        self.assertEqual(builders.GATE_REJECTS["roster_missing"], before + 1)
+
+    def test_the_person_gate_is_deliberately_roster_free(self):
+        """It is pure grammar over the two texts and asks nobody's gender, so it must
+        keep working with no world loaded -- adding a precondition here would be wrong."""
+        self._clear()
+        self.assertFalse(person_shift_ok(
+            "After 31 days of hesitation, I finally asked Aisi to teach me programming.",
+            "經過31天的猶豫，她終於鼓起勇氣請艾斯教她寫程式。"))
+        self.assertTrue(person_shift_ok("I finished it.", "我完成了。"))
+
+    def test_the_message_says_how_to_fix_it(self):
+        self._clear()
+        with self.assertRaises(builders.RosterNotLoadedError) as ctx:
+            gender_ok("Xixi said she is tired.")
+        msg = str(ctx.exception)
+        self.assertIn("gender_ok", msg)
+        self.assertIn("SimulationEngine", msg)
+        self.assertIn("set_roster", msg)
+
+    def test_a_loaded_roster_passes_the_precondition(self):
+        self.assertTrue(builders.roster_loaded())
+        builders.require_roster("test")          # must not raise
+        self.assertFalse(gender_ok("Chatted with Xixi — she seems well."))
+
+
 class GateCounters(unittest.TestCase):
     def test_counters_exist_and_move(self):
         before = dict(builders.GATE_REJECTS)

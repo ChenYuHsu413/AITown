@@ -130,11 +130,43 @@ def gender_of(name: str) -> str:
 # Both pronoun gates live in different modules (the translation one in the server,
 # the generation one in the decision layer) but report here, so /api/usage has a
 # single place to read them from. Cheap: two integers.
-GATE_REJECTS: dict[str, int] = {"translate_person": 0, "translate_gender": 0, "generation_gender": 0}
+# ``roster_missing`` should stay 0 forever: a gate that needs the roster now raises
+# instead of passing, so a non-zero value means something ran a gate bare and
+# swallowed the exception.
+GATE_REJECTS: dict[str, int] = {
+    "translate_person": 0, "translate_gender": 0, "generation_gender": 0, "roster_missing": 0,
+}
 
 
 def note_gate_reject(kind: str) -> None:
     GATE_REJECTS[kind] = GATE_REJECTS.get(kind, 0) + 1
+
+
+class RosterNotLoadedError(RuntimeError):
+    """A gender check was asked for before the cast was published.
+
+    The roster is set once, from the world, in ``SimulationEngine.__init__``. Without
+    it ``roster_genders()`` is empty, every "is this resident male or female?" question
+    answers "unknown", and a gender gate would wave through exactly the text it exists
+    to catch. Silence is the dangerous failure here, so the gates raise this instead --
+    a maintenance script that forgot to build an engine gets told, loudly, rather than
+    reporting a clean bill of health it never actually checked."""
+
+
+def roster_loaded() -> bool:
+    return bool(roster_genders())
+
+
+def require_roster(where: str = "") -> None:
+    """Fail loudly (and leave a trace) when a roster-dependent check runs bare."""
+    if roster_loaded():
+        return
+    note_gate_reject("roster_missing")
+    raise RosterNotLoadedError(
+        f"the name/gender roster is empty{f' ({where})' if where else ''} -- a gender check "
+        f"cannot run and must not silently pass. Build the world first: "
+        f"SimulationEngine(World(build_locations(), build_agents()), DecisionEngine(router)) "
+        f"publishes it via builders.set_roster().")
 
 
 def dialogue_locale_directive() -> str:

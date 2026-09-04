@@ -34,6 +34,7 @@ from backend.app.agents.core import Belief, MemoryItem
 from backend.app.agents.decision import DecisionEngine
 from backend.app.llm.env import load_env
 from backend.app.llm.factory import build_router
+from backend.app.llm.prompts import builders
 from backend.app.simulation import snapshot as snapshot_mod
 from backend.app.simulation.engine import DAY_MIN, SimulationEngine, fmt_time
 from backend.app.world.world import World
@@ -179,6 +180,9 @@ async def main() -> None:
         await p.stop()
         return
     engine.decisions.rebuild_suppressed_themes(world)
+    # The re-closure runs a gender gate; without the roster it would wave every line
+    # through and report a clean run it never actually checked.
+    builders.require_roster("reclose_chapter")
     agent = world.agents.get(args.agent)
     if agent is None:
         raise SystemExit(f"unknown agent {args.agent}")

@@ -294,7 +294,11 @@ def person_shift_ok(source_en: str, translated_zh: str) -> bool:
     entirely and speaks in the third person has had its speaker replaced -- and to do
     that the model had to invent a gender, which is where the mis-gendering came from.
     Reject that shape; everything else passes, including a first-person line that
-    legitimately refers to somebody else in the third person (it still keeps 我)."""
+    legitimately refers to somebody else in the third person (it still keeps 我).
+
+    Deliberately roster-free: this is pure grammar over the two texts and asks nobody's
+    gender, so it works with no world loaded. Do NOT add a roster precondition here --
+    unlike the gender gates below, an empty roster cannot blind it."""
     if not source_en or not translated_zh:
         return True
     if not _EN_FIRST.search(source_en):
@@ -318,7 +322,11 @@ def translate_gender_ok(source_en: str, translated_zh: str) -> bool:
     the roster forbids ("Aisi seems reliable" -> 「我可以跟他更親近」 for a woman).
 
     Same philosophy as ``gender_ok``: multi-name text is left alone, because
-    deciding whose pronoun is whose would be guesswork."""
+    deciding whose pronoun is whose would be guesswork.
+
+    Raises ``RosterNotLoadedError`` when the cast has not been published -- without it
+    this check answers "fine" to everything (see builders.require_roster)."""
+    builders.require_roster("translate_gender_ok")
     if not source_en or not translated_zh:
         return True
     named = _named_residents(source_en)
@@ -337,7 +345,11 @@ def gender_ok(text: str) -> bool:
     """Generation gate. When a piece of English free text names exactly ONE resident
     and then uses a pronoun contradicting that resident's roster gender, it is wrong
     with no ambiguity to hide behind. Multi-name text is left alone -- resolving which
-    pronoun belongs to whom is guesswork, and a wrong guess would reject good output."""
+    pronoun belongs to whom is guesswork, and a wrong guess would reject good output.
+
+    Raises ``RosterNotLoadedError`` when the cast has not been published -- without it
+    this check answers "fine" to everything (see builders.require_roster)."""
+    builders.require_roster("gender_ok")
     if not text:
         return True
     named = _named_residents(text)
@@ -359,7 +371,10 @@ def _note_gender_gate(passed: bool) -> bool:
 
 
 def reflection_gender_ok(parsed: object) -> bool:
-    """Run ``gender_ok`` over every free-text field a reflection lands in memory."""
+    """Run ``gender_ok`` over every free-text field a reflection lands in memory.
+    Checks the roster up front, so an empty payload cannot report "fine" without the
+    roster ever having been consulted."""
+    builders.require_roster("reflection_gender_ok")
     if not isinstance(parsed, dict):
         return True
     texts = [str(x) for x in (parsed.get("insights") or [])]
@@ -1225,6 +1240,8 @@ class DecisionEngine:
                                         if isinstance(r.parsed, dict) else ""))),
                 per_call_timeout=30.0, no_floor=True,
             )
+        except builders.RosterNotLoadedError:
+            raise      # a bare gender gate is a programming error -- never a template fallback
         except Exception as err:
             print(f"[chapter] closure reflection failed for {agent.id} ({err!r}); using template line", flush=True)
             return None

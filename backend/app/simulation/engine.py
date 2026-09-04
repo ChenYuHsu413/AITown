@@ -936,6 +936,8 @@ class SimulationEngine:
                         continue
                     print(f"[reflect] chain exhausted after {rounds} rounds; skipping "
                           f"{agent.id}'s reflection this round (no canned floor)", flush=True)
+                except builders.RosterNotLoadedError:
+                    raise      # a bare gender gate is a programming error -- let it out
                 except Exception:
                     break  # unexpected error -> no reflection this round, don't spin
         finally:
@@ -1129,23 +1131,33 @@ class SimulationEngine:
         material = chapters_mod.closure_material(agent, self.world, chapter, at, ended_minute,
                                                  aftermath_window, forbid_terms)
         out: dict | None = None
+        bare_roster = False
         try:
             out = await asyncio.wait_for(
                 self.decisions.closure_reflection(agent, self.world, material, outcome),
                 timeout=CLOSURE_TIMEOUT_S)
+        except builders.RosterNotLoadedError:
+            # A bare gender gate is a programming error, not a slow model: let it out,
+            # and do NOT let the finally close the chapter on a template line first --
+            # that would bury the bug under a completed closure.
+            bare_roster = True
+            raise
         except Exception as err:
             print(f"[chapter] closure reflection unavailable for {agent.id} ({err!r}); template line", flush=True)
             out = None
         finally:
-            if out is not None:
+            if bare_roster:
+                pass       # leave the chapter untouched; the exception is propagating
+            elif out is not None:
                 line, residue, refs, source = (out["biography_line"], out["emotional_residue"],
                                                out["memory_refs"], "llm")
             else:
                 line, residue, refs, source = (chapters_mod.template_biography(agent, chapter, outcome),
                                                "", [], "template")
-            record = chapters_mod.apply_closure(
-                agent, self.world, outcome, line, residue, refs, at,
-                trigger=trigger, biography_source=source)
+            if not bare_roster:
+                record = chapters_mod.apply_closure(
+                    agent, self.world, outcome, line, residue, refs, at,
+                    trigger=trigger, biography_source=source)
         if record is None:
             return None
         self.chapter_stats["closed"] += 1
