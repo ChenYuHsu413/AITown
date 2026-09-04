@@ -487,6 +487,7 @@ class DecisionTrace:
     retrieved_memories: list[str]
     decision: Decision
     model: str = "rules"
+    wish_bonus: bool = False       # a wish weighted the social pre-gate for this decision
 
     def render(self) -> str:
         mems = "\n".join(f"    {i+1}. {m}" for i, m in enumerate(self.retrieved_memories)) or "    (none)"
@@ -496,7 +497,8 @@ class DecisionTrace:
             f"  Memories:\n{mems}\n"
             f"  Decision: {self.decision.action}"
             + (f" -> {self.decision.talk_partner}" if self.decision.talk_partner else "")
-            + f"  (L{self.decision.level}, {self.model})\n"
+            + f"  (L{self.decision.level}, {self.model}"
+            + (", wish-bonus" if self.wish_bonus else "") + ")\n"
             f"  Reason: {self.decision.reason}"
         )
 
@@ -584,6 +586,7 @@ class DecisionEngine:
 
         decision: Decision | None = None
         wish_drive: dict | None = None
+        wish_bonus = False          # a wish weighted the social pre-gate (see below)
 
         # ---- Level 2 (resume): chasing a rumor's source to confront ---
         if agent.state.seek_target and agent.state.current_action != "sleep":
@@ -652,8 +655,17 @@ class DecisionEngine:
                 partner.state.busy_until <= now
                 and partner.state.current_action != "sleep"
             )
+            # A wish that needs time with THIS person makes them worth approaching,
+            # whatever the timetable says the hour is for. The drive proper stays
+            # confined to rest/idle -- this is only a weight on the pre-gate, spends
+            # no attempt and records no blocked day, so it costs the routine nothing.
+            # (Scoping it to the drive's window was over-narrow: the pair whose only
+            # overlap is a meal would never have got it.)
+            wish_bonus = (wishes_mod.wants_contact(agent, partner_id)
+                          and partner.state.location == agent.state.location)
             if partner_free and now - last >= TALK_COOLDOWN_MIN and agent.state.current_action != "sleep" \
-                    and self._social_gate(agent, partner_id, now, wish_target=bool(wish_social)):
+                    and self._social_gate(agent, partner_id, now,
+                                          wish_target=bool(wish_social) or wish_bonus):
                 memories = await agent.memory.retrieve_async(
                     f"{partner.id.capitalize()} {obs.location}", k=5, location=obs.location)
                 res = await self.router.generate(
@@ -874,6 +886,7 @@ class DecisionEngine:
             retrieved_memories=memories,
             decision=decision,
             model=model_used,
+            wish_bonus=wish_bonus,
         )
         self.traces.append(trace)
         return decision

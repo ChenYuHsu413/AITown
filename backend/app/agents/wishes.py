@@ -582,6 +582,23 @@ def actionable_summary(agent: "Agent", world: "World", reqs: list) -> list:
     return [requirement_actionable(agent, world, r) for r in reqs]
 
 
+def wants_contact(agent: "Agent", other_id: str) -> bool:
+    """Does an active wish still need time with this particular person?
+
+    Read by the social pre-gate (see decision._social_gate). This is NOT the drive:
+    it spends no daily attempt, occupies no routine slot and records no blocked day.
+    It only says "when a conversation with this person is already on the table, this
+    resident has a reason to want it" -- which is true whatever the timetable says
+    they are doing, so it must not be scoped to the drive's rest/idle window."""
+    if not other_id:
+        return False
+    for w in active_wishes(agent):
+        for r in w.requirements:
+            if not r.completed and r.kind in SOCIAL_KINDS and r.target == other_id:
+                return True
+    return False
+
+
 def social_target(agent: "Agent") -> str:
     """The resident an active wish most wants time with -- read by the existing
     meetup system, which then applies all of its own rules."""

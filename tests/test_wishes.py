@@ -379,6 +379,30 @@ class DrivePacing(unittest.TestCase):
         self.assertNotEqual(a, wishes_mod._roll("run-2", "kuaizheng", w.id, 4, 0))
         self.assertNotEqual(a, wishes_mod._roll("run-1", "kuaizheng", w.id, 5, 0))
 
+    def test_the_social_pre_gate_bonus_is_not_confined_to_rest_or_idle(self):
+        """The drive proper only takes a rest/idle slot, but "this person is worth
+        approaching" is true whatever the hour is for -- a pair whose only overlap is
+        a meal must still get the weight. Costs no attempt and no blocked day."""
+        agent = self.world.agents["kuaizheng"]
+        w = seed(self.engine, self.world, "kuaizheng",
+                 requirements=[{"kind": "talk_count", "target": "lengyue", "threshold": 3}])
+        self.assertTrue(wishes_mod.wants_contact(agent, "lengyue"))
+        self.assertFalse(wishes_mod.wants_contact(agent, "aisi"))
+        self.assertFalse(wishes_mod.wants_contact(agent, ""))
+        # the pre-gate weight is higher for the wanted person...
+        base = self.engine.decisions._social_gate(agent, "lengyue", 9 * 60)
+        # ...and asking for it never spends a drive attempt or records a blocked day
+        self.assertEqual(w.drive.get("daily_attempts", 0), 0)
+        self.assertEqual(w.drive.get("blocked_streak", 0), 0)
+        self.assertIsInstance(base, bool)
+        # a completed requirement stops asking
+        w.requirements[0].progress = 3
+        self.assertFalse(wishes_mod.wants_contact(agent, "lengyue"))
+        # ...and so does a wish that has ended
+        w.requirements[0].progress = 0
+        w.status = "completed"
+        self.assertFalse(wishes_mod.wants_contact(agent, "lengyue"))
+
     def test_a_sleeping_partner_blocks_a_social_requirement(self):
         with unittest.mock.patch.object(wishes_mod, "DRIVE_MINOR_PROBABILITY", 1.0):
             w = seed(self.engine, self.world, "kuaizheng",
