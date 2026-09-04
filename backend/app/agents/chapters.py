@@ -520,15 +520,25 @@ def _retire_landmark_routine(agent: "Agent", loc_id: str) -> None:
                 e.action = "rest"
 
 
-def end_interlude(agent: "Agent", day: int) -> Chapter | None:
-    """At a day boundary: an interlude past its ``until_day`` lapses into ordinary
-    days. Returns the new chapter (for the ``chapter_started`` beat) or None.
-
-    TODO(phase-2): this is the wish-generation hook. Instead of ``make_ordinary``,
-    phase 2 will generate a new wish here (from beliefs, relationships and the
-    chapter history) and open a fresh *pursuit* chapter -- same return contract."""
+def interlude_lapsed(agent: "Agent", day: int) -> bool:
+    """True when an interlude has served its span and is ready to give way. Asking
+    is separate from acting because phase 2b wants to try growing a wish first (see
+    engine._advance_chapters); the answer must not itself change the chapter."""
     ch = agent.chapter
-    if ch is None or ch.chapter_type != "interlude" or day < ch.until_day:
+    return ch is not None and ch.chapter_type == "interlude" and day >= ch.until_day
+
+
+def end_interlude(agent: "Agent", day: int) -> Chapter | None:
+    """Lapse a spent interlude into ordinary days. Returns the new chapter (for the
+    ``chapter_started`` beat) or None.
+
+    This is the phase-2b hook, and it is the *fallback* half of it: the engine first
+    asks a generation reflection whether a wish grows out of this resident's own
+    material, and only when nothing does -- the model declined, failed, or the
+    proposal did not survive the three gates -- does the interlude end here, in
+    plain ordinary days. Growing a wish opens a pursuit instead (see
+    wishes.generation_material / engine._try_grow_wish)."""
+    if not interlude_lapsed(agent, day):
         return None
     agent.chapter = make_ordinary(agent, day)
     return agent.chapter

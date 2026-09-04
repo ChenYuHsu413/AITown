@@ -172,6 +172,7 @@ _EN_TEMPLATES = {
     "chapter_started": "{actor} began a new chapter: {text}",
     # Wish beats are deliberately content-free: the intention itself is private.
     "wish_seeded": "{actor} quietly set their mind on something",
+    "wish_born": "{actor} found something they want",
     "wish_closed": "{actor} settled something they had been carrying — {text}",
 }
 
@@ -307,7 +308,11 @@ class SimulationEngine:
         # Progress is driven purely by published events; terminals are drained at
         # a safe point (never re-entrantly inside a publish).
         self._wish_terminals: list[tuple[str, str]] = []   # (agent_id, wish_id)
-        self.wish_stats: dict[str, int] = {"seeded": 0, "completed": 0, "failed": 0, "abandoned": 0}
+        self._growing: set[str] = set()                    # agents with a generation in flight
+        self.wish_stats: dict[str, int] = {
+            "seeded": 0, "grown": 0, "completed": 0, "failed": 0, "abandoned": 0,
+            "gen_ok": 0, "gen_declined": 0, "gen_gates": 0, "gen_failed": 0,
+        }
         # Fired with a wish-ledger row when a wish is seeded or ends; None headless.
         self.on_wish_record: Callable[[dict], None] | None = None
         self.bus.subscribers.append(self._progress_wishes)
@@ -500,6 +505,8 @@ class SimulationEngine:
         # Wishes: sample the state-derived requirements, then judge outcomes and
         # abandonment (pure rules, once a day).
         self._settle_wishes()
+        # ...and, more slowly, give an ordinary life a chance to want something.
+        self._roll_wish_generation()
         # Romance spark judged once per day per resident (see decision._maybe_ignite).
         for agent in self.world.agents.values():
             self.decisions._maybe_ignite(agent, self.world, self.now)
@@ -1060,11 +1067,13 @@ class SimulationEngine:
                 and agent.chapter.id == wish.chapter_id:
             self.request_chapter_close(agent, status, "wish", reason)
 
-    def seed_wish(self, agent: Agent, clean: dict, day: int | None = None):
-        """Install a validated wish (God Mode). A major wish opens its pursuit
-        chapter through the ordinary phase-1 machinery."""
+    def seed_wish(self, agent: Agent, clean: dict, day: int | None = None, born: str = "seeded"):
+        """Install a validated wish. A major wish opens its pursuit chapter through
+        the ordinary phase-1 machinery. Shared by God Mode (``born="seeded"``) and
+        phase 2b generation (``born="grown"``) so both take exactly one path in."""
         day = self.now // DAY_MIN + 1 if day is None else day
         wish = wishes_mod.install(agent, clean, day)
+        wish.born = born
         if wish.scale == "major":
             chapter = chapters_mod.make_pursuit(wish.statement, wish.title, clean["narrative"], day)
             chapter.related_goal_id = wish.id
@@ -1074,10 +1083,11 @@ class SimulationEngine:
             # Neutral text: the chapter's own title is the wish's private wording.
             self._publish("system", "chapter_started", actor=agent,
                           location_id=agent.state.location, text=PRIVATE_CHAPTER_TITLE)
-        self.wish_stats["seeded"] += 1
-        self._emit_wish_record(wish)
-        self._publish("system", "wish_seeded", actor=agent, location_id=agent.state.location,
-                      text=wish.scale)   # scale only -- never the wish's own words
+        if born == "seeded":
+            self.wish_stats["seeded"] += 1
+            self._emit_wish_record(wish)
+            self._publish("system", "wish_seeded", actor=agent, location_id=agent.state.location,
+                          text=wish.scale)   # scale only -- never the wish's own words
         return wish
 
     # ---- life chapters: the closure pipeline (see agents/chapters.py) --------
@@ -1188,15 +1198,88 @@ class SimulationEngine:
         return record
 
     def _advance_chapters(self) -> None:
-        """Daily: an interlude past its span lapses into ordinary days (phase 2 will
-        open a new pursuit here instead -- see chapters.end_interlude)."""
+        """Daily: a spent interlude gives way. Phase 2b asks first whether a wish
+        grows out of this resident's own material -- that attempt runs in the
+        background and, if it succeeds, opens a pursuit instead. The interlude is
+        held (not lapsed) while the attempt is in flight, so the resident is never in
+        an undefined state and the attempt cannot fire twice."""
         day = self._last_day + 1                    # the sim day that just began (1-based)
         for agent in self.world.agents.values():
-            new = chapters_mod.end_interlude(agent, day)
-            if new is not None:
-                self._publish("system", "chapter_started", actor=agent,
-                              location_id=agent.state.location, text=new.title, detail=new.narrative)
-                self._emit_chapter_record(agent, chapter=new)
+            if not chapters_mod.interlude_lapsed(agent, day):
+                continue
+            if agent.id not in self._growing and self._may_attempt_generation(agent, day):
+                residue = agent.chapter.emotional_residue if agent.chapter else ""
+                self._growing.add(agent.id)
+                agent.wish_last_attempt_day = day
+                self._spawn(self._grow_wish_task(agent, day, residue, lapse_on_failure=True))
+                continue
+            self._lapse_interlude(agent, day)
+
+    def _lapse_interlude(self, agent: Agent, day: int) -> None:
+        new = chapters_mod.end_interlude(agent, day)
+        if new is not None:
+            self._publish("system", "chapter_started", actor=agent,
+                          location_id=agent.state.location, text=new.title, detail=new.narrative)
+            self._emit_chapter_record(agent, chapter=new)
+
+    # ---- wish generation (phase 2b) -----------------------------------------
+
+    def _active_majors_town_wide(self) -> int:
+        return sum(len(wishes_mod.active_wishes(a, "major")) for a in self.world.agents.values())
+
+    def _may_attempt_generation(self, agent: Agent, day: int) -> bool:
+        """The environment's pressure valve: the more major wishes the town already
+        carries, the less likely anyone starts another. Deterministic per
+        (run, agent, day) so a restart replays the same decision."""
+        if wishes_mod.capacity_left(agent, "major") <= 0 and wishes_mod.capacity_left(agent, "minor") <= 0:
+            return False
+        p = wishes_mod.generation_probability(self._active_majors_town_wide())
+        seed = hashlib.sha256(f"wish-gen|{self.run_seed}|{agent.id}|{day}".encode()).hexdigest()
+        return int(seed[:8], 16) / 0xFFFFFFFF < p
+
+    def _roll_wish_generation(self) -> None:
+        """The slower path: a resident living ordinary days gets an occasional chance
+        for something to surface, no more often than every GENERATION_ORDINARY_EVERY
+        days and subject to the same valve."""
+        day = self._last_day + 1
+        for agent in self.world.agents.values():
+            if agent.id in self._growing or chapters_mod.chapter_type(agent) != "ordinary":
+                continue
+            if day - agent.wish_last_attempt_day < wishes_mod.GENERATION_ORDINARY_EVERY:
+                continue
+            if not self._may_attempt_generation(agent, day):
+                continue
+            agent.wish_last_attempt_day = day
+            self._growing.add(agent.id)
+            self._spawn(self._grow_wish_task(agent, day, "", lapse_on_failure=False))
+
+    async def _grow_wish_task(self, agent: Agent, day: int, residue: str,
+                              lapse_on_failure: bool) -> None:
+        """Run the generation reflection and, if a wish survives all three gates,
+        let it into the world immediately -- no queue, no confirmation."""
+        try:
+            clean, outcome = await self.decisions.grow_wish(agent, self.world, day, residue)
+            self.wish_stats[f"gen_{outcome}"] = self.wish_stats.get(f"gen_{outcome}", 0) + 1
+            if clean is not None:
+                self._install_grown_wish(agent, clean, day)
+                return
+        except Exception as err:
+            self.wish_stats["gen_failed"] = self.wish_stats.get("gen_failed", 0) + 1
+            print(f"[wish] generation errored for {agent.id}: {err!r}", flush=True)
+        finally:
+            self._growing.discard(agent.id)
+        if lapse_on_failure:
+            self._lapse_interlude(agent, day)      # nothing grew -> plain ordinary days
+
+    def _install_grown_wish(self, agent: Agent, clean: dict, day: int) -> None:
+        wish = self.seed_wish(agent, clean, day, born="grown")
+        wish.embedding = list(clean.get("embedding") or [])
+        self.wish_stats["grown"] = self.wish_stats.get("grown", 0) + 1
+        self._emit_wish_record(wish)
+        self._publish("system", "wish_born", actor=agent, location_id=agent.state.location,
+                      text=wish.scale)          # scale only -- the wish itself stays private
+        print(f"[wish] {agent.id} grew a {wish.scale} wish: \"{wish.title}\" "
+              f"({len(wish.provenance)} memories cited)", flush=True)
 
     def _emit_chapter_record(self, agent: Agent, chapter: chapters_mod.Chapter | None = None,
                              record: chapters_mod.ChapterRecord | None = None) -> None:

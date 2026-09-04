@@ -363,6 +363,17 @@ def gender_ok(text: str) -> bool:
     return True
 
 
+def _wish_text_gender_ok(parsed: object) -> bool:
+    """Every free-text field a generated wish would land in the world -- the same
+    single-name gender rule the reflection path uses."""
+    if not isinstance(parsed, dict) or parsed.get("no_wish"):
+        return True
+    for key in ("title", "statement", "motivation", "narrative"):
+        if not gender_ok(str(parsed.get(key, "") or "")):
+            return False
+    return True
+
+
 def _note_gender_gate(passed: bool) -> bool:
     """Count a rejection as it happens, then hand the verdict back to the router."""
     if not passed:
@@ -543,8 +554,14 @@ class DecisionEngine:
     # Seeds the wish drive's deterministic dice with the persistence run id, so the
     # same day replays the same way across restarts (set by the engine).
     wish_run_seed: str = ""
+    # Embedding provider for the wish novelty gate. Defaults to the free mock; the
+    # host swaps in the persistence one when a DB is attached.
+    embedder: object = None
 
     def __post_init__(self) -> None:
+        if self.embedder is None:
+            from ..llm.embeddings import MockEmbedding
+            self.embedder = MockEmbedding()
         live = any(p.name != "mock" for chain in self.router.tiers.values() for p in chain)
         self._live = live
         if live and self.dialogue_cap == 0:
@@ -1230,6 +1247,68 @@ class DecisionEngine:
         if self.on_chapter_signal is not None and chapters_mod.secret_matches_chapter(owner.chapter, secret):
             self.on_chapter_signal(owner, "completed", "secret_resolved", resolution)
         return True
+
+    # ---- wish generation: one LLM call + three gates (phase 2b) --------------
+
+    async def grow_wish(self, agent: Agent, world: World, day: int, residue: str = "") -> tuple:
+        """Ask this resident's own history what they now want, and let three
+        mechanical gates decide whether the answer may exist. Returns
+        ``(clean, outcome)`` where outcome is one of:
+
+            ok        -- a wish survived; ``clean`` is ready to install
+            declined  -- the reflection said this life is not asking for anything
+            gates     -- every attempt was rejected; the reasons were fed back
+            failed    -- the chain could not answer at all
+
+        There is no template fallback on purpose. A resident whose life produces
+        nothing to want gets ordinary days, which is a truthful outcome; a
+        manufactured wish would not be."""
+        material = wishes_mod.generation_material(agent, world, day, residue)
+        rejection = ""
+        for attempt in range(1 + wishes_mod.GENERATION_RETRIES):
+            try:
+                res = await self.router.generate(
+                    task="wish_generation",
+                    messages=builders.wish_generation_prompt(agent, material, rejection),
+                    agent_id=agent.id, sim_minute=day * 24 * 60,
+                    schema={"type": "object"}, max_tokens=500,
+                    validate=lambda r: _note_gender_gate(_wish_text_gender_ok(r.parsed)),
+                    per_call_timeout=45.0, no_floor=True,
+                )
+            except builders.RosterNotLoadedError:
+                raise
+            except Exception as err:
+                print(f"[wish] generation chain failed for {agent.id}: {err!r}", flush=True)
+                return None, "failed"
+            parsed = res.parsed if isinstance(res.parsed, dict) else None
+            if parsed is None:
+                return None, "failed"
+            if parsed.get("no_wish"):
+                print(f"[wish] {agent.id} declined: {str(parsed.get('reason', ''))[:90]}", flush=True)
+                return None, "declined"
+
+            clean, problems = wishes_mod.validate_generation(parsed, agent, world, day, material)
+            if problems:                                        # gate 1: feasibility + provenance
+                builders.note_gate_reject("wish_feasibility")
+                rejection = "; ".join(problems)
+            else:
+                ok, why = wishes_mod.deviation_ok(agent, world, clean["requirements"])
+                if not ok:                                      # gate 2: does it change anything?
+                    builders.note_gate_reject("wish_deviation")
+                    rejection = why
+                else:
+                    vector = await self.embedder.embed(
+                        wishes_mod.novelty_text(clean["statement"], clean["requirements"]))
+                    ok, why = wishes_mod.novelty_ok(vector, agent, world)
+                    if not ok:                                  # gate 3: have we been here before?
+                        builders.note_gate_reject("wish_novelty")
+                        rejection = why
+                    else:
+                        clean["embedding"] = vector
+                        return clean, "ok"
+            print(f"[wish] {agent.id} proposal rejected (attempt {attempt + 1}): "
+                  f"{rejection[:120]}", flush=True)
+        return None, "gates"
 
     # ---- chapter closure: the one LLM call (smart tier, rare) ----------------
 

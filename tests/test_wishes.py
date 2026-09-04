@@ -495,7 +495,7 @@ class SnapshotCompat(unittest.TestCase):
         world, engine = make_world()
         seed(engine, world, "kuaizheng")
         payload = snapshot_mod.capture(engine, world, engine.decisions)
-        self.assertEqual(payload["schema_version"], 12)
+        self.assertEqual(payload["schema_version"], snapshot_mod.SCHEMA_VERSION)
         for adata in payload["agents"].values():          # strip v12, as a v11 snapshot would
             adata.pop("wishes", None)
         payload["schema_version"] = 11

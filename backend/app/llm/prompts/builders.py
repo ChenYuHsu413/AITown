@@ -135,6 +135,8 @@ def gender_of(name: str) -> str:
 # swallowed the exception.
 GATE_REJECTS: dict[str, int] = {
     "translate_person": 0, "translate_gender": 0, "generation_gender": 0, "roster_missing": 0,
+    # The three gates a grown wish must survive (phase 2b, see agents/wishes.py).
+    "wish_feasibility": 0, "wish_deviation": 0, "wish_novelty": 0,
 }
 
 
@@ -555,6 +557,104 @@ def chapter_closure_prompt(agent: "Agent", material: dict, outcome: str,
             ),
         },
     ]
+
+
+def wish_generation_prompt(agent: "Agent", material: dict, rejection: str = "") -> list[dict]:
+    """The one LLM call of phase 2b: ask a resident's own history what they now want.
+
+    Everything below is rule-assembled. The prompt's whole job is to make three
+    things unmissable -- the wish must come from THIS life (provenance), it must be
+    something they could actually do, and it must change their week rather than
+    describe it -- and to make declining an honourable answer, because a template
+    wish would be worse than no wish."""
+    from ...agents import wishes as wishes_mod
+
+    def lines(items, fmt, empty="  (none)"):
+        return "\n".join(fmt(x) for x in items) or empty
+
+    bio = lines(material["biography"], lambda m: f"  [{m['id']}] {m['text']}",
+                "  (no closed chapters yet -- this would be their first)")
+    mems = lines(material["memories"], lambda m: f"  [{m['id']}] (weight {m['importance']}) {m['text']}")
+    close = lines(material["relationships"]["closest"],
+                  lambda r: f"  {r['id'].capitalize()}: friendship {r['friendship']}, "
+                            f"trust {r['trust']}" + (f", friction {r['conflict']}" if r['conflict'] else ""))
+    friction = ", ".join(x.capitalize() for x in material["relationships"]["friction"]) or "nobody"
+    routine = lines(material["routine"], lambda r: f"  {r['location']}: {', '.join(r['actions'])}")
+    unvisited = ", ".join(material["unvisited_locations"]) or "(none -- they get everywhere)"
+    strangers = ", ".join(x.capitalize() for x in material["no_regular_overlap_with"]) or "(nobody)"
+    holding = lines(material["active_wishes"], lambda w: f"  \"{w['title']}\": {w['statement']}",
+                    "  (nothing)")
+    residue = (f"\nHow the last chapter left them feeling: {material['residue']}."
+               if material.get("residue") else "")
+    traits = ", ".join(f"{k} {v}" for k, v in sorted(material["personality"].items()))
+    cap = material["capacity"]
+    allowed_scales = [s for s in ("major", "minor") if cap.get(s, 0) > 0]
+    if material.get("in_pursuit"):
+        allowed_scales = [s for s in allowed_scales if s != "major"]
+    feedback = ""
+    if rejection:
+        feedback = ("\n\nYour previous proposal was REJECTED for this reason:\n  "
+                    f"{rejection}\nPropose something different that does not repeat the problem.")
+
+    system = (
+        "You decide what a character in a life simulation privately comes to want next. "
+        "This is not a quest handed to them: it grows out of what they have lived, and it "
+        "will quietly steer months of their behaviour, so it must be true to this person.\n\n"
+        "Respond ONLY with JSON, either:\n"
+        '  {"no_wish": true, "reason": "..."}   -- nothing in this life is asking for anything '
+        "right now, which is a perfectly good answer and better than inventing a goal; or\n"
+        '  {"title": "...", "statement": "...", "motivation": "...", "scale": "major"|"minor",\n'
+        '   "narrative": "...", "expires_in_days": <int>,\n'
+        '   "provenance": ["<memory id>", ...],\n'
+        '   "requirements": [{"kind": "...", "target": "...", "threshold": <number>}, ...]}\n\n'
+        "Field rules:\n"
+        '- "statement" is the wish in the character\'s own first-person words, one sentence.\n'
+        '- "motivation" is why it matters to them, one sentence. Both stay PRIVATE to them.\n'
+        '- "narrative" (major only) is how they would describe their life right now, first '
+        "person, 1-2 sentences -- it becomes their self-description while they pursue this.\n"
+        '- "provenance" is REQUIRED and must list ids from the material below. These are the '
+        "memories the wish grew out of. Never invent an id; cite only ids you were given.\n"
+        '- "expires_in_days" is how long they would give themselves.\n\n'
+        "Requirements are how the world will observe progress. Use ONLY these kinds:\n"
+        "  location_visits (target = a location id) -- arriving there, N times\n"
+        "  talk_count      (target = a resident id) -- conversations with that person\n"
+        "  meetups_kept    (target = a resident id) -- arranged meetings kept\n"
+        "  friendship      (target = a resident id) -- reaching a friendship level 0-100\n"
+        "  trust           (target = a resident id) -- reaching a trust level 0-100\n"
+        "  action_count    (target = work|rest|idle) -- doing that, N times\n"
+        "  money_gain      (no target) -- earning that much more than they have now\n"
+        "  event_witnessed (target = an event verb) -- PASSIVE, cannot carry a major wish\n"
+        "At most 8 requirements, and keep them few and concrete.\n\n"
+        "THREE THINGS WILL REJECT YOUR PROPOSAL MECHANICALLY:\n"
+        "1. Impossible for this person -- a target who does not exist, a place that does not "
+        "exist, themselves as a social target, or earning money with no way to earn.\n"
+        "2. It changes nothing. At least one requirement must ask for something their weekly "
+        "routine does NOT already provide (see 'Places their routine never takes them' and "
+        "'People they never regularly cross paths with' below). Working, resting and earning "
+        "are what their week is already made of and can never be the thing that makes it new.\n"
+        "3. It repeats a wish they have held before, or one someone else in town is carrying "
+        "right now. Want something that is actually theirs and actually next.\n\n"
+        "Prefer the small and specific over the grand and vague. A wish that reaches toward "
+        "one person or one place beats one that gestures at a whole life."
+        + roster_directive(english_only=True)
+        + roster_gender_directive(english_only=True)
+        + " Write all text in English (this is internal knowledge, translated for display "
+          "separately). Task: wish_generation."
+    )
+    user = (
+        f"{character_card(agent, name=agent.id.capitalize())}\n"
+        f"Personality: {traits}.{residue}\n\n"
+        f"The chapters of their life so far (their own words, at each closing):\n{bio}\n\n"
+        f"What is on their mind lately:\n{mems}\n\n"
+        f"Closest to them:\n{close}\nFriction with: {friction}\n\n"
+        f"Their week, as it already stands:\n{routine}\n"
+        f"Places their routine never takes them: {unvisited}\n"
+        f"People they never regularly cross paths with: {strangers}\n\n"
+        f"Already holding:\n{holding}\n"
+        f"They may propose a wish of scale: {', '.join(allowed_scales) or '(none -- decline)'}."
+        f"{feedback}"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def translate_prompt(text: str, owner: str = "", owner_gender: str = "") -> list[dict]:

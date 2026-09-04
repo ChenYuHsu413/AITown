@@ -78,7 +78,45 @@ class MockProvider(LLMProvider):
         prompt = " ".join(m.get("content", "") for m in messages).lower()
 
         parsed: object
-        if "task: chapter_closure" in prompt:
+        if "task: wish_generation" in prompt:
+            # Deterministic stand-in for a grown wish. Checked FIRST, before the
+            # dialogue branch, because the wish prompt legitimately contains the word
+            # "conversations". Reads the rule-assembled lists back out of the prompt
+            # so the proposal is feasible AND deviates -- and offers two shapes, so
+            # the novelty gate has something to actually reject.
+            raw = " ".join(m.get("content", "") for m in messages)
+            def _after(label: str) -> list:
+                if label not in raw:
+                    return []
+                tail = raw.split(label, 1)[1].split("\n", 1)[0]
+                return [x.strip() for x in tail.split(",") if x.strip() and "(" not in x]
+            unvisited = _after("Places their routine never takes them:")
+            strangers = _after("People they never regularly cross paths with:")
+            ids = re.findall(r"\[([0-9a-f]{8})\]", raw)
+            scales = "major" if "major" in raw.split("may propose a wish of scale:", 1)[-1][:40] else "minor"
+            if not ids:
+                parsed = {"no_wish": True, "reason": "no material to build on"}
+            elif rng.random() < 0.5 and unvisited:
+                place = unvisited[0]
+                parsed = {"title": f"Somewhere I never go", "scale": scales,
+                          "statement": f"I want to start spending real time at {place}, "
+                                       f"somewhere my days never take me.",
+                          "motivation": "The same rooms every week have started to feel small.",
+                          "narrative": "I am quietly trying to put myself somewhere new.",
+                          "expires_in_days": 21, "provenance": ids[:2],
+                          "requirements": [{"kind": "location_visits", "target": place, "threshold": 3}]}
+            elif strangers:
+                who = strangers[0].lower()
+                parsed = {"title": "Someone I barely know", "scale": scales,
+                          "statement": f"I want to actually know {who.capitalize()}, "
+                                       f"who I have somehow never really spoken to.",
+                          "motivation": "It bothers me that we have shared a town this long.",
+                          "narrative": "I am quietly trying to get to know someone I never talk to.",
+                          "expires_in_days": 21, "provenance": ids[:2],
+                          "requirements": [{"kind": "talk_count", "target": who, "threshold": 3}]}
+            else:
+                parsed = {"no_wish": True, "reason": "nothing outside the routine to reach for"}
+        elif "task: chapter_closure" in prompt:
             # Deterministic closure reflection: a first-person line toned by the
             # outcome, a residue, and the first listed memory id as its reference.
             # Checked FIRST -- the closure prompt legitimately mentions other tasks'

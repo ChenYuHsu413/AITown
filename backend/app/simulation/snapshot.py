@@ -53,7 +53,11 @@ if TYPE_CHECKING:
 #   v11 -> v12: per-agent `wishes` (structured private intentions + their rule-drive
 #             state). Absent on a v11 snapshot -> the resident simply has no wish, which
 #             is the pre-phase-2a behaviour; a malformed wish is skipped whole.
-SCHEMA_VERSION = 12
+#   v12 -> v13: phase 2b -- per-wish novelty `embedding` and `born`, plus the agent's
+#             `wish_last_attempt_day` cadence. Absent on a v12 snapshot: no embedding
+#             means that wish simply never blocks a new one on novelty, and day 0
+#             means the resident is due an attempt, which is the safe default.
+SCHEMA_VERSION = 13
 
 
 # ---- capture -------------------------------------------------------------
@@ -112,6 +116,7 @@ def _capture_agent(agent) -> dict:
         # v12: private intentions. Their drive bookkeeping rides along, so a
         # restart cannot re-count a blocked day or re-spend a daily attempt.
         "wishes": [w.to_dict() for w in agent.wishes],
+        "wish_last_attempt_day": agent.wish_last_attempt_day,
     }
 
 
@@ -244,6 +249,8 @@ def _restore_agent(agent, adata: dict) -> None:
         from ..agents.wishes import Wish
         restored = [Wish.from_dict(w) for w in adata["wishes"]]
         agent.wishes = [w for w in restored if w is not None]
+    if isinstance(adata.get("wish_last_attempt_day"), int):   # v13+; absent -> 0 (due)
+        agent.wish_last_attempt_day = adata["wish_last_attempt_day"]
 
 
 def _restore_rumors(rdata: dict) -> dict:

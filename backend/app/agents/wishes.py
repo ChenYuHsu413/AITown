@@ -37,7 +37,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING
 
-from .chapters import DAY_MIN
+from .chapters import DAY_MIN, memory_id
 from .core import MemoryItem
 
 if TYPE_CHECKING:
@@ -92,6 +92,26 @@ DRIVE_MAJOR_PROBABILITY = 0.70
 DRIVE_MINOR_PROBABILITY = 0.20
 DRIVE_MEETUP_PROBABILITY = 0.55
 DRIVE_SOCIAL_GATE_MULT = 2.0                              # bias, never a bypass (see decision._social_gate)
+
+# ---- generation (phase 2b) --------------------------------------------------
+# A wish grows out of a resident's own material at the end of an interlude, and
+# now and then during ordinary days. The environment gets a pressure valve: the
+# more major wishes the town is already carrying, the less likely anyone is to
+# start another, so ten residents do not all take up quests at once.
+GENERATION_BASE_P = 0.80          # attempt probability with no active major in town
+GENERATION_DECAY = 0.65           # multiplied per active major town-wide
+GENERATION_ORDINARY_EVERY = 5     # min sim-days between two attempts by one resident
+GENERATION_RETRIES = 2            # extra attempts after a gate rejection (3 calls max)
+NOVELTY_THRESHOLD = 0.85          # cosine similarity above which a proposal is a repeat
+DEFAULT_SPAN_DAYS = {"major": 21, "minor": 10}
+MATERIAL_MEMORIES = 8             # recent high-weight memories offered to the reflection
+MATERIAL_RELATIONSHIPS = 5
+
+
+def generation_probability(active_major_town_wide: int) -> float:
+    """base × decay^(active majors). 0 -> 0.80, 2 -> 0.34, 4 -> 0.14."""
+    return GENERATION_BASE_P * (GENERATION_DECAY ** max(0, active_major_town_wide))
+
 
 # ---- frustration & abandonment (spec D) -------------------------------------
 FRUSTRATION_BLOCKED_DAYS = 2        # consecutive blocked days before the first frustration memory
@@ -182,6 +202,10 @@ class Wish:
     counted_event_keys: list = field(default_factory=list)
     frustration_count: int = 0
     drive: dict = field(default_factory=dict)    # see _drive_state
+    # Novelty vector of (statement + requirements), stored at birth so checking a
+    # new proposal costs ONE embedding call rather than one per wish ever held.
+    embedding: list = field(default_factory=list)
+    born: str = "seeded"                         # seeded (God Mode) | grown (2b reflection)
 
     @property
     def progress(self) -> float:
@@ -211,6 +235,7 @@ class Wish:
                     ended_on=int(raw.get("ended_on", 0)),
                     outcome_reason=str(raw.get("outcome_reason", "")),
                     chapter_id=str(raw.get("chapter_id", "")),
+                    born=str(raw.get("born", "seeded")),
                     frustration_count=int(raw.get("frustration_count", 0)))
         except (KeyError, TypeError, ValueError):
             return None
@@ -230,6 +255,9 @@ class Wish:
         if isinstance(keys, list):
             w.counted_event_keys = [str(k) for k in keys][-COUNTED_EVENT_KEYS_MAX:]
         w.drive = _clean_drive(raw.get("drive"))
+        emb = raw.get("embedding")
+        if isinstance(emb, list) and all(isinstance(x, (int, float)) for x in emb):
+            w.embedding = [float(x) for x in emb]
         if w.frustration_count < 0:
             return None
         return w
@@ -773,3 +801,238 @@ def should_abandon(agent: "Agent", wish: "Wish", day: int) -> bool:
     if pressure <= 0:
         return False
     return pressure > abandonment_threshold(agent, wish, day)
+
+
+# =============================================================================
+# Phase 2b: growing a wish from a resident's own life
+#
+# One smart-tier reflection proposes a wish; three mechanical gates decide whether
+# it is allowed to exist. Nobody approves it. The gates are the only judgement,
+# and each answers a different question:
+#
+#   feasibility -- could this resident actually do it?       (2a, validate_seed)
+#   deviation   -- would it change anything about their day?  (below)
+#   novelty     -- have they, or the town, been here before?  (below)
+#
+# A proposal that fails is fed its own rejection reason and asked again, twice.
+# What never happens is a template wish: a life that produces nothing to want is
+# allowed to produce nothing, and the resident simply lives ordinary days.
+# =============================================================================
+
+
+def routine_entries_all(agent: "Agent") -> list:
+    """Every entry across both timetables (weekday and weekend)."""
+    return list(agent.routine.entries) + list(agent.routine._weekend)
+
+
+def routine_locations(agent: "Agent") -> set:
+    return {e.location for e in routine_entries_all(agent)}
+
+
+def reroute_supplied_shops(agent: "Agent", world: "World") -> set:
+    """Places the routine does not name but the world still delivers them to.
+
+    The known case: a meal aimed at a shop that is shut that weekday is redirected
+    to the open rival (see decision.decide), so a cafe regular is handed the bakery
+    every Monday. Counting that as routine supply is what stops the deviation gate
+    from blessing a wish the calendar was going to satisfy anyway."""
+    shops = [l for l in world.locations.values() if l.owner and l.price > 0]
+    out = set()
+    for e in routine_entries_all(agent):
+        target = world.locations.get(e.location)
+        if e.action != "eat" or target is None or not (target.owner and target.price > 0):
+            continue
+        if target.owner == agent.id:
+            continue                                   # an owner may enter their own shop any day
+        for dow in target.closed_days:                 # the days that meal gets redirected
+            for rival in shops:
+                if rival.id != target.id and dow not in rival.closed_days:
+                    out.add(rival.id)
+    return out
+
+
+def routine_overlap(agent: "Agent", other: "Agent", step: int = 30) -> bool:
+    """Do these two timetables put them in the same place at the same time on any
+    day of the week? Sampled every ``step`` minutes across all seven days."""
+    for dow in range(7):
+        for t in range(0, DAY_MIN, step):
+            a = agent.routine.current(t, dow)
+            b = other.routine.current(t, dow)
+            if a.location == b.location and "sleep" not in (a.action, b.action):
+                return True
+    return False
+
+
+def routine_supplies(agent: "Agent", world: "World", req: Requirement) -> bool:
+    """Would this requirement fill itself from the life the resident already leads?"""
+    if req.kind == "location_visits":
+        return req.target in routine_locations(agent) or req.target in reroute_supplied_shops(agent, world)
+    if req.kind in ("talk_count", "friendship", "trust", "meetups_kept"):
+        other = world.agents.get(req.target)
+        return other is None or routine_overlap(agent, other)
+    # work / rest / idle / money are what the timetable is made of; they can never
+    # be the thing that makes a wish a departure (spec C2).
+    return True
+
+
+def deviation_ok(agent: "Agent", world: "World", reqs: list) -> tuple:
+    """At least one actionable requirement must ask for something the resident's week
+    does not already contain. Otherwise the wish is a description of their existing
+    life wearing a title. Returns (ok, reason)."""
+    actionable = [r for r in reqs if requirement_actionable(agent, world, r)]
+    if not actionable:
+        return False, "no actionable requirement to deviate with"
+    for r in actionable:
+        if not routine_supplies(agent, world, r):
+            return True, ""
+    detail = ", ".join(f"{r.kind}:{r.target or '-'}" for r in actionable)
+    return False, (f"every actionable requirement ({detail}) is already part of this "
+                   f"resident's weekly routine, so the wish would complete itself without "
+                   f"changing anything they do")
+
+
+def novelty_text(statement: str, reqs: list) -> str:
+    """The canonical string a wish is compared by: what it wants, and what it would
+    take. Two wishes of the same shape land in the same place even when the wording
+    differs."""
+    parts = sorted(f"{r.kind}:{r.target}" for r in reqs)
+    return f"{statement.strip()} || {' '.join(parts)}"
+
+
+def _cosine(a: list, b: list) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a)) or 1.0
+    nb = math.sqrt(sum(x * x for x in b)) or 1.0
+    return dot / (na * nb)
+
+
+def novelty_ok(vector: list, agent: "Agent", world: "World",
+               threshold: float = NOVELTY_THRESHOLD) -> tuple:
+    """Compare against everything this resident has ever wished, and everything the
+    town is wishing right now. The first guards against one person circling the same
+    longing forever; the second against ten residents wanting the same thing at once.
+    Returns (ok, reason)."""
+    if not vector:
+        return True, ""
+    seen = []
+    for w in agent.wishes:                                   # their whole history
+        if w.embedding:
+            seen.append(("your own past wish", w))
+    for other in world.agents.values():                      # the town's current wishes
+        if other.id == agent.id:
+            continue
+        for w in active_wishes(other):
+            if w.embedding:
+                seen.append(("a wish someone else is already carrying", w))
+    for label, w in seen:
+        sim = _cosine(vector, w.embedding)
+        if sim >= threshold:
+            return False, (f"too similar ({sim:.2f}) to {label}: \"{w.title}\" -- "
+                           f"want something that is not a restatement of it")
+    return True, ""
+
+
+# ---- material -----------------------------------------------------------------
+
+
+def generation_material(agent: "Agent", world: "World", day: int, residue: str = "") -> dict:
+    """Everything the reflection is allowed to build a wish out of, assembled by
+    rules. Biography first: those lines are the sediment of the life so far, and they
+    are what makes one chapter follow from another instead of restarting."""
+    biography = [{"id": memory_id(agent.id, m), "text": m.text}
+                 for m in agent.memory.items if m.kind == "biography"]
+    recent = [m for m in agent.memory.items if m.kind != "biography"]
+    recent.sort(key=lambda m: (m.importance * m.weight, m.minute), reverse=True)
+    top = recent[:MATERIAL_MEMORIES]
+    top.sort(key=lambda m: m.minute)
+    memories = [{"id": memory_id(agent.id, m), "text": m.text, "importance": m.importance}
+                for m in top]
+
+    rels = sorted(agent.relationships.items(), key=lambda kv: -kv[1].friendship)
+    close = [{"id": oid, "friendship": round(r.friendship), "trust": round(r.trust),
+              "conflict": round(r.conflict)} for oid, r in rels[:MATERIAL_RELATIONSHIPS]]
+    friction = [oid for oid, r in agent.relationships.items() if r.conflict >= 20]
+
+    # What the week already contains -- so the model can tell a departure from a
+    # description, and knows which places and people fall outside it.
+    by_place: dict = {}
+    for e in routine_entries_all(agent):
+        by_place.setdefault(e.location, set()).add(e.action)
+    routine = [{"location": lid, "actions": sorted(acts)} for lid, acts in sorted(by_place.items())]
+    supplied = routine_locations(agent) | reroute_supplied_shops(agent, world)
+    unvisited = [lid for lid in sorted(world.locations) if lid not in supplied]
+    strangers = [oid for oid in sorted(world.agents)
+                 if oid != agent.id and not routine_overlap(agent, world.agents[oid])]
+
+    return {
+        "day": day,
+        "biography": biography,
+        "memories": memories,
+        "residue": residue,
+        "relationships": {"closest": close, "friction": friction},
+        "routine": routine,
+        "unvisited_locations": unvisited,
+        "no_regular_overlap_with": strangers,
+        "active_wishes": [{"title": w.title, "statement": w.statement} for w in active_wishes(agent)],
+        "personality": dict(agent.profile.personality),
+        "capacity": {s: capacity_left(agent, s) for s in SCALES},
+        "in_pursuit": agent.chapter is not None and agent.chapter.chapter_type == "pursuit",
+    }
+
+
+def validate_generation(raw: object, agent: "Agent", world: "World", day: int,
+                        material: dict | None = None) -> tuple:
+    """Turn a proposal into a wish, or say exactly why not. Runs the feasibility gate
+    (2a's, unchanged) plus the two rules a *grown* wish must also meet: it has to say
+    which memories it came from, and those memories have to be real.
+
+    Returns (clean, problems). ``clean`` carries an absolute ``expires_on``."""
+    if not isinstance(raw, dict):
+        return None, ["proposal must be an object"]
+    scale = str(raw.get("scale", "")).strip()
+    if scale not in SCALES:
+        return None, [f"scale must be one of {list(SCALES)}"]
+
+    # Provenance: which of the offered memories this grew out of. Required, and every
+    # id must be one we actually handed over -- an invented id means the wish is not
+    # rooted in this life at all.
+    material = material if material is not None else generation_material(agent, world, day)
+    by_id = {m["id"]: m["text"] for m in material["biography"] + material["memories"]}
+    refs_raw = raw.get("provenance") or raw.get("memory_refs") or []
+    if not isinstance(refs_raw, list) or not refs_raw:
+        return None, ["provenance is required: name the memory ids this wish grew out of"]
+    provenance, unknown = [], []
+    for r in refs_raw:
+        rid = str(r.get("id") if isinstance(r, dict) else r).strip()
+        if rid in by_id:
+            provenance.append({"id": rid, "text": by_id[rid]})
+        else:
+            unknown.append(rid)
+    if unknown:
+        return None, [f"provenance names memory ids that were never offered: {unknown} -- "
+                      f"cite only the ids listed in your material"]
+    if not provenance:
+        return None, ["provenance is required and must cite offered memory ids"]
+
+    # The model thinks in days; the world keeps absolute sim days.
+    span = raw.get("expires_in_days")
+    try:
+        span = int(span) if span is not None else DEFAULT_SPAN_DAYS[scale]
+    except (TypeError, ValueError):
+        span = DEFAULT_SPAN_DAYS[scale]
+    span = max(2, min(span, 120))
+
+    body = {
+        "agent_id": agent.id, "scale": scale,
+        "title": raw.get("title", ""), "statement": raw.get("statement", ""),
+        "motivation": raw.get("motivation", ""), "narrative": raw.get("narrative", ""),
+        "requirements": raw.get("requirements") or [],
+        "expires_on": day + span,
+        "provenance": provenance,
+    }
+    clean, problems = validate_seed(body, agent, world, day)     # gate 1: feasibility
+    if problems:
+        return None, problems
+    return clean, []

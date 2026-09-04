@@ -187,8 +187,10 @@ def build_router(live: bool | None = None) -> LLMRouter:
         # providers carry a paid user before the free 20/day quota is ever touched.
         task_chains["dialogue"] = [deepseek, zh_second] + existing("dialogue", "normal")
         task_chains["reflection"] = [deepseek, zh_second] + existing("reflection", "smart")
-        # Chapter closure is a rare smart-tier reflection; same chain as reflection.
+        # Chapter closure and wish generation are rare smart-tier reflections; same
+        # chain as reflection.
         task_chains["chapter_closure"] = [deepseek, zh_second] + existing("chapter_closure", "smart")
+        task_chains["wish_generation"] = [deepseek, zh_second] + existing("wish_generation", "smart")
         task_chains["translate"] = [translator, zh_second] + existing("translate", "cheap")
         for t in ("should_talk", "importance", "mood", "summary", "appraise", "distort"):
             task_chains[t] = tail(existing(t, "cheap"))

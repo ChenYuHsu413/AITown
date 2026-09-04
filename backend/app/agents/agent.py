@@ -47,6 +47,9 @@ class Agent:
     # Private structured intentions (see wishes.py). Hand-seeded in phase 2a;
     # at most 1 active major + 2 active minor.
     wishes: list[Wish] = field(default_factory=list)
+    # Last sim day a wish-generation reflection was attempted for this resident
+    # (phase 2b), so the ordinary-days path keeps its cadence across restarts.
+    wish_last_attempt_day: int = 0
 
     @property
     def id(self) -> str:
