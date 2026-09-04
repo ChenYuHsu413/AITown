@@ -26,7 +26,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from .agents import chapters as chapters_mod
 from .agents import wishes as wishes_mod
 from .agents.core import MemoryItem
-from .agents.decision import DecisionEngine, belief_text_ok, person_shift_ok
+from .agents.decision import (
+    DecisionEngine, belief_text_ok, person_shift_ok, translate_gender_ok)
 from .llm.factory import build_router
 from .llm.prompts import builders
 from .llm.router import _is_garbage_text
@@ -237,9 +238,16 @@ class Sim:
             # Person gate: a first-person line rewritten into third-person narration
             # has had its speaker swapped for a guessed one -- that is where the
             # mis-gendering comes from. Reject and let the chain retry.
-            if not person_shift_ok(src, str(r.parsed.get("text") or "")):
+            zh = str(r.parsed.get("text") or "")
+            if not person_shift_ok(src, zh):
                 builders.note_gate_reject("translate_person")
-                print(f"[person-reject] {src[:70]!r} -> {str(r.parsed.get('text'))[:70]!r}", flush=True)
+                print(f"[person-reject] {src[:70]!r} -> {zh[:70]!r}", flush=True)
+                return False
+            # Gender gate: the speaker survived but the pronoun for the one resident
+            # named contradicts the roster.
+            if not translate_gender_ok(src, zh):
+                builders.note_gate_reject("translate_gender")
+                print(f"[gender-reject] {src[:70]!r} -> {zh[:70]!r}", flush=True)
                 return False
             return True
         try:
@@ -1843,7 +1851,9 @@ async def usage() -> JSONResponse:
             "wishes": dict(sim.engine.wish_stats),        # seeded / completed / failed / abandoned
             # Pronoun gates: how often each mechanical backstop rejected a generation
             # (translate_person = a first-person line rewritten in the third person;
-            # generation_gender = free text mis-gendering the one resident it names).
+            # translate_gender = a translation reaching for the pronoun the roster
+            # forbids; generation_gender = free text mis-gendering the one resident
+            # it names).
             "gate_rejects": dict(builders.GATE_REJECTS),
             "by_task": [{"task": k, **{**v, "cost": round(v["cost"], 6)}} for k, v in
                         sorted(by_task.items(), key=lambda kv: -kv[1]["calls"])],

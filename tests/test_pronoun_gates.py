@@ -17,7 +17,7 @@ os.environ["AI_TOWN_LANG"] = "zh-tw"
 os.environ["AI_TOWN_DB_URL"] = ""
 
 from backend.app.agents.decision import (
-    DecisionEngine, gender_ok, person_shift_ok, reflection_gender_ok)
+    DecisionEngine, gender_ok, person_shift_ok, reflection_gender_ok, translate_gender_ok)
 from backend.app.llm.factory import build_router
 from backend.app.llm.prompts import builders
 from backend.app.simulation.engine import SimulationEngine
@@ -93,6 +93,44 @@ class TranslationPersonGate(unittest.TestCase):
         self.assertTrue(person_shift_ok("I did it.", ""))
 
 
+class TranslationGenderGate(unittest.TestCase):
+    """The companion to the person gate: speaker kept, gender invented."""
+
+    def setUp(self):
+        make_world()
+
+    def test_rejects_a_pronoun_the_roster_forbids(self):
+        # the one row the person gate could not catch (person preserved, 他 for a woman)
+        self.assertFalse(translate_gender_ok(
+            "Aisi seems like a reliable person I can grow closer to.",
+            "艾斯看起來是個可靠的人，我可以跟他變得更親近。"))
+        self.assertFalse(translate_gender_ok(
+            "Xixi hesitates before speaking.", "希希開口前會猶豫，她總是這樣。"))
+
+    def test_accepts_the_correct_pronoun(self):
+        self.assertTrue(translate_gender_ok(
+            "Aisi seems like a reliable person I can grow closer to.",
+            "艾斯看起來是個可靠的人，我可以跟她變得更親近。"))
+        self.assertTrue(translate_gender_ok(
+            "Xixi hesitates before speaking.", "希希開口前會猶豫，他總是這樣。"))
+
+    def test_leaves_multi_name_and_nameless_text_alone(self):
+        # two residents named -> whose pronoun is whose is guesswork
+        self.assertTrue(translate_gender_ok(
+            "I heard Jiji noticed Lengyue acting weird, she might be keeping a secret.",
+            "聽說ㄐㄐ發現冷月怪怪的，她可能在隱瞞什麼。"))
+        # no resident named at all
+        self.assertTrue(translate_gender_ok(
+            "Someone seemed distant today.", "今天有人看起來有點疏離，他沒說什麼。"))
+        self.assertTrue(translate_gender_ok("", "他"))
+        self.assertTrue(translate_gender_ok("Aisi is here.", ""))
+
+    def test_ignores_non_pronoun_characters(self):
+        self.assertTrue(translate_gender_ok(
+            "Aisi shares things with me she hides from others.",
+            "艾斯跟我分享了她不向他人展現的事。"))          # 他人 must not count as 他
+
+
 class GenerationGenderGate(unittest.TestCase):
     """Free text that names exactly one resident and mis-genders them is rejected."""
 
@@ -140,10 +178,9 @@ class GenerationGenderGate(unittest.TestCase):
 class GateCounters(unittest.TestCase):
     def test_counters_exist_and_move(self):
         before = dict(builders.GATE_REJECTS)
-        builders.note_gate_reject("translate_person")
-        builders.note_gate_reject("generation_gender")
-        self.assertEqual(builders.GATE_REJECTS["translate_person"], before["translate_person"] + 1)
-        self.assertEqual(builders.GATE_REJECTS["generation_gender"], before["generation_gender"] + 1)
+        for key in ("translate_person", "translate_gender", "generation_gender"):
+            builders.note_gate_reject(key)
+            self.assertEqual(builders.GATE_REJECTS[key], before[key] + 1)
 
 
 class TranslatePromptContext(unittest.TestCase):

@@ -275,6 +275,8 @@ _EN_FIRST = re.compile(r"\b(I|I'm|I've|I'd|I'll|my|me|myself)\b")
 # 他/她 as an actual pronoun -- 他人 ("other people"), 其他 ("other") and 他們/她們
 # are not somebody's pronoun and must not trip the gate.
 _ZH_THIRD = re.compile(r"(?<!其)[他她](?!人|們)")
+_ZH_MASC = re.compile(r"(?<!其)他(?!人|們)")
+_ZH_FEM = re.compile(r"她(?!們)")
 _ZH_FIRST = re.compile(r"我")
 
 
@@ -307,6 +309,28 @@ def person_shift_ok(source_en: str, translated_zh: str) -> bool:
     if not _ZH_THIRD.search(translated_zh):
         return True                                  # no third-person pronoun -> fine
     return bool(_ZH_FIRST.search(translated_zh))     # 我 survived -> the person was kept
+
+
+def translate_gender_ok(source_en: str, translated_zh: str) -> bool:
+    """Translation gender gate -- the companion to ``person_shift_ok``. That one
+    catches a lost speaker; this catches a kept speaker with an invented gender:
+    the English names exactly one resident, and the Chinese reaches for the pronoun
+    the roster forbids ("Aisi seems reliable" -> 「我可以跟他更親近」 for a woman).
+
+    Same philosophy as ``gender_ok``: multi-name text is left alone, because
+    deciding whose pronoun is whose would be guesswork."""
+    if not source_en or not translated_zh:
+        return True
+    named = _named_residents(source_en)
+    if len(named) != 1:
+        return True
+    gender = builders.gender_of(next(iter(named)))
+    he, she = bool(_ZH_MASC.search(translated_zh)), bool(_ZH_FEM.search(translated_zh))
+    if gender == "male":
+        return not (she and not he)
+    if gender == "female":
+        return not (he and not she)
+    return True
 
 
 def gender_ok(text: str) -> bool:

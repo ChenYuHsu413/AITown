@@ -130,7 +130,7 @@ def gender_of(name: str) -> str:
 # Both pronoun gates live in different modules (the translation one in the server,
 # the generation one in the decision layer) but report here, so /api/usage has a
 # single place to read them from. Cheap: two integers.
-GATE_REJECTS: dict[str, int] = {"translate_person": 0, "generation_gender": 0}
+GATE_REJECTS: dict[str, int] = {"translate_person": 0, "translate_gender": 0, "generation_gender": 0}
 
 
 def note_gate_reject(kind: str) -> None:
