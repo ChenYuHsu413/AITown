@@ -381,6 +381,35 @@ def requirement_feasible(agent: "Agent", world: "World", req: Requirement) -> tu
     return False, f"unknown requirement kind '{req.kind}'"
 
 
+def canonical_target(kind: str, raw_target: str, agent: "Agent", world: "World") -> str:
+    """Map whatever the proposal called a target onto the id the world uses.
+
+    Ids are lower-case (``aisi``), but every roster the model is shown presents
+    people in their display forms (``Aisi``, ``艾斯``) and instructs it to use them
+    -- so a proposal naming ``Aisi`` is following instructions, not hallucinating,
+    and rejecting it would throw away a perfectly good wish over capitalisation.
+    Unknown targets still come back empty and are still refused."""
+    t = (raw_target or "").strip()
+    if not t:
+        return t
+    if kind in ("talk_count", "meetups_kept", "friendship", "trust"):
+        pool = world.agents
+    elif kind == "location_visits":
+        pool = world.locations
+    else:
+        return t                       # action verbs / event verbs are their own vocabulary
+    if t in pool:
+        return t
+    low = t.lower()
+    for key, obj in pool.items():
+        if low == key.lower() or low == str(getattr(obj, "name", "")).lower():
+            return key
+        zh = str(getattr(obj, "name_zh", "") or "")
+        if zh and t == zh:
+            return key
+    return t                           # unresolved -> feasibility will refuse it by name
+
+
 def validate_seed(raw: object, agent: "Agent", world: "World", day: int) -> tuple[dict | None, list]:
     """Hard gate for a hand-seeded wish. Returns (clean, problems); ``clean`` is
     None whenever ``problems`` is non-empty -- nothing half-valid is ever installed."""
@@ -419,6 +448,7 @@ def validate_seed(raw: object, agent: "Agent", world: "World", day: int) -> tupl
             if r is None:
                 problems.append(f"requirement[{i}] is malformed or has an unknown kind")
                 continue
+            r.target = canonical_target(r.kind, r.target, agent, world)
             ok, why = requirement_feasible(agent, world, r)
             if not ok:
                 problems.append(f"requirement[{i}] ({r.kind}): {why}")

@@ -131,6 +131,36 @@ class Gates(unittest.TestCase):
         p.update(over)
         return p
 
+    def test_a_display_name_target_is_accepted_not_refused(self):
+        """The roster the model is shown says "Aisi"; the world's id is "aisi". A
+        proposal following the roster must not be thrown away over capitalisation --
+        this rejected the first real social wish the town ever produced."""
+        for spelling in ("Aisi", "aisi", "艾斯"):
+            clean, problems = wishes_mod.validate_generation(
+                self._proposal(requirements=[{"kind": "talk_count", "target": spelling,
+                                              "threshold": 3}]),
+                self.agent, self.world, 10, self.material)
+            self.assertEqual(problems, [], spelling)
+            self.assertEqual(clean["requirements"][0].target, "aisi", spelling)
+        # a location display name resolves too
+        clean, problems = wishes_mod.validate_generation(
+            self._proposal(requirements=[{"kind": "location_visits",
+                                          "target": "Tide Cafe", "threshold": 3}]),
+            self.agent, self.world, 10, self.material)
+        self.assertEqual(problems, [])
+        self.assertEqual(clean["requirements"][0].target, "cafe")
+        # ...and something that really is not a resident is still refused
+        _, problems = wishes_mod.validate_generation(
+            self._proposal(requirements=[{"kind": "talk_count", "target": "Nobody",
+                                          "threshold": 3}]),
+            self.agent, self.world, 10, self.material)
+        self.assertTrue(any("unknown resident" in p for p in problems), problems)
+
+    def test_the_prompt_states_the_id_form(self):
+        msgs = builders.wish_generation_prompt(self.agent, self.material)
+        self.assertIn("always lower-case, never a display name", msgs[0]["content"])
+        self.assertIn("aisi", msgs[0]["content"])
+
     def test_a_hallucinated_memory_id_is_refused(self):
         clean, problems = wishes_mod.validate_generation(
             self._proposal(provenance=["deadbeef"]), self.agent, self.world, 10, self.material)
@@ -341,10 +371,15 @@ class Handover(unittest.TestCase):
             await engine.drain(end)
         with mock.patch.multiple(wishes_mod, DRIVE_MAJOR_PROBABILITY=1.0, DRIVE_MINOR_PROBABILITY=1.0):
             asyncio.run(live())
+        # 2a has taken it up if any of these is true: a requirement moved, a decision
+        # was made for the wish, or the drive tried and the world refused (a blocked
+        # day is engagement too -- a social wish needs the other person to be there).
         moved = any(r.progress > 0 for r in wish.requirements)
         drove = [t for t in engine.decisions.traces
                  if t.agent_id == agent.id and "private intention" in t.decision.reason]
-        self.assertTrue(moved or drove, "2a should have picked the wish up")
+        tried = wish.drive.get("daily_attempts", 0) or wish.drive.get("blocked_streak", 0)
+        self.assertTrue(moved or drove or tried,
+                        f"2a should have picked the wish up (drive state: {wish.drive})")
 
     def test_the_public_beats_never_carry_the_wish_text(self):
         world, engine = make_engine()

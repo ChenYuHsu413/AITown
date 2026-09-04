@@ -581,7 +581,11 @@ def wish_generation_prompt(agent: "Agent", material: dict, rejection: str = "") 
     friction = ", ".join(x.capitalize() for x in material["relationships"]["friction"]) or "nobody"
     routine = lines(material["routine"], lambda r: f"  {r['location']}: {', '.join(r['actions'])}")
     unvisited = ", ".join(material["unvisited_locations"]) or "(none -- they get everywhere)"
-    strangers = ", ".join(x.capitalize() for x in material["no_regular_overlap_with"]) or "(nobody)"
+    # Ids, not display names: a requirement target is matched against these. The
+    # roster elsewhere in the prompt shows people as "Aisi", so say plainly that a
+    # target is the lower-case id.
+    strangers = ", ".join(material["no_regular_overlap_with"]) or "(nobody)"
+    people_ids = ", ".join(sorted(x[0].lower() for x in roster_genders())) or "-"
     holding = lines(material["active_wishes"], lambda w: f"  \"{w['title']}\": {w['statement']}",
                     "  (nothing)")
     residue = (f"\nHow the last chapter left them feeling: {material['residue']}."
@@ -624,7 +628,10 @@ def wish_generation_prompt(agent: "Agent", material: dict, rejection: str = "") 
         "  action_count    (target = work|rest|idle) -- doing that, N times\n"
         "  money_gain      (no target) -- earning that much more than they have now\n"
         "  event_witnessed (target = an event verb) -- PASSIVE, cannot carry a major wish\n"
-        "At most 8 requirements, and keep them few and concrete.\n\n"
+        "At most 8 requirements, and keep them few and concrete.\n"
+        f"A requirement 'target' is an ID, always lower-case, never a display name. "
+        f"Resident ids: {people_ids}. Location ids are the ones listed under their week "
+        f"below.\n\n"
         "THREE THINGS WILL REJECT YOUR PROPOSAL MECHANICALLY:\n"
         "1. Impossible for this person -- a target who does not exist, a place that does not "
         "exist, themselves as a social target, or earning money with no way to earn.\n"
