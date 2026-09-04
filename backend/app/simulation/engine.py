@@ -319,9 +319,14 @@ class SimulationEngine:
         self.wish_stats: dict[str, int] = {
             "seeded": 0, "grown": 0, "completed": 0, "failed": 0, "abandoned": 0,
             "gen_ok": 0, "gen_declined": 0, "gen_gates": 0, "gen_failed": 0,
+            "attempt_ledger_failures": 0,
         }
         # Fired with a wish-ledger row when a wish is seeded or ends; None headless.
         self.on_wish_record: Callable[[dict], None] | None = None
+        # Fired with a generation-ledger row for EVERY attempt, however it turned out
+        # (see decision.grow_wish). A decline that only ever lived in a counter died
+        # with the process; this is the durable record. None headless.
+        self.on_wish_attempt: Callable[[dict], None] | None = None
         self.bus.subscribers.append(self._progress_wishes)
         # Stable across restarts: the drive's dice are seeded from the run id
         # (set by the host when persistence attaches), the sim day, agent and wish.
@@ -1022,6 +1027,20 @@ class SimulationEngine:
         except Exception as err:
             print(f"[wish] ledger hook failed: {err}", flush=True)
 
+    def _emit_attempt_records(self, agent: Agent, day: int, trigger: str, rows: list) -> None:
+        """Hand the generation ledger to the host (no-op headless). A row that cannot
+        be queued is counted and dropped -- the attempt already happened, and losing
+        its bookkeeping must never change what the resident ended up with."""
+        if self.on_wish_attempt is None:
+            return
+        for row in rows:
+            try:
+                self.on_wish_attempt({**row, "agent_id": agent.id, "sim_day": day,
+                                      "trigger": trigger})
+            except Exception as err:
+                self.wish_stats["attempt_ledger_failures"] += 1
+                print(f"[wish] attempt ledger hook failed: {err!r}", flush=True)
+
     def _linked_wish(self, agent: Agent, chapter_id: str):
         """The wish (any status) whose pursuit chapter this is -- the marker that the
         chapter's title/goal are private text."""
@@ -1293,22 +1312,29 @@ class SimulationEngine:
     async def _grow_wish_task(self, agent: Agent, day: int, residue: str,
                               lapse_on_failure: bool) -> None:
         """Run the generation reflection and, if a wish survives all three gates,
-        let it into the world immediately -- no queue, no confirmation."""
+        let it into the world immediately -- no queue, no confirmation. Every attempt
+        is written to the generation ledger, including the ones that came to nothing."""
+        trigger = "interlude_end" if lapse_on_failure else "ordinary_cadence"
+        rows: list[dict] = []
         try:
-            clean, outcome = await self.decisions.grow_wish(agent, self.world, day, residue)
+            clean, outcome = await self.decisions.grow_wish(agent, self.world, day, residue,
+                                                            attempts=rows)
             self.wish_stats[f"gen_{outcome}"] = self.wish_stats.get(f"gen_{outcome}", 0) + 1
             if clean is not None:
-                self._install_grown_wish(agent, clean, day)
+                wish = self._install_grown_wish(agent, clean, day)
+                if rows:
+                    rows[-1]["wish_id"] = wish.id     # the attempt that actually landed
                 return
         except Exception as err:
             self.wish_stats["gen_failed"] = self.wish_stats.get("gen_failed", 0) + 1
             print(f"[wish] generation errored for {agent.id}: {err!r}", flush=True)
         finally:
+            self._emit_attempt_records(agent, day, trigger, rows)
             self._growing.discard(agent.id)
         if lapse_on_failure:
             self._lapse_interlude(agent, day)      # nothing grew -> plain ordinary days
 
-    def _install_grown_wish(self, agent: Agent, clean: dict, day: int) -> None:
+    def _install_grown_wish(self, agent: Agent, clean: dict, day: int):
         wish = self.seed_wish(agent, clean, day, born="grown")
         wish.embedding = list(clean.get("embedding") or [])
         self.wish_stats["grown"] = self.wish_stats.get("grown", 0) + 1
@@ -1319,6 +1345,7 @@ class SimulationEngine:
               f"({len(wish.provenance)} memories cited)", flush=True)
         # A major wish's pursuit chapter_started shares this minute -- one write.
         self._event_snapshot("wish_born")
+        return wish
 
     def _emit_chapter_record(self, agent: Agent, chapter: chapters_mod.Chapter | None = None,
                              record: chapters_mod.ChapterRecord | None = None) -> None:

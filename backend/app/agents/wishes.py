@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING
@@ -919,6 +920,20 @@ def deviation_ok(agent: "Agent", world: "World", reqs: list) -> tuple:
     return False, (f"every actionable requirement ({detail}) is already part of this "
                    f"resident's weekly routine, so the wish would complete itself without "
                    f"changing anything they do")
+
+
+_QUOTED = re.compile(r'"[^"]*"')
+
+
+def ledger_reason(text: str, limit: int = 300) -> str:
+    """A gate message, made safe for the operator's generation ledger.
+
+    The gates quote private wording to argue their case -- the title of a wish
+    someone else is already carrying, the name of a pursuit chapter. None of that
+    belongs in a durable row about a *different* resident's rejected proposal, so
+    every quoted span is dropped. What survives is what tuning actually needs:
+    which gate, the similarity score, the requirement shapes."""
+    return _QUOTED.sub('"..."', str(text or "")).strip()[:limit]
 
 
 def novelty_text(statement: str, reqs: list) -> str:

@@ -1,6 +1,6 @@
 """Database models (SQLAlchemy 2.0, async).
 
-Eight tables:
+Ten tables:
 
     simulation_runs   one row per server boot / script run
     events            structured events (Event Contract v1, verbatim)
@@ -10,6 +10,8 @@ Eight tables:
     snapshot_archive  pre-operation backups saved before destructive admin ops
     translation_cache display-layer English->zh translations (translate once, keep)
     chapters          life-chapter ledger: one row per chapter per agent (started/closed)
+    wishes            wish ledger: one row per wish (seeded/grown, and how it ended)
+    wish_attempts     generation ledger: one row per attempt, however it turned out
 
 The events table mirrors the Event Contract exactly -- that was the point
 of the structured-events refactor.
@@ -188,6 +190,35 @@ class WishRow(Base):
     requirements: Mapped[list] = mapped_column(JSONB, default=list)
     provenance: Mapped[list] = mapped_column(JSONB, default=list)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class WishAttemptRow(Base):
+    """Generation ledger (see decision.grow_wish): one row per attempt inside a
+    generation run, whatever it turned out to be. Append-only -- a declined or
+    gate-rejected attempt is exactly the row worth keeping, and per-process counters
+    die with the process (a restart used to erase the whole distribution).
+
+    Operator-only, like ``wishes``: it never becomes an event, never enters a
+    resident's context, and carries no embedding, so retrieval cannot reach it. A
+    rejected proposal's own title/statement are NOT stored -- ``reason`` is the
+    redacted gate message (see wishes.ledger_reason), which is the part worth tuning
+    on. Nothing is backfilled: the table records from the day it was deployed."""
+
+    __tablename__ = "wish_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(32), index=True, default="")
+    agent_id: Mapped[str] = mapped_column(String(32), index=True, default="")
+    sim_day: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    trigger: Mapped[str] = mapped_column(String(24), default="")   # interlude_end | ordinary_cadence
+    attempt_no: Mapped[int] = mapped_column(Integer, default=1)    # 1-based within the run
+    # born | declined | gate_rejected | gen_failed
+    outcome: Mapped[str] = mapped_column(String(16), default="", index=True)
+    gate: Mapped[str] = mapped_column(String(24), default="")      # gate_rejected only
+    reason: Mapped[str] = mapped_column(Text, default="")          # redacted; never quotes a title
+    wish_id: Mapped[str] = mapped_column(String(32), default="")   # born only
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)    # this attempt's own spend
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class SnapshotArchive(Base):

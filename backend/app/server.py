@@ -453,6 +453,7 @@ class Sim:
         self.engine.on_snapshot = self._take_snapshot   # snapshot at each daily settlement
         self.engine.on_chapter_record = p.on_chapter    # chapter ledger (started / closed rows)
         self.engine.on_wish_record = p.on_wish          # wish ledger (seeded / ended rows)
+        self.engine.on_wish_attempt = p.on_wish_attempt  # generation ledger (every attempt)
         self.engine.set_run_seed(p.run_id)              # stable wish-drive dice for this run
         self._snap_wall = time.monotonic()
         self._snap_minute = self.engine.now
@@ -1849,7 +1850,10 @@ async def usage() -> JSONResponse:
             "budget_usd": sim.router.budget_usd,
             "dialogue_floor": dialogue_floor,
             "chapters": dict(sim.engine.chapter_stats),   # closed / llm-written / template-written
-            "wishes": dict(sim.engine.wish_stats),        # seeded / completed / failed / abandoned
+            # seeded / completed / failed / abandoned, the gen_* attempt outcomes, and
+            # the ledger rows that could not be queued. The gen_* counters are
+            # per-process; the durable distribution is the wish_attempts table.
+            "wishes": dict(sim.engine.wish_stats),
             # Snapshot cadence: the fixed-rhythm writes (this loop + each settlement),
             # the event-driven ones a rare beat earns for itself, how many of those a
             # same-minute sibling deduped, and the writes that failed (the beat still

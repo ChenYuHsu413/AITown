@@ -127,6 +127,38 @@ inspector is the only reader, and no other resident's context is involved. If a
 future deployment needs the wording to stay in-process, seed the chapter
 narrative in the display language and skip the translate round-trip.
 
+### The `wish_attempts` table (generation ledger, read-only)
+
+Every generation attempt writes one row, whatever it turned out to be — `born`,
+`declined`, `gate_rejected` or `gen_failed`. Before it existed only `wish_born`
+survived a restart, so the shape of what the model *refuses* to want was
+invisible: the `gen_*` counters at `/api/usage` are per-process and die with the
+server. (Aisi's day-125 attempt is the case of record — the dice are recomputable
+and did pass, but the outcome is gone. It is deliberately not backfilled.)
+
+```sql
+-- the distribution, which is what tuning actually needs
+SELECT outcome, gate, count(*), round(sum(cost_usd)::numeric, 4) AS usd
+  FROM wish_attempts WHERE run_id = '<run>' GROUP BY 1, 2 ORDER BY 3 DESC;
+
+-- one resident's whole generation history, in order
+SELECT sim_day, trigger, attempt_no, outcome, gate, reason
+  FROM wish_attempts WHERE agent_id = 'aisi' ORDER BY sim_day, attempt_no;
+```
+
+`trigger` is `interlude_end` or `ordinary_cadence`; `attempt_no` is 1-based
+within one generation run (up to `1 + GENERATION_RETRIES`); `cost_usd` is that
+attempt's own spend, which may cover several providers if the chain fell through.
+
+**Privacy.** Append-only, operator-only: no event, no resident's context, no
+embedding, so retrieval cannot reach it. A rejected proposal's own
+title/statement are **not** stored — `reason` is the gate's message with every
+quoted span redacted, because the gates argue their case by naming private
+wording (the wish someone else is already carrying, a pursuit chapter's title).
+A `declined` row keeps the model's stated reason verbatim: there is no proposal
+in a decline, and that sentence is the only account of why the life was not
+asking for anything that day.
+
 ### `scripts/backfill_chapters.py` (one-shot, dry-run by default)
 
 Initializes every resident's chapter on a pre-chapter snapshot and retroactively

@@ -30,7 +30,7 @@ from ..llm.usage import LLMCall
 from ..simulation.engine import Event
 from .models import (
     Base, ChapterRow, EventRow, LLMCallRow, MemoryRow, SimulationRun, SnapshotArchive,
-    TranslationCacheRow, WishRow, WorldSnapshot,
+    TranslationCacheRow, WishAttemptRow, WishRow, WorldSnapshot,
 )
 
 
@@ -63,6 +63,11 @@ class _ChapterWrite:
 @dataclass
 class _WishWrite:
     row: dict          # WishRow columns (wish_id, owner, ...) -- upserted
+
+
+@dataclass
+class _AttemptWrite:
+    row: dict          # WishAttemptRow columns -- append-only, never upserted
 
 
 class Persistence:
@@ -211,6 +216,11 @@ class Persistence:
         """Queue a wish-ledger upsert (seeded / ended). Non-blocking."""
         self._queue.put_nowait(_WishWrite(dict(row)))
 
+    def on_wish_attempt(self, row: dict) -> None:
+        """Queue one generation-attempt row. Append-only: a declined or gate-rejected
+        attempt is exactly the row worth keeping. Non-blocking."""
+        self._queue.put_nowait(_AttemptWrite(dict(row)))
+
     async def _flush_loop(self) -> None:
         while True:
             batch = [await self._queue.get()]
@@ -270,6 +280,11 @@ class Persistence:
                         set_={k: v for k, v in row.items() if k != "wish_id"},
                     )
                     await s.execute(stmt)
+                elif isinstance(item, _AttemptWrite):
+                    row = {k: v for k, v in item.row.items()
+                           if k in WishAttemptRow.__table__.columns and k != "id"}
+                    row.setdefault("run_id", self.run_id)
+                    s.add(WishAttemptRow(**row))
                 elif isinstance(item, _SnapWrite):
                     # One row per run: upsert so only the newest snapshot survives.
                     stmt = pg_insert(WorldSnapshot).values(

@@ -1250,7 +1250,19 @@ class DecisionEngine:
 
     # ---- wish generation: one LLM call + three gates (phase 2b) --------------
 
-    async def grow_wish(self, agent: Agent, world: World, day: int, residue: str = "") -> tuple:
+    def _attempt_row(self, agent_id: str, attempt_no: int, spent_before: int,
+                     outcome: str, gate: str = "", reason: str = "") -> dict:
+        """One row of the generation ledger (db/models.WishAttemptRow). ``reason`` is
+        redacted before it is stored, and the cost is the spend THIS attempt added --
+        the chain may have burned several providers getting here."""
+        cost = sum(c.estimated_cost for c in self.router.usage.calls[spent_before:]
+                   if c.agent_id == agent_id and c.task_type == "wish_generation")
+        return {"attempt_no": attempt_no, "outcome": outcome, "gate": gate,
+                "reason": wishes_mod.ledger_reason(reason), "cost_usd": round(cost, 6),
+                "wish_id": ""}      # stamped by the engine on the attempt that landed
+
+    async def grow_wish(self, agent: Agent, world: World, day: int, residue: str = "",
+                        attempts: list | None = None) -> tuple:
         """Ask this resident's own history what they now want, and let three
         mechanical gates decide whether the answer may exist. Returns
         ``(clean, outcome)`` where outcome is one of:
@@ -1262,7 +1274,12 @@ class DecisionEngine:
 
         There is no template fallback on purpose. A resident whose life produces
         nothing to want gets ordinary days, which is a truthful outcome; a
-        manufactured wish would not be."""
+        manufactured wish would not be.
+
+        ``attempts``, when given, is filled with one ledger row per attempt made --
+        including the ones that came to nothing, which is the whole point (see
+        db/models.WishAttemptRow). It is an out-parameter rather than part of the
+        return value so a caller still gets the partial record if this raises."""
         material = wishes_mod.generation_material(agent, world, day, residue)
         # Memory text is stored with {agent:id}/{loc:id}/{landmark:id} placeholders.
         # Every other free-text prompt resolves them first; this one must too, or the
@@ -1270,7 +1287,9 @@ class DecisionEngine:
         for item in material["biography"] + material["memories"]:
             item["text"] = _resolve_placeholders(item["text"], world)
         rejection = ""
+        log = attempts if attempts is not None else []
         for attempt in range(1 + wishes_mod.GENERATION_RETRIES):
+            spent_before = len(self.router.usage.calls)
             try:
                 res = await self.router.generate(
                     task="wish_generation",
@@ -1284,33 +1303,50 @@ class DecisionEngine:
                 raise
             except Exception as err:
                 print(f"[wish] generation chain failed for {agent.id}: {err!r}", flush=True)
+                log.append(self._attempt_row(agent.id, attempt + 1, spent_before,
+                                             "gen_failed", reason=repr(err)))
                 return None, "failed"
             parsed = res.parsed if isinstance(res.parsed, dict) else None
             if parsed is None:
+                log.append(self._attempt_row(agent.id, attempt + 1, spent_before, "gen_failed",
+                                             reason="the chain answered with no usable object"))
                 return None, "failed"
             if parsed.get("no_wish"):
-                print(f"[wish] {agent.id} declined: {str(parsed.get('reason', ''))[:90]}", flush=True)
+                # A decline is data, not a non-event: the model's own reason is the
+                # only account of why this life is not asking for anything today.
+                declined = str(parsed.get("reason", ""))
+                print(f"[wish] {agent.id} declined: {declined[:90]}", flush=True)
+                log.append(self._attempt_row(agent.id, attempt + 1, spent_before,
+                                             "declined", reason=declined))
                 return None, "declined"
 
             clean, problems = wishes_mod.validate_generation(parsed, agent, world, day, material)
             if problems:                                        # gate 1: feasibility + provenance
-                builders.note_gate_reject("wish_feasibility")
+                gate = "wish_feasibility"
+                builders.note_gate_reject(gate)
                 rejection = "; ".join(problems)
             else:
                 ok, why = wishes_mod.deviation_ok(agent, world, clean["requirements"])
                 if not ok:                                      # gate 2: does it change anything?
-                    builders.note_gate_reject("wish_deviation")
+                    gate = "wish_deviation"
+                    builders.note_gate_reject(gate)
                     rejection = why
                 else:
                     vector = await self.embedder.embed(
                         wishes_mod.novelty_text(clean["statement"], clean["requirements"]))
                     ok, why = wishes_mod.novelty_ok(vector, agent, world)
                     if not ok:                                  # gate 3: have we been here before?
-                        builders.note_gate_reject("wish_novelty")
+                        gate = "wish_novelty"
+                        builders.note_gate_reject(gate)
                         rejection = why
                     else:
                         clean["embedding"] = vector
+                        log.append(self._attempt_row(agent.id, attempt + 1, spent_before, "born"))
                         return clean, "ok"
+            # The proposal's own words are NOT recorded -- only which gate turned it
+            # away and why, with any quoted wording redacted out.
+            log.append(self._attempt_row(agent.id, attempt + 1, spent_before,
+                                         "gate_rejected", gate, rejection))
             print(f"[wish] {agent.id} proposal rejected (attempt {attempt + 1}): "
                   f"{rejection[:120]}", flush=True)
         return None, "gates"
