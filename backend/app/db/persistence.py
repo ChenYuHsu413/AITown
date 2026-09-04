@@ -105,6 +105,7 @@ class Persistence:
                 "ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_chapter_id VARCHAR(32) NOT NULL DEFAULT ''"))
             await conn.execute(sql_text(
                 "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS superseded BOOLEAN NOT NULL DEFAULT FALSE"))
+            await self._migrate_wishes(conn)
 
         resumed = False
         if resume and restore_cb is not None:
@@ -126,6 +127,42 @@ class Persistence:
 
         self._task = asyncio.create_task(self._flush_loop())
         return resumed
+
+    # Columns an earlier, since-reverted wish implementation left behind on a
+    # deployed `wishes` table. create_all never alters an existing table, so on such
+    # a database the current columns must be added by hand and the stale NOT NULLs
+    # relaxed -- otherwise the first ledger write fails on a column nobody writes.
+    # Idempotent, and a no-op on a database that never saw that version.
+    _WISH_LEGACY_NOT_NULL = (
+        "owner_id", "created_day", "ended_day", "source_memory_refs", "failure_conditions",
+        "progress", "last_progress_day", "secret_id", "related_chapter_id",
+    )
+    _WISH_ADD_COLUMNS = (
+        ("owner", "VARCHAR(32) NOT NULL DEFAULT ''"),
+        ("created_on", "INTEGER NOT NULL DEFAULT 0"),
+        ("ended_on", "INTEGER NOT NULL DEFAULT 0"),
+        ("expires_on", "INTEGER NOT NULL DEFAULT 0"),
+        ("chapter_id", "VARCHAR(32) NOT NULL DEFAULT ''"),
+        ("frustration_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("provenance", "JSONB"),
+    )
+
+    async def _migrate_wishes(self, conn) -> None:
+        for name, ddl in self._WISH_ADD_COLUMNS:
+            await conn.execute(sql_text(f"ALTER TABLE wishes ADD COLUMN IF NOT EXISTS {name} {ddl}"))
+        legacy = ", ".join(f"'{c}'" for c in self._WISH_LEGACY_NOT_NULL)
+        await conn.execute(sql_text(f"""
+            DO $$
+            DECLARE col text;
+            BEGIN
+              FOR col IN
+                SELECT column_name FROM information_schema.columns
+                 WHERE table_name = 'wishes' AND is_nullable = 'NO'
+                   AND column_name IN ({legacy})
+              LOOP
+                EXECUTE format('ALTER TABLE wishes ALTER COLUMN %I DROP NOT NULL', col);
+              END LOOP;
+            END $$;"""))
 
     async def stop(self) -> None:
         if self._task:
