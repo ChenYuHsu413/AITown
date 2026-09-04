@@ -1264,6 +1264,11 @@ class DecisionEngine:
         nothing to want gets ordinary days, which is a truthful outcome; a
         manufactured wish would not be."""
         material = wishes_mod.generation_material(agent, world, day, residue)
+        # Memory text is stored with {agent:id}/{loc:id}/{landmark:id} placeholders.
+        # Every other free-text prompt resolves them first; this one must too, or the
+        # model reads "{landmark:installation}" and may well write it back out.
+        for item in material["biography"] + material["memories"]:
+            item["text"] = _resolve_placeholders(item["text"], world)
         rejection = ""
         for attempt in range(1 + wishes_mod.GENERATION_RETRIES):
             try:

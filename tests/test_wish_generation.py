@@ -87,6 +87,32 @@ class Material(unittest.TestCase):
         self.assertIn("too similar to X", again[1]["content"])
 
 
+class PlaceholderResolution(unittest.TestCase):
+    """Memory text is stored with {agent:id}/{loc:id}/{landmark:id} placeholders.
+    Every free-text prompt resolves them before the model sees them; a raw
+    placeholder in the material invites the model to write one back out."""
+
+    def test_the_model_sees_resolved_names_not_placeholders(self):
+        world, engine = make_engine()
+        agent = world.agents["aisi"]
+        seen = {}
+        orig = builders.wish_generation_prompt
+
+        def capture(a, material, rejection=""):
+            seen["material"] = material
+            return orig(a, material, rejection)
+
+        with mock.patch.object(builders, "wish_generation_prompt", capture):
+            asyncio.run(engine.decisions.grow_wish(agent, world, 10))
+        blob = " ".join(m["text"] for m in seen["material"]["biography"] + seen["material"]["memories"])
+        self.assertTrue(blob, "aisi starts with a seeded memory")
+        self.assertNotIn("{landmark:", blob)
+        self.assertNotIn("{loc:", blob)
+        self.assertNotIn("{agent:", blob)
+        self.assertIn("interactive light installation", blob)     # resolved to its real name
+        self.assertIn("Firefly Park", blob)
+
+
 class Gates(unittest.TestCase):
     """E3: each gate rejects the thing it exists for, and nothing else."""
 
