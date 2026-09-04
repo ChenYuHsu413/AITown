@@ -821,6 +821,7 @@ class Sim:
                 and (time.monotonic() - self._snap_wall) >= SNAPSHOT_REAL_SECONDS
             ):
                 self._take_snapshot()
+                self.engine.snapshot_stats["periodic"] += 1
 
     # ---- snapshots ------------------------------------------------
 
@@ -1849,9 +1850,11 @@ async def usage() -> JSONResponse:
             "dialogue_floor": dialogue_floor,
             "chapters": dict(sim.engine.chapter_stats),   # closed / llm-written / template-written
             "wishes": dict(sim.engine.wish_stats),        # seeded / completed / failed / abandoned
-            # Snapshot cadence: fixed-rhythm writes, the event-driven ones a rare beat
-            # earns for itself, how many of those a same-minute sibling deduped, and
-            # the writes that failed (the beat still landed -- see engine._event_snapshot).
+            # Snapshot cadence: the fixed-rhythm writes (this loop + each settlement),
+            # the event-driven ones a rare beat earns for itself, how many of those a
+            # same-minute sibling deduped, and the writes that failed (the beat still
+            # landed -- see engine._event_snapshot). Operator-triggered snapshots
+            # (God Mode, admin) are not cadence and are not counted here.
             "snapshots": dict(sim.engine.snapshot_stats),
             # Pronoun gates: how often each mechanical backstop rejected a generation
             # (translate_person = a first-person line rewritten in the third person;
