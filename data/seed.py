@@ -59,6 +59,23 @@ ORIENTATION_BIAS = {
 }
 
 
+# ---- conscientiousness (2026-09 developer decision) -------------------------
+# The fifth personality dimension. The other four are written inline in each
+# Profile; this one arrives later and is applied in the loop at the end of
+# build_agents, next to speech style and romantic inclination -- so the ten values
+# stay readable as one table instead of scattered across ten constructors.
+#
+# It is the sole personal input to how long a resident carries a frustrated wish
+# before letting it go (see agents/wishes.abandonment_threshold): higher means
+# they hold on longer. The extremes are deliberate -- Oula at 0.1 drops things
+# almost as soon as they stop being fun, Xixi and Aisi at 1.0 will hold on through
+# a week of solid obstruction -- and must not be "smoothed" toward the middle.
+CONSCIENTIOUSNESS = {
+    "jiji": 0.5, "ange": 0.7, "oula": 0.1, "lengyue": 0.4, "azong": 0.9,
+    "xixi": 1.0, "aisi": 1.0, "xue": 0.8, "long": 0.5, "kuaizheng": 0.5,
+}
+
+
 # ---- life chapters (2026-09 chapter-closure phase 1) ------------------------
 # An in-progress matter is a *pursuit chapter*, not a static goal: it lives on
 # agent.chapter (goal text, title, narrative) and is closed by the pipeline in
@@ -427,6 +444,7 @@ def build_agents() -> list[Agent]:
     for a in residents:                       # attach each resident's locked speech style + inclination
         a.profile.speech_style = SPEECH_STYLE.get(a.id, "")
         a.profile.romantic_inclination = ROMANTIC_INCLINATION.get(a.id, 0.45)
+        a.profile.personality["conscientiousness"] = CONSCIENTIOUSNESS[a.id]
         if a.id in ORIENTATION_BIAS:
             a.profile.orientation_bias = dict(ORIENTATION_BIAS[a.id])
     seed_chapters(residents)                  # the three in-progress matters become pursuit chapters

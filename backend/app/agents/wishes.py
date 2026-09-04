@@ -731,11 +731,35 @@ def abandonment_pressure(wish: "Wish") -> float:
             + FRUSTRATION_WEIGHT * wish.frustration_count)
 
 
+class PersonalityKeyMissing(RuntimeError):
+    """A personality dimension the rules depend on is not on this resident.
+
+    Reading it with a default would be worse than crashing: every resident would
+    silently share one threshold and the "personalised" part of the rule would be a
+    fiction nobody could see failing. Seed the dimension instead (see
+    data.seed.CONSCIENTIOUSNESS)."""
+
+
+def _personality(agent: "Agent", key: str) -> float:
+    try:
+        return float(agent.profile.personality[key])
+    except (KeyError, TypeError, ValueError):
+        raise PersonalityKeyMissing(
+            f"{agent.id} has no usable '{key}' personality value "
+            f"({agent.profile.personality!r}). A rule that needs it must not fall back "
+            f"on a default -- that would give every resident the same threshold and hide "
+            f"the gap. Add it in data/seed.py.") from None
+
+
 def abandonment_threshold(agent: "Agent", wish: "Wish", day: int) -> float:
     """How much frustration this resident will carry before letting go: their
     conscientiousness, how long they have already carried it, and the weight of
-    the wish itself."""
-    consc = float(agent.profile.personality.get("conscientiousness", 0.5))
+    the wish itself.
+
+    Raises ``PersonalityKeyMissing`` rather than defaulting -- this is the only
+    personal input to the rule, so silently substituting 0.5 would flatten every
+    resident onto one line while still looking personalised."""
+    consc = _personality(agent, "conscientiousness")
     age = max(0, day - wish.created_on)
     sunk = SUNK_COST_MAX * min(1.0, age / SUNK_COST_FULL_DAYS)
     return ABANDON_BASE.get(wish.scale, 1.0) + CONSCIENTIOUSNESS_WEIGHT * consc + sunk

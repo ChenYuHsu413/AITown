@@ -237,7 +237,11 @@ class BlockedDays(unittest.TestCase):
 
 
 class Abandonment(unittest.TestCase):
-    """F5: the same evidence is carried differently by different people."""
+    """F5: the same evidence is carried differently by different people.
+
+    These use the residents' REAL seeded conscientiousness (data.seed) -- an earlier
+    version assigned its own values, which passed happily while no resident actually
+    had the key and the live world was quietly running on one shared default."""
 
     def setUp(self):
         self.world, self.engine = make_world()
@@ -250,21 +254,45 @@ class Abandonment(unittest.TestCase):
         return w
 
     def test_conscientiousness_decides_who_lets_go(self):
-        slack, dutiful = self.world.agents["kuaizheng"], self.world.agents["lengyue"]
-        slack.profile.personality["conscientiousness"] = 0.15
-        dutiful.profile.personality["conscientiousness"] = 0.95
-        w1 = self._wish_with_evidence("kuaizheng", created_on=1)
-        w2 = self._wish_with_evidence("lengyue", created_on=1)
+        slack, dutiful = self.world.agents["oula"], self.world.agents["aisi"]
+        self.assertLess(slack.profile.personality["conscientiousness"], 0.2)    # seeded 0.1
+        self.assertGreater(dutiful.profile.personality["conscientiousness"], 0.9)  # seeded 1.0
+        w1 = self._wish_with_evidence("oula", created_on=1)
+        w2 = self._wish_with_evidence("aisi", created_on=1)
         day = 11
         self.assertTrue(wishes_mod.should_abandon(slack, w1, day))
         self.assertFalse(wishes_mod.should_abandon(dutiful, w2, day))
 
-    def test_sunk_cost_makes_an_old_wish_harder_to_drop(self):
+    def test_extreme_values_neither_overflow_nor_lock(self):
+        """1.0 and 0.1 are deliberate. The dutiful must still be reachable by enough
+        obstruction, and the slack must not abandon on no evidence at all."""
+        dutiful, slack = self.world.agents["aisi"], self.world.agents["oula"]
+        stubborn = self._wish_with_evidence("aisi", created_on=1, streak=7, frustrations=2)
+        self.assertTrue(wishes_mod.should_abandon(dutiful, stubborn, 11))     # reachable
+        calm = self._wish_with_evidence("oula", created_on=1, streak=0, frustrations=0)
+        self.assertFalse(wishes_mod.should_abandon(slack, calm, 11))          # no evidence, no exit
+        for a in self.world.agents.values():
+            w = self._wish_with_evidence(a.id, created_on=1) if not a.wishes else a.wishes[0]
+            t = wishes_mod.abandonment_threshold(a, w, 11)
+            self.assertTrue(0.0 < t < 10.0, (a.id, t))                        # finite and sane
+
+    def test_a_missing_dimension_raises_instead_of_defaulting(self):
         agent = self.world.agents["kuaizheng"]
-        agent.profile.personality["conscientiousness"] = 0.5
-        young = self._wish_with_evidence("kuaizheng", created_on=28)
+        w = self._wish_with_evidence("kuaizheng", created_on=1)
+        del agent.profile.personality["conscientiousness"]
+        with self.assertRaises(wishes_mod.PersonalityKeyMissing) as ctx:
+            wishes_mod.abandonment_threshold(agent, w, 11)
+        self.assertIn("conscientiousness", str(ctx.exception))
+        self.assertIn("seed.py", str(ctx.exception))
+        with self.assertRaises(wishes_mod.PersonalityKeyMissing):
+            wishes_mod.should_abandon(agent, w, 11)
+
+    def test_sunk_cost_makes_an_old_wish_harder_to_drop(self):
+        agent = self.world.agents["long"]                # seeded 0.5
+        self.assertEqual(agent.profile.personality["conscientiousness"], 0.5)
+        young = self._wish_with_evidence("long", created_on=28)
         self.assertTrue(wishes_mod.should_abandon(agent, young, 31))       # 3 days old -> lets go
-        old = self._wish_with_evidence("kuaizheng", created_on=1)
+        old = self._wish_with_evidence("long", created_on=1)               # same person, same evidence
         self.assertFalse(wishes_mod.should_abandon(agent, old, 31))        # 30 days carried -> holds on
         # identical evidence, identical person: only the sunk cost differs
         self.assertEqual(wishes_mod.abandonment_pressure(young), wishes_mod.abandonment_pressure(old))
@@ -272,12 +300,51 @@ class Abandonment(unittest.TestCase):
                         wishes_mod.abandonment_threshold(agent, old, 31))
 
     def test_a_fresh_or_unfrustrated_wish_is_never_abandoned(self):
-        agent = self.world.agents["kuaizheng"]
-        agent.profile.personality["conscientiousness"] = 0.0
-        fresh = self._wish_with_evidence("kuaizheng", created_on=10, streak=9, frustrations=9)
+        agent = self.world.agents["oula"]                                  # the least dutiful (0.1)
+        fresh = self._wish_with_evidence("oula", created_on=10, streak=9, frustrations=9)
         self.assertFalse(wishes_mod.should_abandon(agent, fresh, 11))      # under the minimum age
-        calm = self._wish_with_evidence("kuaizheng", created_on=1, streak=0, frustrations=0)
+        calm = self._wish_with_evidence("oula", created_on=1, streak=0, frustrations=0)
         self.assertFalse(wishes_mod.should_abandon(agent, calm, 30))       # no evidence at all
+
+
+class SeedPersonality(unittest.TestCase):
+    """The abandonment rule reads conscientiousness with no fallback, so the seed is
+    what keeps the live world running. Assert its shape, not just the formula's."""
+
+    DIMENSIONS = ("extraversion", "agreeableness", "openness", "neuroticism", "conscientiousness")
+
+    def test_every_resident_carries_all_five_dimensions_in_range(self):
+        from data.seed import build_agents
+        residents = build_agents()
+        self.assertEqual(len(residents), 10)
+        for a in residents:
+            p = a.profile.personality
+            self.assertEqual(set(p), set(self.DIMENSIONS), a.id)
+            for k, v in p.items():
+                self.assertIsInstance(v, (int, float), (a.id, k))
+                self.assertTrue(0.0 <= float(v) <= 1.0, (a.id, k, v))
+
+    def test_the_seeded_conscientiousness_values_are_the_ones_of_record(self):
+        from data.seed import CONSCIENTIOUSNESS, build_agents
+        expected = {"jiji": 0.5, "ange": 0.7, "oula": 0.1, "lengyue": 0.4, "azong": 0.9,
+                    "xixi": 1.0, "aisi": 1.0, "xue": 0.8, "long": 0.5, "kuaizheng": 0.5}
+        self.assertEqual(CONSCIENTIOUSNESS, expected)
+        self.assertEqual({a.id: a.profile.personality["conscientiousness"] for a in build_agents()},
+                         expected)
+
+    def test_an_old_snapshot_gains_the_dimension_from_the_seed(self):
+        """Personality is static and never travels in a snapshot, so a pre-existing
+        world picks the new dimension up on restore rather than looking corrupt."""
+        world, engine = make_world()
+        payload = snapshot_mod.capture(engine, world, engine.decisions)
+        for adata in payload["agents"].values():
+            self.assertNotIn("personality", adata.get("profile", {}))   # not carried, by design
+        payload["schema_version"] = 11
+        world2, engine2 = make_world()
+        snapshot_mod.restore(payload, engine2, world2, engine2.decisions)
+        for a in world2.agents.values():
+            self.assertIn("conscientiousness", a.profile.personality, a.id)
+        self.assertEqual(world2.agents["azong"].profile.personality["conscientiousness"], 0.9)
 
 
 class Privacy(unittest.TestCase):
