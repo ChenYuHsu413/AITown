@@ -278,6 +278,13 @@ class SimulationEngine:
         # Fired (zero-arg) after each daily settlement so the host can persist a
         # snapshot; stays None -- and thus a no-op -- for headless/no-DB runs.
         self.on_snapshot: Callable[[], None] | None = None
+        # Event-driven snapshots: a rare beat (a wish born, a chapter turned) rides the
+        # SAME hook the moment it lands, so a restart can never roll it back onto a
+        # stale cadence point. Debounced to one write per sim minute.
+        self._event_snap_minute: int = -1
+        self.snapshot_stats: dict[str, int] = {
+            "periodic": 0, "event": 0, "debounced": 0, "event_snapshot_failures": 0,
+        }
         # ---- background dialogue / reflection state ----------------------
         # A conversation's slow generation runs in a background task; the two
         # participants are locked in ``_in_dialogue`` (agent_id -> initiation minute,
@@ -432,6 +439,29 @@ class SimulationEngine:
                 location_id=eff.get("location", ""),
             )
 
+    # ---- snapshots ---------------------------------------------------
+
+    def _event_snapshot(self, verb: str) -> None:
+        """A rare beat just landed -- persist it now instead of waiting for the next
+        fixed-cadence point, so a restart cannot roll it back. Same hook, same payload:
+        only the trigger is new. At most one write per sim minute, so a wish settling
+        and its chapter turning on the same minute cost one snapshot, not two. Never
+        raises and never retries: the beat itself is already fact, and a failed write
+        only means this one missed the free ride -- the next cadence point carries it."""
+        if self.on_snapshot is None:
+            return
+        if self.now == self._event_snap_minute:
+            self.snapshot_stats["debounced"] += 1
+            return
+        self._event_snap_minute = self.now
+        try:
+            self.on_snapshot()
+        except Exception as err:
+            self.snapshot_stats["event_snapshot_failures"] += 1
+            print(f"[snapshot] event:{verb} write failed: {err!r}", flush=True)
+            return
+        self.snapshot_stats["event"] += 1
+
     # ---- daily economy settlement (Level 0, no LLM) ------------------
 
     def _settle_days_through(self) -> None:
@@ -442,6 +472,7 @@ class SimulationEngine:
             self._daily_settlement()
             if self.on_snapshot is not None:
                 self.on_snapshot()   # persist the freshly-closed day
+                self.snapshot_stats["periodic"] += 1
 
     def _daily_settlement(self) -> None:
         """Close each shop's books (record + reset today's revenue, nudge the
@@ -1062,10 +1093,14 @@ class SimulationEngine:
                 minute=self.now, importance=3, kind="reflection",
                 text=wishes_mod.MINOR_CLOSE_TEXT.get(status, wishes_mod.MINOR_CLOSE_TEXT["completed"]),
                 tags=[f"goal:{wish.id}"]))
+            self._event_snapshot("wish_closed")
             return
+        closing = False
         if agent.chapter is not None and agent.chapter.chapter_type == "pursuit" \
                 and agent.chapter.id == wish.chapter_id:
-            self.request_chapter_close(agent, status, "wish", reason)
+            closing = self.request_chapter_close(agent, status, "wish", reason)
+        if not closing:
+            self._event_snapshot("wish_closed")   # no chapter beat follows this ending
 
     def seed_wish(self, agent: Agent, clean: dict, day: int | None = None, born: str = "seeded"):
         """Install a validated wish. A major wish opens its pursuit chapter through
@@ -1195,6 +1230,7 @@ class SimulationEngine:
                           location_id=agent.state.location, text=record.outcome, minute=at)
         self._emit_chapter_record(agent, record=record)
         self._emit_chapter_record(agent, chapter=agent.chapter)   # the interlude, ledger only
+        self._event_snapshot("chapter_closed")   # after the ledger: the page is fully turned
         return record
 
     def _advance_chapters(self) -> None:
@@ -1221,6 +1257,7 @@ class SimulationEngine:
             self._publish("system", "chapter_started", actor=agent,
                           location_id=agent.state.location, text=new.title, detail=new.narrative)
             self._emit_chapter_record(agent, chapter=new)
+            self._event_snapshot("chapter_started")
 
     # ---- wish generation (phase 2b) -----------------------------------------
 
@@ -1280,6 +1317,8 @@ class SimulationEngine:
                       text=wish.scale)          # scale only -- the wish itself stays private
         print(f"[wish] {agent.id} grew a {wish.scale} wish: \"{wish.title}\" "
               f"({len(wish.provenance)} memories cited)", flush=True)
+        # A major wish's pursuit chapter_started shares this minute -- one write.
+        self._event_snapshot("wish_born")
 
     def _emit_chapter_record(self, agent: Agent, chapter: chapters_mod.Chapter | None = None,
                              record: chapters_mod.ChapterRecord | None = None) -> None:
