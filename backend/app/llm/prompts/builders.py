@@ -112,6 +112,31 @@ def roster_pairs() -> list[tuple[str, str]]:
     return [(en, zh) for en, zh, _g in _ROSTER]
 
 
+def roster_genders() -> list[tuple[str, str, str]]:
+    """(english_name, zh_name, gender) for every resident whose gender is known."""
+    return [(en, zh, g) for en, zh, g in _ROSTER if g]
+
+
+def gender_of(name: str) -> str:
+    """'male' / 'female' / '' -- accepts either name form, case-insensitively."""
+    n = (name or "").strip().lower()
+    for en, zh, g in _ROSTER:
+        if n in (en.lower(), (zh or "").lower()):
+            return g
+    return ""
+
+
+# ---- gate counters ----------------------------------------------------------
+# Both pronoun gates live in different modules (the translation one in the server,
+# the generation one in the decision layer) but report here, so /api/usage has a
+# single place to read them from. Cheap: two integers.
+GATE_REJECTS: dict[str, int] = {"translate_person": 0, "generation_gender": 0}
+
+
+def note_gate_reject(kind: str) -> None:
+    GATE_REJECTS[kind] = GATE_REJECTS.get(kind, 0) + 1
+
+
 def dialogue_locale_directive() -> str:
     """zh runs only: tell the model to speak people's and places' Chinese names,
     never the English/pinyin sign-name form (a weak model otherwise copies
@@ -303,6 +328,7 @@ def appraise_prompt(text: str) -> list[dict]:
                 "about, in a life simulation. Respond ONLY with JSON: {\"sentiment\": -1..1} "
                 "(-1 very negative, +1 very positive). Task: appraise."
                 + roster_directive()
+                + roster_gender_directive(english_only=True)
             ),
         },
         {"role": "user", "content": text},
@@ -499,18 +525,34 @@ def chapter_closure_prompt(agent: "Agent", material: dict, outcome: str,
     ]
 
 
-def translate_prompt(text: str) -> list[dict]:
+def translate_prompt(text: str, owner: str = "", owner_gender: str = "") -> list[dict]:
     """Display-layer only: render a piece of English knowledge text into
     Traditional Chinese, with the name roster as a hard mapping so residents keep
     their canonical zh names (Lengyue -> 冷月), and the gender roster so a pronoun
     is fixed to the resident's canonical gender (historical text may say "her" for a
-    male resident -- the roster wins)."""
+    male resident -- the roster wins).
+
+    ``owner`` is whose text this is. A memory is written in the FIRST person, and a
+    translator handed such a line with no idea who is speaking will sometimes rewrite
+    it as third-person narration -- at which point it has to invent a gender, and
+    guesses from whatever name is nearby. That is the mis-gendering the roster alone
+    cannot prevent, because the missing fact is not the gender, it is who "I" is.
+    So: name the owner, and forbid the person shift outright."""
     pairs = roster_pairs()
     mapping = "; ".join(f"{en}={zh}" for en, zh in pairs if zh and zh != en)
     guide = f" Use these exact name translations: {mapping}." if mapping else ""
     # Gender roster -> correct 他/她/牠. The source English can be mis-gendered
     # (pre-roster generations), so the roster is authoritative, not the source pronoun.
     gender = roster_gender_directive()
+    speaker = ""
+    if owner:
+        who = f"{owner} ({owner_gender})" if owner_gender else owner
+        speaker = (f" This text belongs to {who}: when it speaks in the first person "
+                   f"(\"I\", \"my\", \"me\"), that \"I\" is {owner}.")
+    person = (" Preserve the grammatical person exactly. First-person text stays first"
+              " person -- render \"I\"/\"my\"/\"me\" as 我/我的, and NEVER rewrite it into"
+              " third-person narration with 他/她. Only use 他/她 for someone the source"
+              " itself refers to in the third person.")
     return [
         {
             "role": "system",
@@ -521,6 +563,8 @@ def translate_prompt(text: str) -> list[dict]:
                 + gender
                 + " Pronouns (他/她) must follow that gender roster, not the English source"
                   " (which may be mis-gendered)."
+                + speaker
+                + person
                 + " Output ONLY the Traditional Chinese translation -- never repeat or append the"
                   " original English."
                 + ' Respond ONLY with JSON: {"text": "..."}. Task: translate.'

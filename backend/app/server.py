@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from .agents import chapters as chapters_mod
 from .agents import wishes as wishes_mod
 from .agents.core import MemoryItem
-from .agents.decision import DecisionEngine, belief_text_ok
+from .agents.decision import DecisionEngine, belief_text_ok, person_shift_ok
 from .llm.factory import build_router
 from .llm.prompts import builders
 from .llm.router import _is_garbage_text
@@ -208,22 +208,52 @@ class Sim:
             text = pat.sub(zh, text)
         return text
 
-    async def _translate_once(self, src: str) -> tuple[str, str]:
+    def _owner_of_text(self, text: str) -> tuple[str, str]:
+        """Whose line is this? Returns (display_name, gender), or ("", "") when it is
+        not uniquely one resident's. A memory speaks in the first person, and the
+        translator needs to know who "I" is or it will invent a third person -- and
+        then a gender (see builders.translate_prompt).
+
+        Matched on the stored text, so a memory whose text carries {agent:...}
+        placeholders (the frontend resolves those before asking) is not found; the
+        free-text reflections this actually matters for carry none."""
+        t = (text or "").strip()
+        if not t:
+            return "", ""
+        holders = [a for a in self.world.agents.values()
+                   if any(m.text == t for m in a.memory.items)
+                   or any(b.text == t for b in a.semantic.beliefs)]
+        if len(holders) != 1:
+            return "", ""
+        return holders[0].name, holders[0].profile.gender
+
+    async def _translate_once(self, src: str, owner: str = "", owner_gender: str = "") -> tuple[str, str]:
         """One translation attempt over the whole chain. Returns (zh_text, model), or
         ("", "") if it failed the gate / errored (so the caller can fall back + queue a
         retry). Held to the translate-only semaphore so it yields to dialogue/reflection."""
+        def _accept(r) -> bool:
+            if not isinstance(r.parsed, dict) or _is_garbage_text(r.parsed.get("text")):
+                return False
+            # Person gate: a first-person line rewritten into third-person narration
+            # has had its speaker swapped for a guessed one -- that is where the
+            # mis-gendering comes from. Reject and let the chain retry.
+            if not person_shift_ok(src, str(r.parsed.get("text") or "")):
+                builders.note_gate_reject("translate_person")
+                print(f"[person-reject] {src[:70]!r} -> {str(r.parsed.get('text'))[:70]!r}", flush=True)
+                return False
+            return True
         try:
             async with self._translate_sem:   # low-priority: at most one translate chain at a time
                 res = await self.router.generate(
-                    task="translate", messages=builders.translate_prompt(src),
+                    task="translate",
+                    messages=builders.translate_prompt(src, owner=owner, owner_gender=owner_gender),
                     agent_id="-", sim_minute=self.engine.now,
                     schema={"type": "object"}, max_tokens=200,
                     per_call_timeout=SYNC_CALL_TIMEOUT_S,   # a wedged provider must not hold the translate slot
                     # The router's universal gate already rejects a junk "text" (a bare
                     # number, an "ok" dodge) and falls through; this local validate is a
-                    # thin echo of it for the same-provider retry.
-                    validate=lambda r: isinstance(r.parsed, dict)
-                    and not _is_garbage_text(r.parsed.get("text")),
+                    # thin echo of it plus the person gate above.
+                    validate=_accept,
                 )
             if isinstance(res.parsed, dict):
                 cand = str(res.parsed.get("text") or "").strip()
@@ -267,7 +297,8 @@ class Sim:
         # Pre-substitute pinyin -> zh names so the model can't phonetically drift
         # them (Aisi -> 阿思); it then translates the English around the fixed names.
         src = self._apply_name_subs(text)
-        zh, model = await self._translate_once(src)
+        owner, owner_gender = self._owner_of_text(text)
+        zh, model = await self._translate_once(src, owner, owner_gender)
         if zh:
             out = self._apply_name_subs(zh)
             self._translate_cache[text] = out       # only cache a REAL translation
@@ -303,7 +334,8 @@ class Sim:
                     self._tr_inflight.discard(text)   # already filled in elsewhere
                     continue
                 src = self._apply_name_subs(text)
-                zh, model = await self._translate_once(src)
+                owner, owner_gender = self._owner_of_text(text)
+                zh, model = await self._translate_once(src, owner, owner_gender)
                 if zh:
                     out = self._apply_name_subs(zh)
                     self._translate_cache[text] = out
@@ -1802,6 +1834,10 @@ async def usage() -> JSONResponse:
             "dialogue_floor": dialogue_floor,
             "chapters": dict(sim.engine.chapter_stats),   # closed / llm-written / template-written
             "wishes": dict(sim.engine.wish_stats),        # seeded / completed / failed / abandoned
+            # Pronoun gates: how often each mechanical backstop rejected a generation
+            # (translate_person = a first-person line rewritten in the third person;
+            # generation_gender = free text mis-gendering the one resident it names).
+            "gate_rejects": dict(builders.GATE_REJECTS),
             "by_task": [{"task": k, **{**v, "cost": round(v["cost"], 6)}} for k, v in
                         sorted(by_task.items(), key=lambda kv: -kv[1]["calls"])],
             "by_model": [{"model": k, **{**v, "cost": round(v["cost"], 6)}} for k, v in

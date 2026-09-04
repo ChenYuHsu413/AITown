@@ -264,6 +264,86 @@ def _dialogue_ok(result) -> bool:
     return True
 
 
+# ---- pronoun gates -----------------------------------------------------------------
+# Two mechanical backstops behind the roster instructions in the prompts. Both are
+# deliberately narrow: they fire only where the text is unambiguously wrong, because
+# a false reject costs a retry and, worse, teaches nobody anything.
+
+_EN_MASC = re.compile(r"\b(he|him|his)\b", re.I)
+_EN_FEM = re.compile(r"\b(she|her|hers)\b", re.I)
+_EN_FIRST = re.compile(r"\b(I|I'm|I've|I'd|I'll|my|me|myself)\b")
+# 他/她 as an actual pronoun -- 他人 ("other people"), 其他 ("other") and 他們/她們
+# are not somebody's pronoun and must not trip the gate.
+_ZH_THIRD = re.compile(r"(?<!其)[他她](?!人|們)")
+_ZH_FIRST = re.compile(r"我")
+
+
+def _named_residents(text: str) -> set:
+    """Residents named in the text, by either name form."""
+    out = set()
+    for en, zh, _g in builders.roster_genders():
+        if re.search(rf"\b{re.escape(en)}\b", text, re.I) or (zh and zh in text):
+            out.add(en.lower())
+    return out
+
+
+def person_shift_ok(source_en: str, translated_zh: str) -> bool:
+    """Translation gate. A first-person English line whose Chinese has dropped 我
+    entirely and speaks in the third person has had its speaker replaced -- and to do
+    that the model had to invent a gender, which is where the mis-gendering came from.
+    Reject that shape; everything else passes, including a first-person line that
+    legitimately refers to somebody else in the third person (it still keeps 我)."""
+    if not source_en or not translated_zh:
+        return True
+    if not _EN_FIRST.search(source_en):
+        return True                                  # not first person -> not our business
+    if not _ZH_THIRD.search(translated_zh):
+        return True                                  # no third-person pronoun -> fine
+    return bool(_ZH_FIRST.search(translated_zh))     # 我 survived -> the person was kept
+
+
+def gender_ok(text: str) -> bool:
+    """Generation gate. When a piece of English free text names exactly ONE resident
+    and then uses a pronoun contradicting that resident's roster gender, it is wrong
+    with no ambiguity to hide behind. Multi-name text is left alone -- resolving which
+    pronoun belongs to whom is guesswork, and a wrong guess would reject good output."""
+    if not text:
+        return True
+    named = _named_residents(text)
+    if len(named) != 1:
+        return True
+    gender = builders.gender_of(next(iter(named)))
+    if gender == "male":
+        return not (_EN_FEM.search(text) and not _EN_MASC.search(text))
+    if gender == "female":
+        return not (_EN_MASC.search(text) and not _EN_FEM.search(text))
+    return True
+
+
+def _note_gender_gate(passed: bool) -> bool:
+    """Count a rejection as it happens, then hand the verdict back to the router."""
+    if not passed:
+        builders.note_gate_reject("generation_gender")
+    return passed
+
+
+def reflection_gender_ok(parsed: object) -> bool:
+    """Run ``gender_ok`` over every free-text field a reflection lands in memory."""
+    if not isinstance(parsed, dict):
+        return True
+    texts = [str(x) for x in (parsed.get("insights") or [])]
+    texts += [str(b.get("text", "")) for b in (parsed.get("beliefs") or []) if isinstance(b, dict)]
+    secret = parsed.get("new_secret")
+    if isinstance(secret, dict):
+        texts.append(str(secret.get("text", "")))
+    for t in texts:
+        if not gender_ok(t):
+            if _GATE_DIAG:
+                print(f"[gender-reject] {t[:120]!r}", flush=True)
+            return False
+    return True
+
+
 # ---- referential-integrity gate (anchored pronouns; no self-third-person) ----------
 # Two lenient heuristics that catch only OBVIOUS breakdown, so normal reporting and
 # third-party mentions ("Aisi and Azong") pass untouched:
@@ -1108,7 +1188,10 @@ class DecisionEngine:
                     agent, material, outcome, chapters_mod.relationship_summary_lines(material, world)),
                 agent_id=agent.id, sim_minute=material["window"]["end_minute"],
                 schema={"type": "object"}, max_tokens=200,
-                validate=lambda r: chapters_mod.validate_closure_output(r.parsed, material) is not None,
+                validate=lambda r: (chapters_mod.validate_closure_output(r.parsed, material) is not None
+                                    and _note_gender_gate(gender_ok(
+                                        str((r.parsed or {}).get("biography_line", ""))
+                                        if isinstance(r.parsed, dict) else ""))),
                 per_call_timeout=30.0, no_floor=True,
             )
         except Exception as err:
@@ -1776,6 +1859,10 @@ class DecisionEngine:
             sim_minute=now,
             schema={"type": "object"},
             max_tokens=300 if builders.lang_is_zh() else 200,
+            # Mechanical backstop behind the roster: an insight/belief/secret that
+            # names one resident and mis-genders them is rejected, so the chain
+            # retries rather than writing it into memory forever.
+            validate=lambda r: _note_gender_gate(reflection_gender_ok(r.parsed)),
             # belief/secret/life_decision quality must never be a canned mock line:
             # a total chain failure raises ProvidersExhausted so the engine can brew a
             # pause and retry rather than settle for the floor (task 3).
