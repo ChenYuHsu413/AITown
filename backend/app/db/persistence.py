@@ -133,6 +133,12 @@ class Persistence:
     # a database the current columns must be added by hand and the stale NOT NULLs
     # relaxed -- otherwise the first ledger write fails on a column nobody writes.
     # Idempotent, and a no-op on a database that never saw that version.
+    #
+    # LEGACY COLUMNS FROM A REVERTED IMPLEMENTATION -- INTENTIONALLY KEPT. Do not
+    # add a DROP COLUMN here. The four commits that created them are still in the
+    # history (see the tag `phase2-reverted-do-not-restore`), so the table shape is
+    # part of that record; nine empty columns cost nothing, and DROP is irreversible
+    # DDL with no upside. This is a deliberate decision of record, not an oversight.
     _WISH_LEGACY_NOT_NULL = (
         "owner_id", "created_day", "ended_day", "source_memory_refs", "failure_conditions",
         "progress", "last_progress_day", "secret_id", "related_chapter_id",

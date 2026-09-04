@@ -161,7 +161,12 @@ class WishRow(Base):
     """Wish ledger (see agents/wishes.py): one row per wish, upserted when it is
     seeded and again when it ends. The private wording lives here because this table
     is the operator's own view, never a source for another resident's prompt; the
-    world snapshot remains the resume source of truth."""
+    world snapshot remains the resume source of truth.
+
+    A database that ran the earlier, since-reverted wish code carries nine extra
+    columns from that version (owner_id, created_day, ...). They are LEGACY COLUMNS
+    FROM A REVERTED IMPLEMENTATION AND ARE INTENTIONALLY KEPT -- see the migration in
+    db/persistence.py for the reasoning. Do not "tidy" them away."""
 
     __tablename__ = "wishes"
 
