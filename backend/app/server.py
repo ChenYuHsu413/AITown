@@ -1544,13 +1544,20 @@ async def clear_translations(body: dict = Body(default={})) -> JSONResponse:
     removed = await sim.persistence.clear_translations(
         lang=lang, contains=contains, gave_up_only=gave_up_only)
     # Evict from the live in-memory cache too, so the running server stops serving them.
-    def _match(src: str) -> bool:
-        return contains is None or contains.lower() in src.lower()
+    # Match the DB predicate exactly: it filters on source OR translation, so the
+    # in-memory eviction must too. Filtering only on the source left a row deleted in
+    # the database but still served from memory whenever the filter named the
+    # TRANSLATED text -- which is the natural way to target a specific bad rendering.
+    def _match(src: str, zh: str = "") -> bool:
+        if contains is None:
+            return True
+        c = contains.lower()
+        return c in src.lower() or c in (zh or "").lower()
     if gave_up_only:
         for t in [t for t in sim._tr_gaveup if _match(t)]:
             sim._tr_gaveup.discard(t)
     else:
-        for t in [t for t in sim._translate_cache if _match(t)]:
+        for t in [t for t, zh in list(sim._translate_cache.items()) if _match(t, zh)]:
             del sim._translate_cache[t]
         for t in [t for t in sim._tr_gaveup if _match(t)]:
             sim._tr_gaveup.discard(t)
