@@ -241,10 +241,17 @@ def narrative(agent: "Agent") -> str:
 
 
 def is_related_memory(item: MemoryItem, chapter: Chapter) -> bool:
-    """A memory is 'about' a pursuit when it names its landmark or shares >= 2
-    theme words with it (the same heuristic the resolved-worry fade uses)."""
+    """A memory is 'about' a pursuit when it is explicitly tagged to the chapter's
+    goal, names its landmark, or shares >= 2 theme words with it (the same
+    heuristic the resolved-worry fade uses).
+
+    The explicit tag matters for deliberately generic text: a wish's frustration
+    memory says nothing about the wish (that is the privacy rule), so only the tag
+    can tie it to the chapter it belongs to."""
     if item.kind == "biography":
         return False
+    if chapter.related_goal_id and f"goal:{chapter.related_goal_id}" in (item.tags or []):
+        return True
     if chapter.related_landmark_id and f"{{landmark:{chapter.related_landmark_id}}}" in item.text:
         return True
     words = {w.strip(".,;:!?'\"()-").lower() for w in item.text.split()}

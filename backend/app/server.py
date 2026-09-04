@@ -24,6 +24,7 @@ from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
 from .agents import chapters as chapters_mod
+from .agents import wishes as wishes_mod
 from .agents.core import MemoryItem
 from .agents.decision import DecisionEngine, belief_text_ok
 from .llm.factory import build_router
@@ -411,6 +412,8 @@ class Sim:
         self.router.usage.on_record = p.on_llm_call
         self.engine.on_snapshot = self._take_snapshot   # snapshot at each daily settlement
         self.engine.on_chapter_record = p.on_chapter    # chapter ledger (started / closed rows)
+        self.engine.on_wish_record = p.on_wish          # wish ledger (seeded / ended rows)
+        self.engine.set_run_seed(p.run_id)              # stable wish-drive dice for this run
         self._snap_wall = time.monotonic()
         self._snap_minute = self.engine.now
         for agent in self.world.agents.values():
@@ -1200,6 +1203,46 @@ async def break_equipment(body: dict) -> JSONResponse:
     return JSONResponse({"ok": True, "location": lid, "broken": True})
 
 
+@app.post("/god/seed_wish")
+async def god_seed_wish(body: dict = Body(default={})) -> JSONResponse:
+    """God Mode: hand a resident a structured private intention (see
+    agents/wishes.py). Phase 2a seeds wishes by hand; generating one is 2b.
+
+    Body: {"agent_id", "scale": "major"|"minor", "title", "statement", "motivation",
+           "narrative" (major only -- the chapter's self-description, English),
+           "requirements": [{"kind", "target", "threshold"}], "expires_on": <sim day>,
+           "provenance": [{"id","text"}], "validate_only": true}
+
+    SAFE BY DEFAULT: ``validate_only`` defaults to true and only returns the
+    feasibility report. Send {"validate_only": false} to actually seed; that path
+    also snapshots. Every requirement is checked against what this resident can
+    really do (a work path, an income path, a target who exists), and a major wish
+    needs at least one actionable requirement -- a purely passive one is refused."""
+    assert sim is not None
+    b = body if isinstance(body, dict) else {}
+    agent = sim.world.agents.get(str(b.get("agent_id", "")))
+    if agent is None:
+        return JSONResponse({"error": "agent_id must be a known resident"}, status_code=400)
+    day = sim.engine.now // DAY_MIN + 1
+    clean, problems = wishes_mod.validate_seed(b, agent, sim.world, day)
+    if problems:
+        return JSONResponse({"ok": False, "agent_id": agent.id, "problems": problems}, status_code=422)
+    report = {
+        "ok": True, "agent_id": agent.id, "scale": clean["scale"], "day": day,
+        "requirements": [{**r.to_dict(), "feasible": True} for r in clean["requirements"]],
+        "capacity_left": {s: wishes_mod.capacity_left(agent, s) for s in wishes_mod.SCALES},
+    }
+    if bool(b.get("validate_only", True)):
+        report["hint"] = 'nothing changed -- re-send with {"validate_only": false} to seed'
+        return JSONResponse(report)
+    wish = sim.engine.seed_wish(agent, clean, day)
+    if sim.persistence is not None:
+        sim._take_snapshot()
+    report.update(seeded=True, wish_id=wish.id,
+                  chapter_id=wish.chapter_id or None, expires_on=wish.expires_on)
+    return JSONResponse(report)
+
+
 @app.post("/god/close_chapter")
 async def god_close_chapter(body: dict = Body(default={})) -> JSONResponse:
     """God Mode: close an agent's current *pursuit* chapter now (testing, and the
@@ -1300,6 +1343,21 @@ async def agent_detail(agent_id: str) -> JSONResponse:
                 "started_on": ch.started_on, "goal": ch.goal, "until_day": ch.until_day,
                 "emotional_residue": ch.emotional_residue,
             } if ch is not None else None),
+            # God's-eye view of the resident's private intentions (see wishes.py).
+            # This panel is the operator's, never another resident's context.
+            "wishes": [
+                {"id": w.id, "scale": w.scale, "status": w.status, "title": w.title,
+                 "statement": w.statement, "created_on": w.created_on, "ended_on": w.ended_on,
+                 "expires_on": w.expires_on, "progress": round(w.progress, 3),
+                 "frustration_count": w.frustration_count,
+                 "blocked_streak": int((w.drive or {}).get("blocked_streak", 0)),
+                 "requirements": [
+                     {"kind": r.kind, "target": r.target, "threshold": r.threshold,
+                      "progress": r.progress, "completed": r.completed}
+                     for r in w.requirements],
+                 }
+                for w in a.wishes
+            ],
             "chapter_history": [
                 {"title": r.chapter.get("title", ""), "type": r.chapter.get("chapter_type", ""),
                  "started_on": r.chapter.get("started_on", 0), "ended_on": r.ended_on,
@@ -1738,6 +1796,7 @@ async def usage() -> JSONResponse:
             "budget_usd": sim.router.budget_usd,
             "dialogue_floor": dialogue_floor,
             "chapters": dict(sim.engine.chapter_stats),   # closed / llm-written / template-written
+            "wishes": dict(sim.engine.wish_stats),        # seeded / completed / failed / abandoned
             "by_task": [{"task": k, **{**v, "cost": round(v["cost"], 6)}} for k, v in
                         sorted(by_task.items(), key=lambda kv: -kv[1]["calls"])],
             "by_model": [{"model": k, **{**v, "cost": round(v["cost"], 6)}} for k, v in

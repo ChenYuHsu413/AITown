@@ -50,7 +50,10 @@ if TYPE_CHECKING:
 #             `weight`/`source_chapter_id`/`tags` and belief `weight` (all ride in the
 #             existing dicts via overlay), landmark `decoupled`. A v10 snapshot loads with
 #             chapter=None (read as ordinary), every weight 1.0 -- see scripts/backfill_chapters.py.
-SCHEMA_VERSION = 11
+#   v11 -> v12: per-agent `wishes` (structured private intentions + their rule-drive
+#             state). Absent on a v11 snapshot -> the resident simply has no wish, which
+#             is the pre-phase-2a behaviour; a malformed wish is skipped whole.
+SCHEMA_VERSION = 12
 
 
 # ---- capture -------------------------------------------------------------
@@ -106,6 +109,9 @@ def _capture_agent(agent) -> dict:
         # v11: the current life chapter (None = uninitialized -> ordinary) + history.
         "chapter": agent.chapter.to_dict() if agent.chapter is not None else None,
         "chapter_history": [r.to_dict() for r in agent.chapter_history],
+        # v12: private intentions. Their drive bookkeeping rides along, so a
+        # restart cannot re-count a blocked day or re-spend a daily attempt.
+        "wishes": [w.to_dict() for w in agent.wishes],
     }
 
 
@@ -231,6 +237,13 @@ def _restore_agent(agent, adata: dict) -> None:
         from ..agents.chapters import ChapterRecord
         agent.chapter_history = [ChapterRecord.from_dict(r) for r in adata["chapter_history"]
                                  if isinstance(r, dict)]
+
+    # v12+: wishes. Absent -> none (pre-phase-2a behaviour); a malformed entry is
+    # dropped whole rather than half-loaded.
+    if isinstance(adata.get("wishes"), list):
+        from ..agents.wishes import Wish
+        restored = [Wish.from_dict(w) for w in adata["wishes"]]
+        agent.wishes = [w for w in restored if w is not None]
 
 
 def _restore_rumors(rdata: dict) -> dict:

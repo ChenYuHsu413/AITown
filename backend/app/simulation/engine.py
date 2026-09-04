@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from ..agents import chapters as chapters_mod
+from ..agents import wishes as wishes_mod
 from ..agents.agent import Agent
 from ..agents.core import MemoryItem
 from ..agents.decision import ConvPlan, DecisionEngine
@@ -169,6 +170,9 @@ _EN_TEMPLATES = {
     "met_up": "{actor} and {target} met up as planned at {loc}",
     "chapter_closed": "{actor} closed a chapter of their life — {text}",
     "chapter_started": "{actor} began a new chapter: {text}",
+    # Wish beats are deliberately content-free: the intention itself is private.
+    "wish_seeded": "{actor} quietly set their mind on something",
+    "wish_closed": "{actor} settled something they had been carrying — {text}",
 }
 
 # The town's living history: the notable beats worth remembering (see Sim.chronicle
@@ -194,6 +198,9 @@ CHRONICLE_ICONS = {
 # Chapter closure: wall-clock bound on the one smart-tier call; past it (or on a
 # whole-chain failure) the rule-layer template line is used -- closure never blocks.
 CLOSURE_TIMEOUT_S = 60.0
+
+# Public stand-in for a wish-linked chapter's private title (see agents/wishes.py).
+PRIVATE_CHAPTER_TITLE = "a private chapter"
 
 
 def render_en(verb: str, actor: str, target: str, loc: str, text: str) -> str:
@@ -296,6 +303,18 @@ class SimulationEngine:
         # The decision layer raises the flag (a resolved secret ending a pursuit);
         # the engine owns the pipeline.
         self.decisions.on_chapter_signal = self.request_chapter_close
+        # ---- wishes (see agents/wishes.py) ---------------------------------
+        # Progress is driven purely by published events; terminals are drained at
+        # a safe point (never re-entrantly inside a publish).
+        self._wish_terminals: list[tuple[str, str]] = []   # (agent_id, wish_id)
+        self.wish_stats: dict[str, int] = {"seeded": 0, "completed": 0, "failed": 0, "abandoned": 0}
+        # Fired with a wish-ledger row when a wish is seeded or ends; None headless.
+        self.on_wish_record: Callable[[dict], None] | None = None
+        self.bus.subscribers.append(self._progress_wishes)
+        # Stable across restarts: the drive's dice are seeded from the run id
+        # (set by the host when persistence attaches), the sim day, agent and wish.
+        self.run_seed: str = ""
+        self.decisions.wish_run_seed = ""
 
     def bootstrap(self, start_minute: int) -> None:
         # Fresh scheduler each call so re-bootstrapping onto a restored world
@@ -478,6 +497,9 @@ class SimulationEngine:
         self._apply_pending_transitions()
         # Interludes that have run their course lapse into ordinary days.
         self._advance_chapters()
+        # Wishes: sample the state-derived requirements, then judge outcomes and
+        # abandonment (pure rules, once a day).
+        self._settle_wishes()
         # Romance spark judged once per day per resident (see decision._maybe_ignite).
         for agent in self.world.agents.values():
             self.decisions._maybe_ignite(agent, self.world, self.now)
@@ -695,6 +717,10 @@ class SimulationEngine:
             agent.memory.importance_since_reflection = 0
             self._reflecting.add(agent.id)
             self._spawn(self._reflect_task(agent, self.now))
+
+        # A wish whose last requirement was met by this tick's events settles here,
+        # outside the publish path.
+        self.drain_wish_terminals()
 
         self.scheduler.schedule(agent.id, self.now + decision.duration)
 
@@ -932,6 +958,126 @@ class SimulationEngine:
                 location_id=agent.state.location, text=be["text"], detail=detail, minute=at_minute,
             )
 
+    # ---- wishes (see agents/wishes.py) --------------------------------------
+
+    def set_run_seed(self, seed: str) -> None:
+        """Bind the wish drive's deterministic dice to this run."""
+        self.run_seed = seed or ""
+        self.decisions.wish_run_seed = self.run_seed
+
+    def _emit_wish_record(self, wish) -> None:
+        if self.on_wish_record is None:
+            return
+        try:
+            self.on_wish_record({
+                "wish_id": wish.id, "owner": wish.owner, "scale": wish.scale,
+                "status": wish.status, "title": wish.title, "statement": wish.statement,
+                "motivation": wish.motivation, "chapter_id": wish.chapter_id,
+                "created_on": wish.created_on, "ended_on": wish.ended_on,
+                "expires_on": wish.expires_on or 0, "outcome_reason": wish.outcome_reason,
+                "frustration_count": wish.frustration_count,
+                "requirements": [r.to_dict() for r in wish.requirements],
+                "provenance": list(wish.provenance),
+            })
+        except Exception as err:
+            print(f"[wish] ledger hook failed: {err}", flush=True)
+
+    def _linked_wish(self, agent: Agent, chapter_id: str):
+        """The wish (any status) whose pursuit chapter this is -- the marker that the
+        chapter's title/goal are private text."""
+        if not chapter_id:
+            return None
+        return next((w for w in agent.wishes if w.chapter_id == chapter_id), None)
+
+    def _progress_wishes(self, ev: Event) -> None:
+        """Bus subscriber: a real event is the ONLY thing that advances an
+        event-kind requirement. Terminals are queued, never handled in-line."""
+        for agent in self.world.agents.values():
+            for wish in agent.wishes:
+                if wish.status != "active":
+                    continue
+                if wishes_mod.update_from_event(wish, agent, ev):
+                    if wishes_mod.outcome(wish, ev.minute // DAY_MIN + 1) is not None:
+                        self._queue_wish_terminal(agent, wish)
+
+    def _queue_wish_terminal(self, agent: Agent, wish) -> None:
+        key = (agent.id, wish.id)
+        if key not in self._wish_terminals:
+            self._wish_terminals.append(key)
+
+    def drain_wish_terminals(self) -> None:
+        """Settle every wish that reached an outcome, outside the publish path."""
+        while self._wish_terminals:
+            aid, wid = self._wish_terminals.pop(0)
+            agent = self.world.agents.get(aid)
+            wish = next((w for w in agent.wishes if w.id == wid), None) if agent else None
+            if wish is None or wish.status != "active":
+                continue
+            result = wishes_mod.outcome(wish, self.now // DAY_MIN + 1)
+            if result is None:
+                continue
+            self._close_wish(agent, wish, *result)
+
+    def _settle_wishes(self) -> None:
+        """Daily: sample state-derived requirements, judge completion/expiry, then
+        weigh abandonment. All pure rules -- no LLM call originates here."""
+        day = self._last_day + 1
+        for agent in self.world.agents.values():
+            for wish in list(agent.wishes):
+                if wish.status != "active":
+                    continue
+                wishes_mod.update_from_state(wish, agent)
+                result = wishes_mod.outcome(wish, day)      # completion beats expiry
+                if result is not None:
+                    self._close_wish(agent, wish, *result, day=day)
+                elif wishes_mod.should_abandon(agent, wish, day):
+                    self._close_wish(agent, wish, "abandoned",
+                                     "the repeated obstacles outweighed how much it was still worth",
+                                     day=day)
+
+    def _close_wish(self, agent: Agent, wish, status: str, reason: str, day: int | None = None) -> None:
+        """A wish ends. A *major* wish runs the phase-1 closure pipeline (biography,
+        down-weighting, interlude) for all three outcomes -- this is the first
+        automatic source of a failed/abandoned closure. A *minor* wish is a smaller
+        beat: one event and one ordinary memory, no biography, no chapter change."""
+        day = self.now // DAY_MIN + 1 if day is None else day
+        if not wishes_mod.finish(wish, status, day, reason):
+            return
+        self.wish_stats[status] = self.wish_stats.get(status, 0) + 1
+        self._emit_wish_record(wish)
+        # Content-free public beat: the outcome is visible, the intention is not.
+        self._publish("system", "wish_closed", actor=agent,
+                      location_id=agent.state.location, text=status)
+        if wish.scale != "major":
+            agent.memory.add(MemoryItem(
+                minute=self.now, importance=3, kind="reflection",
+                text=wishes_mod.MINOR_CLOSE_TEXT.get(status, wishes_mod.MINOR_CLOSE_TEXT["completed"]),
+                tags=[f"goal:{wish.id}"]))
+            return
+        if agent.chapter is not None and agent.chapter.chapter_type == "pursuit" \
+                and agent.chapter.id == wish.chapter_id:
+            self.request_chapter_close(agent, status, "wish", reason)
+
+    def seed_wish(self, agent: Agent, clean: dict, day: int | None = None):
+        """Install a validated wish (God Mode). A major wish opens its pursuit
+        chapter through the ordinary phase-1 machinery."""
+        day = self.now // DAY_MIN + 1 if day is None else day
+        wish = wishes_mod.install(agent, clean, day)
+        if wish.scale == "major":
+            chapter = chapters_mod.make_pursuit(wish.statement, wish.title, clean["narrative"], day)
+            chapter.related_goal_id = wish.id
+            chapters_mod.start_pursuit(agent, chapter)
+            wish.chapter_id = chapter.id
+            self._emit_chapter_record(agent, chapter=chapter)
+            # Neutral text: the chapter's own title is the wish's private wording.
+            self._publish("system", "chapter_started", actor=agent,
+                          location_id=agent.state.location, text=PRIVATE_CHAPTER_TITLE)
+        self.wish_stats["seeded"] += 1
+        self._emit_wish_record(wish)
+        self._publish("system", "wish_seeded", actor=agent, location_id=agent.state.location,
+                      text=wish.scale)   # scale only -- never the wish's own words
+        return wish
+
     # ---- life chapters: the closure pipeline (see agents/chapters.py) --------
 
     def request_chapter_close(self, agent: Agent, outcome: str, trigger: str, reason: str = "") -> bool:
@@ -1004,12 +1150,27 @@ class SimulationEngine:
             return None
         self.chapter_stats["closed"] += 1
         self.chapter_stats[source] += 1
+        # A wish-linked chapter carries the owner's PRIVATE wording in its title and
+        # goal, so the public beat names neither -- only the outcome. The biography
+        # line itself stays public: it is the owner's own account (phase-1 rule).
+        linked = self._linked_wish(agent, chapter.id)
         title = record.chapter.get("title", "")
+        detail = (f"{record.outcome} · a private chapter" if linked is not None
+                  else f"{record.outcome} · {title}" + (f" · {reason}" if reason else ""))
         self._publish(
             "system", "chapter_closed", actor=agent, location_id=agent.state.location,
-            text=record.biography_line, minute=at,
-            detail=f"{record.outcome} · {title}" + (f" · {reason}" if reason else ""),
+            text=record.biography_line, minute=at, detail=detail,
         )
+        # The chapter may have been closed by something other than the wish itself
+        # (a landmark, a transition, God Mode). The linked wish settles with it --
+        # ``finish`` first, so this can never bounce back into a second closure.
+        if linked is not None and linked.status == "active":
+            wishes_mod.finish(linked, record.outcome, record.ended_on,
+                              reason or f"the linked chapter closed via {trigger}")
+            self.wish_stats[record.outcome] = self.wish_stats.get(record.outcome, 0) + 1
+            self._emit_wish_record(linked)
+            self._publish("system", "wish_closed", actor=agent,
+                          location_id=agent.state.location, text=record.outcome, minute=at)
         self._emit_chapter_record(agent, record=record)
         self._emit_chapter_record(agent, chapter=agent.chapter)   # the interlude, ledger only
         return record

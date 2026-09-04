@@ -157,6 +157,33 @@ class ChapterRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class WishRow(Base):
+    """Wish ledger (see agents/wishes.py): one row per wish, upserted when it is
+    seeded and again when it ends. The private wording lives here because this table
+    is the operator's own view, never a source for another resident's prompt; the
+    world snapshot remains the resume source of truth."""
+
+    __tablename__ = "wishes"
+
+    wish_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(32), index=True, default="")
+    owner: Mapped[str] = mapped_column(String(32), index=True)
+    scale: Mapped[str] = mapped_column(String(8))
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    title: Mapped[str] = mapped_column(String(200), default="")
+    statement: Mapped[str] = mapped_column(Text, default="")
+    motivation: Mapped[str] = mapped_column(Text, default="")
+    chapter_id: Mapped[str] = mapped_column(String(32), default="")
+    created_on: Mapped[int] = mapped_column(Integer, default=0)      # sim day
+    ended_on: Mapped[int] = mapped_column(Integer, default=0)        # sim day (0 = still active)
+    expires_on: Mapped[int] = mapped_column(Integer, default=0)      # sim day (0 = no deadline)
+    outcome_reason: Mapped[str] = mapped_column(Text, default="")
+    frustration_count: Mapped[int] = mapped_column(Integer, default=0)
+    requirements: Mapped[list] = mapped_column(JSONB, default=list)
+    provenance: Mapped[list] = mapped_column(JSONB, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SnapshotArchive(Base):
     """Append-only safety net: a full world payload saved *before* any destructive
     admin operation (unlike world_snapshots, which is upsert/single-row). Every row

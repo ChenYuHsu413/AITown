@@ -30,7 +30,7 @@ from ..llm.usage import LLMCall
 from ..simulation.engine import Event
 from .models import (
     Base, ChapterRow, EventRow, LLMCallRow, MemoryRow, SimulationRun, SnapshotArchive,
-    TranslationCacheRow, WorldSnapshot,
+    TranslationCacheRow, WishRow, WorldSnapshot,
 )
 
 
@@ -58,6 +58,11 @@ class _TransWrite:
 @dataclass
 class _ChapterWrite:
     row: dict          # ChapterRow columns (chapter_id, agent_id, ... ) -- upserted
+
+
+@dataclass
+class _WishWrite:
+    row: dict          # WishRow columns (wish_id, owner, ...) -- upserted
 
 
 class Persistence:
@@ -158,6 +163,10 @@ class Persistence:
         """Queue a chapter-ledger upsert (chapter started / closed). Non-blocking."""
         self._queue.put_nowait(_ChapterWrite(dict(row)))
 
+    def on_wish(self, row: dict) -> None:
+        """Queue a wish-ledger upsert (seeded / ended). Non-blocking."""
+        self._queue.put_nowait(_WishWrite(dict(row)))
+
     async def _flush_loop(self) -> None:
         while True:
             batch = [await self._queue.get()]
@@ -205,6 +214,16 @@ class Persistence:
                     stmt = stmt.on_conflict_do_update(
                         index_elements=[ChapterRow.chapter_id],
                         set_={k: v for k, v in row.items() if k != "chapter_id"},
+                    )
+                    await s.execute(stmt)
+                elif isinstance(item, _WishWrite):
+                    row = {k: v for k, v in item.row.items() if k in WishRow.__table__.columns}
+                    row.setdefault("run_id", self.run_id)
+                    row["updated_at"] = datetime.utcnow()
+                    stmt = pg_insert(WishRow).values(**row)
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=[WishRow.wish_id],
+                        set_={k: v for k, v in row.items() if k != "wish_id"},
                     )
                     await s.execute(stmt)
                 elif isinstance(item, _SnapWrite):

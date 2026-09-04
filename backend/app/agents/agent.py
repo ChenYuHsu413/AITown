@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from .chapters import Chapter, ChapterRecord
 from .core import AgentState, EpisodicMemory, Profile, SemanticMemory
 from .routine import Routine
+from .wishes import Wish
 
 
 @dataclass
@@ -43,6 +44,9 @@ class Agent:
     # ordinary chapter everywhere; ``chapter_history`` is append-only.
     chapter: Chapter | None = None
     chapter_history: list[ChapterRecord] = field(default_factory=list)
+    # Private structured intentions (see wishes.py). Hand-seeded in phase 2a;
+    # at most 1 active major + 2 active minor.
+    wishes: list[Wish] = field(default_factory=list)
 
     @property
     def id(self) -> str:

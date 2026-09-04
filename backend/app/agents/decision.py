@@ -35,6 +35,7 @@ from ..world.world import Observation, World
 from . import chapters as chapters_mod
 from . import romance as romance_mod
 from . import transitions as transitions_mod
+from . import wishes as wishes_mod
 from .agent import Agent
 from .core import Belief, MemoryItem
 
@@ -411,6 +412,9 @@ class DecisionEngine:
     # whose theme is the chapter's (see _resolve_secret). The engine owns the
     # pipeline (LLM call + atomic apply + event); this layer only raises the flag.
     on_chapter_signal: object = None
+    # Seeds the wish drive's deterministic dice with the persistence run id, so the
+    # same day replays the same way across restarts (set by the engine).
+    wish_run_seed: str = ""
 
     def __post_init__(self) -> None:
         live = any(p.name != "mock" for chain in self.router.tiers.values() for p in chain)
@@ -453,6 +457,7 @@ class DecisionEngine:
         model_used = "rules"
 
         decision: Decision | None = None
+        wish_drive: dict | None = None
 
         # ---- Level 2 (resume): chasing a rumor's source to confront ---
         if agent.state.seek_target and agent.state.current_action != "sleep":
@@ -497,11 +502,24 @@ class DecisionEngine:
                                         reason=f"repairing the equipment at {target}",
                                         narrative_verb="repair", narrative_target=target)
 
+        # ---- Wish drive (Level 0, pure rules; see agents/wishes.py) ----
+        # Considered only AFTER sleep, low energy, repair duty and a kept meetup have
+        # had their say, and only for a slot the routine was already spending on
+        # rest/idle. What comes back is a *suggestion*: every precondition below
+        # (talk cooldown, dialogue cap, the partner's refusal, closing days, rain)
+        # still applies, and nothing here touches requirement progress.
+        if decision is None and not agent.state.pending_concern:
+            wish_drive = wishes_mod.next_directive(
+                agent, world, now, entry.action, run_seed=self.wish_run_seed)
+
         # ---- Level 1: social trigger (cheap LLM) ----------------------
         # Once the day's dialogue budget is spent, decline by rule -- no should_talk
         # LLM call either. Agents still meet and move; they just chat less.
-        if decision is None and obs.arrivals and not self.dialogue_cap_reached(now):
-            partner_id = obs.arrivals[0]
+        # A wish may nominate who is worth approaching, but never that they must be.
+        wish_social = wish_drive if (wish_drive or {}).get("action") == "talk_bias" else None
+        candidates = [wish_social["target"]] if wish_social else list(obs.arrivals)
+        if decision is None and candidates and not self.dialogue_cap_reached(now):
+            partner_id = candidates[0]
             partner = world.agents[partner_id]
             last = agent.state.last_talk_minute.get(partner_id, -10**9)
             partner_free = (
@@ -509,7 +527,7 @@ class DecisionEngine:
                 and partner.state.current_action != "sleep"
             )
             if partner_free and now - last >= TALK_COOLDOWN_MIN and agent.state.current_action != "sleep" \
-                    and self._social_gate(agent, partner_id, now):
+                    and self._social_gate(agent, partner_id, now, wish_target=bool(wish_social)):
                 memories = await agent.memory.retrieve_async(
                     f"{partner.id.capitalize()} {obs.location}", k=5, location=obs.location)
                 res = await self.router.generate(
@@ -531,6 +549,10 @@ class DecisionEngine:
                         level=1,
                         reason=str(res.parsed.get("reason", "wants to chat")),
                     )
+            # The approach didn't happen (cooldown, cap, gate, or a plain "no"):
+            # for the wish that suggested it, today was a blocked day.
+            if wish_social is not None and decision is None:
+                self._note_wish_blocked(agent, wish_social["wish_id"], now)
 
         # ---- Level 2: react to a rumor about oneself ------------------
         if agent.state.pending_concern and agent.state.current_action != "sleep":
@@ -679,18 +701,40 @@ class DecisionEngine:
             if festival and agent.state.location == festival["location"]:
                 agent.state.mood = "happy"
 
+            # A wish directive may spend this one discretionary slot -- but it yields
+            # to a day off and to being rained out, exactly like the routine does.
+            # A move still goes through World.execute, so progress can only ever come
+            # from the resulting `arrive` event, never from the intention itself.
+            drive_action = ""
+            if wish_drive is not None and wish_social is None:
+                if day_off_rest or park_rained_out:
+                    self._note_wish_blocked(agent, wish_drive["wish_id"], now)
+                else:
+                    want = wish_drive["action"]
+                    want_loc = wish_drive.get("location", agent.state.location)
+                    if want == "move" and want_loc != agent.state.location \
+                            and want_loc != agent.state.avoid_location:
+                        dest, drive_action = want_loc, "move"
+                    elif want in wishes_mod.DRIVE_ACTIONS:
+                        dest, drive_action = agent.state.location, want
+                    else:
+                        self._note_wish_blocked(agent, wish_drive["wish_id"], now)
+
             until_next = agent.routine.next_boundary(minute_of_day, dow) - minute_of_day
             if agent.state.location != dest:
                 decision = Decision(
                     "move", target_location=dest, duration=10,
-                    reason=(f"interlude: drifting over to {dest}" if interlude_drift
+                    reason=("private intention: heading to {}".format(dest) if drive_action == "move"
+                            else f"interlude: drifting over to {dest}" if interlude_drift
                             else f"routine: head to {dest}"),
                 )
             else:
-                act = "rest" if (park_rained_out or day_off_rest or interlude_drift) else entry.action
+                act = ("rest" if (park_rained_out or day_off_rest or interlude_drift)
+                       else drive_action or entry.action)
                 reason = ("routine: rest (rained out)" if park_rained_out
                           else "day off" if day_off_rest
                           else "interlude: drifting, nothing to push forward" if interlude_drift
+                          else f"private intention: {drive_action}" if drive_action
                           else f"routine: {entry.action}")
                 decision = Decision(
                     act, duration=max(15, min(until_next, 120)), reason=reason,
@@ -721,7 +765,14 @@ class DecisionEngine:
             text=f"{{loc:{shop}}} was closed today, went to {{loc:{went_to}}} instead.",
         ))
 
-    def _social_gate(self, agent: Agent, partner_id: str, now: int) -> bool:
+    @staticmethod
+    def _note_wish_blocked(agent: Agent, wish_id: str, now: int) -> None:
+        wish = next((w for w in agent.wishes if w.id == wish_id and w.status == "active"), None)
+        if wish is not None:
+            wishes_mod.note_blocked(agent, wish, now)
+
+    def _social_gate(self, agent: Agent, partner_id: str, now: int,
+                     wish_target: bool = False) -> bool:
         """Tiered pre-check before the cheap should_talk call. Returns True to let
         the LLM decide, False to skip by rule. Probability keys off how close the
         two already are (a fresh pair defaults to the neutral friendship 30, i.e.
@@ -735,6 +786,10 @@ class DecisionEngine:
         # Interlude: a little more socially forward than usual (see chapters.py).
         if chapters_mod.in_interlude(agent):
             p *= chapters_mod.INTERLUDE_SOCIAL_MULT
+        # A wish makes this person worth approaching -- a bias on the pre-check only;
+        # the cheap should_talk call still gets the final say.
+        if wish_target:
+            p = min(1.0, p * wishes_mod.DRIVE_SOCIAL_GATE_MULT)
         # Post-rejection awkwardness: for a week the pair can barely face each other.
         if agent.state.awkward_until.get(partner_id, -1) >= now // (24 * 60):
             p *= romance_mod.AWKWARD_TALK_MULT
@@ -862,6 +917,12 @@ class DecisionEngine:
         # Deterministic per (day, agent): reproducible, and independent of call order.
         rng = random.Random(int(hashlib.sha256(f"meetup|{day}|{agent.id}".encode()).hexdigest()[:8], 16))
         p_try = MEETUP_DAILY_P * (chapters_mod.INTERLUDE_MEETUP_MULT if chapters_mod.in_interlude(agent) else 1.0)
+        # Someone an active wish wants time with is worth asking more often -- this
+        # raises the ATTEMPT rate only; the friendship bar, both cooldowns, the
+        # shared-free-window search and their right to decline are untouched.
+        wish_partner = wishes_mod.social_target(agent)
+        if wish_partner:
+            p_try = max(p_try, wishes_mod.DRIVE_MEETUP_PROBABILITY)
         if rng.random() >= p_try:
             return None
         # Candidate friends: friendly enough, not on the per-pair cooldown, free of an
@@ -879,7 +940,10 @@ class DecisionEngine:
         if not cands:
             return None
         cands.sort(key=lambda o: agent.rel(o.id).friendship, reverse=True)
-        b = cands[rng.randrange(min(3, len(cands)))]     # one of the top few friends
+        # A wish target that already cleared every candidate rule is picked first;
+        # otherwise the ordinary "one of your closest few" choice stands.
+        preferred = next((o for o in cands if o.id == wish_partner), None)
+        b = preferred if preferred is not None else cands[rng.randrange(min(3, len(cands)))]
         # The friend may decline -- warmer relationships accept more readily; a sour mood
         # dampens it. Record the per-pair cooldown either way so they don't re-ask daily.
         st.meetup_with_day[b.id] = day
