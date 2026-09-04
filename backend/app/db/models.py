@@ -179,6 +179,7 @@ class WishRow(Base):
     statement: Mapped[str] = mapped_column(Text, default="")
     motivation: Mapped[str] = mapped_column(Text, default="")
     chapter_id: Mapped[str] = mapped_column(String(32), default="")
+    born: Mapped[str] = mapped_column(String(16), default="seeded")  # seeded (God Mode) | grown (2b)
     created_on: Mapped[int] = mapped_column(Integer, default=0)      # sim day
     ended_on: Mapped[int] = mapped_column(Integer, default=0)        # sim day (0 = still active)
     expires_on: Mapped[int] = mapped_column(Integer, default=0)      # sim day (0 = no deadline)

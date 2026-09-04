@@ -981,7 +981,7 @@ class SimulationEngine:
             self.on_wish_record({
                 "wish_id": wish.id, "owner": wish.owner, "scale": wish.scale,
                 "status": wish.status, "title": wish.title, "statement": wish.statement,
-                "motivation": wish.motivation, "chapter_id": wish.chapter_id,
+                "motivation": wish.motivation, "chapter_id": wish.chapter_id, "born": wish.born,
                 "created_on": wish.created_on, "ended_on": wish.ended_on,
                 "expires_on": wish.expires_on or 0, "outcome_reason": wish.outcome_reason,
                 "frustration_count": wish.frustration_count,

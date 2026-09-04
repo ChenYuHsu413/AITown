@@ -151,6 +151,7 @@ class Persistence:
         ("chapter_id", "VARCHAR(32) NOT NULL DEFAULT ''"),
         ("frustration_count", "INTEGER NOT NULL DEFAULT 0"),
         ("provenance", "JSONB"),
+        ("born", "VARCHAR(16) NOT NULL DEFAULT 'seeded'"),
     )
 
     async def _migrate_wishes(self, conn) -> None:
