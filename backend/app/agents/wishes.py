@@ -72,7 +72,12 @@ REQUIREMENTS_MAX = 8
 EVENT_KINDS = ("location_visits", "action_count", "talk_count", "meetups_kept", "event_witnessed")
 STATE_KINDS = ("friendship", "trust", "money_gain")
 REQUIREMENT_KINDS = EVENT_KINDS + STATE_KINDS
-PASSIVE_KINDS = ("event_witnessed",)                      # cannot carry a major wish
+# Always passive: the resident cannot act on it, it merely happens to them.
+# ``money_gain`` is passive *conditionally* -- see requirement_actionable: a wage
+# that arrives whether or not you get out of bed is no more actionable than the
+# weather. Actionability is therefore a question about a kind AND a resident.
+PASSIVE_KINDS = ("event_witnessed",)
+CONDITIONAL_KINDS = ("money_gain",)
 ACTIONABLE_KINDS = tuple(k for k in REQUIREMENT_KINDS if k not in PASSIVE_KINDS)
 
 DRIVE_ACTIONS = ("work", "rest", "idle")                  # action_count targets the drive can pursue
@@ -283,10 +288,36 @@ def work_locations(agent: "Agent", world: "World") -> list:
                               if e.action == "work" and e.location in world.locations))
 
 
-def has_income_ability(agent: "Agent", world: "World") -> bool:
-    return (agent.profile.daily_wage > 0
-            or bool(work_locations(agent, world))
+def actionable_income_path(agent: "Agent", world: "World") -> bool:
+    """Money this resident can go out and earn: a work entry in their own timetable
+    pointing at a real place, or a shop of their own that takes money."""
+    return (bool(work_locations(agent, world))
             or any(l.owner == agent.id and l.price > 0 for l in world.locations.values()))
+
+
+def passive_income(agent: "Agent", world: "World") -> bool:
+    """Money that arrives regardless -- a pension, a stipend. It moves the wallet
+    but there is nothing to *do* about it."""
+    return agent.profile.daily_wage > 0 and not actionable_income_path(agent, world)
+
+
+def has_income_ability(agent: "Agent", world: "World") -> bool:
+    """Any income at all: enough for a money requirement to be able to progress,
+    which is a weaker claim than being able to pursue it (see requirement_actionable)."""
+    return actionable_income_path(agent, world) or agent.profile.daily_wage > 0
+
+
+def requirement_actionable(agent: "Agent", world: "World", req: Requirement) -> bool:
+    """Can THIS resident do something about this requirement? Always false for a
+    passive kind; for a money kind, only when they have a way to earn rather than
+    merely receive. A non-actionable requirement still accrues progress from real
+    events, but the drive never pursues it -- so it never produces a blocked day,
+    never breeds frustration, and can never be the thing that justifies a major."""
+    if req.kind in PASSIVE_KINDS:
+        return False
+    if req.kind in CONDITIONAL_KINDS:
+        return actionable_income_path(agent, world)
+    return True
 
 
 def requirement_feasible(agent: "Agent", world: "World", req: Requirement) -> tuple[bool, str]:
@@ -310,7 +341,7 @@ def requirement_feasible(agent: "Agent", world: "World", req: Requirement) -> tu
     if req.kind == "money_gain":
         if not has_income_ability(agent, world):
             return False, "no income path: no wage, no shop, no work entry in the routine"
-        return True, ""
+        return True, ""     # feasible; whether it is *actionable* is a separate question
     if req.kind == "action_count":
         if req.target not in DRIVE_ACTIONS:
             return False, f"action_count target must be one of {list(DRIVE_ACTIONS)}"
@@ -384,10 +415,12 @@ def validate_seed(raw: object, agent: "Agent", world: "World", day: int) -> tupl
             reqs.append(r)
 
     if scale == "major" and reqs:
-        actionable = [r for r in reqs if r.kind in ACTIONABLE_KINDS]
-        if not actionable:
-            problems.append("a major wish needs at least one actionable (non-passive) requirement; "
-                            f"passive kinds are {list(PASSIVE_KINDS)}")
+        if not any(requirement_actionable(agent, world, r) for r in reqs):
+            why = f"passive kinds are {list(PASSIVE_KINDS)}"
+            if any(r.kind in CONDITIONAL_KINDS for r in reqs) and passive_income(agent, world):
+                why = (f"{agent.id}'s only income is a passive wage (no work entry, no shop), so a "
+                       f"money requirement is passive for them -- they cannot act to earn more")
+            problems.append("a major wish needs at least one requirement this resident can act on; " + why)
 
     expires = raw.get("expires_on")
     if expires is not None:
@@ -544,6 +577,11 @@ def _todays_work_location(agent: "Agent", world: "World", now: int) -> str:
                  if e.action == "work" and e.location in world.locations), "")
 
 
+def actionable_summary(agent: "Agent", world: "World", reqs: list) -> list:
+    """Per-requirement actionability, for the seeding report."""
+    return [requirement_actionable(agent, world, r) for r in reqs]
+
+
 def social_target(agent: "Agent") -> str:
     """The resident an active wish most wants time with -- read by the existing
     meetup system, which then applies all of its own rules."""
@@ -573,8 +611,10 @@ def next_directive(agent: "Agent", world: "World", now: int, routine_action: str
             continue
         if _roll(run_seed, agent.id, wish.id, day, st["cursor"]) >= prob:
             continue
+        # Only requirements this resident can actually act on are ever pursued, so a
+        # passive one can never be the reason a day is recorded as blocked.
         candidates = [(i, r) for i, r in enumerate(wish.requirements)
-                      if not r.completed and r.kind in ACTIONABLE_KINDS
+                      if not r.completed and requirement_actionable(agent, world, r)
                       and st["attempt_days"].get(str(i)) != day]
         if not candidates:
             continue
@@ -620,7 +660,7 @@ def _directive_for(agent: "Agent", world: "World", req: Requirement, now: int) -
     if req.kind == "meetups_kept":
         return None                          # arranged only through the meetup system
     if req.kind == "money_gain" or (req.kind == "action_count" and req.target == "work"):
-        if req.kind == "money_gain" and not has_income_ability(agent, world):
+        if req.kind == "money_gain" and not actionable_income_path(agent, world):
             return None
         work = _todays_work_location(agent, world, now)
         if not work or not work_available(agent, world, work, now):

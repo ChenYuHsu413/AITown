@@ -64,6 +64,50 @@ class Feasibility(unittest.TestCase):
         _, problems = wishes_mod.validate_seed(body, self.world.agents[agent_id], self.world, self.day)
         return problems
 
+    def test_passive_income_cannot_carry_a_major(self):
+        """A pension moves the wallet, but there is nothing to *do* about it -- so a
+        money requirement is passive for its holder and cannot justify a major."""
+        pensioner = self.world.agents["kuaizheng"]      # retired: wage 42, no work entry
+        self.assertTrue(wishes_mod.passive_income(pensioner, self.world))
+        self.assertFalse(wishes_mod.actionable_income_path(pensioner, self.world))
+        problems = self._problems("kuaizheng", requirements=[{"kind": "money_gain", "threshold": 300}])
+        self.assertTrue(any("only income is a passive wage" in p for p in problems), problems)
+        self.assertTrue(any("act on" in p for p in problems), problems)
+
+    def test_a_shop_owner_keeps_an_actionable_money_requirement(self):
+        """Regression: someone who can really earn is unaffected by the split."""
+        owner = self.world.agents["jiji"]               # runs the cafe
+        self.assertTrue(wishes_mod.actionable_income_path(owner, self.world))
+        self.assertFalse(wishes_mod.passive_income(owner, self.world))
+        self.assertEqual(self._problems("jiji", requirements=[{"kind": "money_gain", "threshold": 300}]), [])
+        # ...and so is a salaried resident whose routine actually sends them to work
+        self.assertTrue(wishes_mod.actionable_income_path(self.world.agents["lengyue"], self.world))
+        self.assertEqual(self._problems("lengyue", requirements=[{"kind": "money_gain", "threshold": 50}]), [])
+
+    def test_a_mixed_major_is_allowed_and_the_money_part_never_blocks(self):
+        """money + location for the pensioner: the location requirement makes it a
+        legitimate major, and the passive money part is simply left alone."""
+        pensioner = self.world.agents["kuaizheng"]
+        self.assertEqual(self._problems("kuaizheng", requirements=[
+            {"kind": "money_gain", "threshold": 300},
+            {"kind": "location_visits", "target": "market", "threshold": 4}]), [])
+        with unittest.mock.patch.object(wishes_mod, "DRIVE_MAJOR_PROBABILITY", 1.0):
+            w = seed(self.engine, self.world, "kuaizheng", scale="major",
+                     requirements=[{"kind": "money_gain", "threshold": 300},
+                                   {"kind": "location_visits", "target": "market", "threshold": 4}])
+            directives = [wishes_mod.next_directive(pensioner, self.world, 9 * 60 + i * 45, "rest")
+                          for i in range(4)]
+        chosen = [d for d in directives if d]
+        self.assertTrue(chosen, "the location requirement should still be driven")
+        # every directive targets the location requirement; money is never pursued
+        self.assertTrue(all(d["requirement_index"] == 1 for d in chosen), chosen)
+        self.assertEqual(w.drive["blocked_streak"], 0)    # the passive half never blocks
+        self.assertEqual(w.frustration_count, 0)
+        # ...and it still accrues progress from the world, as a real requirement should
+        pensioner.state.money = w.requirements[0].baseline + 300
+        wishes_mod.update_from_state(w, pensioner)
+        self.assertTrue(w.requirements[0].completed)
+
     def test_money_major_without_income_ability_is_refused(self):
         broke = self.world.agents["kuaizheng"]
         broke.profile.daily_wage = 0.0
@@ -80,7 +124,7 @@ class Feasibility(unittest.TestCase):
     def test_purely_passive_major_is_refused(self):
         problems = self._problems("oula", requirements=[{"kind": "event_witnessed", "target": "rain_start",
                                                          "threshold": 2}])
-        self.assertTrue(any("actionable" in p for p in problems), problems)
+        self.assertTrue(any("can act on" in p for p in problems), problems)
         # the same passive requirement is fine as a minor wish
         self.assertEqual(self._problems("oula", scale="minor",
                                         requirements=[{"kind": "event_witnessed", "target": "rain_start",

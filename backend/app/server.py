@@ -1229,7 +1229,12 @@ async def god_seed_wish(body: dict = Body(default={})) -> JSONResponse:
         return JSONResponse({"ok": False, "agent_id": agent.id, "problems": problems}, status_code=422)
     report = {
         "ok": True, "agent_id": agent.id, "scale": clean["scale"], "day": day,
-        "requirements": [{**r.to_dict(), "feasible": True} for r in clean["requirements"]],
+        # ``actionable`` is per-resident, not per-kind: a requirement can be feasible
+        # (it will progress) yet passive for this person (they cannot pursue it, so
+        # the drive leaves it alone) -- e.g. money for someone living on a pension.
+        "requirements": [{**r.to_dict(), "feasible": True,
+                          "actionable": wishes_mod.requirement_actionable(agent, sim.world, r)}
+                         for r in clean["requirements"]],
         "capacity_left": {s: wishes_mod.capacity_left(agent, s) for s in wishes_mod.SCALES},
     }
     if bool(b.get("validate_only", True)):
