@@ -63,6 +63,19 @@ class TranslationPersonGate(unittest.TestCase):
         self.assertTrue(person_shift_ok(
             "Lengyue seems increasingly determined to leave her job.",
             "冷月似乎越來越堅定要離開她的工作。"))
+        # A framing verb's "I" is routinely dropped in Chinese ("I heard that..." ->
+        # 「聽說...」). That is good style, not a lost speaker -- and the source's own
+        # third person is where the 她 legitimately comes from. Real rows from the
+        # live cache that an earlier draft of this gate wrongly rejected:
+        self.assertTrue(person_shift_ok(
+            "I heard Jiji noticed Lengyue acting weird with Xixi, she might be keeping a secret.",
+            "聽說ㄐㄐ發現冷月跟希希行為怪怪的，她可能在隱瞞什麼秘密。"))
+        self.assertTrue(person_shift_ok(
+            "Today I noticed that Xue seems preoccupied, though she didn't say anything directly.",
+            "今天注意到雪好像心事重重的，雖然她沒直接講工作的事。"))
+        self.assertTrue(person_shift_ok(
+            "Jiji is worried that Lengyue's crush on me might cause tension at her cafe.",
+            "ㄐㄐ擔心冷月對他的好感會讓她的咖啡廳氣氛變緊張。"))
         # first person with no third-person pronoun in the translation
         self.assertTrue(person_shift_ok(
             "I finished the installation at the park.", "我在公園完成了那個裝置。"))

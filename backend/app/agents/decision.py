@@ -297,6 +297,13 @@ def person_shift_ok(source_en: str, translated_zh: str) -> bool:
         return True
     if not _EN_FIRST.search(source_en):
         return True                                  # not first person -> not our business
+    if _EN_MASC.search(source_en) or _EN_FEM.search(source_en):
+        # The source itself speaks of someone in the third person, so a 他/她 in the
+        # translation has a legitimate origin -- and Chinese routinely drops the "I"
+        # of a framing verb ("I heard that..." -> 「聽說...」), which is good style,
+        # not a lost speaker. Only a source with NO third person at all can have had
+        # its speaker invented.
+        return True
     if not _ZH_THIRD.search(translated_zh):
         return True                                  # no third-person pronoun -> fine
     return bool(_ZH_FIRST.search(translated_zh))     # 我 survived -> the person was kept
