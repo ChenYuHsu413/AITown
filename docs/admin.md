@@ -79,6 +79,54 @@ curl -X POST localhost:8000/god/close_chapter -H 'Content-Type: application/json
 # 409 when the resident has no pursuit chapter, or a closure is already in flight.
 ```
 
+### `POST /god/seed_wish`
+
+Hands a resident a structured private intention (see
+`backend/app/agents/wishes.py`). Phase 2a seeds wishes by hand; generating one
+from a resident's own history is 2b.
+
+**SAFE BY DEFAULT:** `validate_only` defaults to `true` and only returns the
+feasibility report. Send `{"validate_only": false}` to actually seed (that path
+also snapshots).
+
+```bash
+curl -X POST localhost:8000/god/seed_wish -H 'Content-Type: application/json' -d '{
+  "agent_id": "azong", "scale": "major",
+  "title": "...", "statement": "...", "motivation": "...",
+  "narrative": "I am quietly making something of my own right now.",
+  "requirements": [{"kind": "location_visits", "target": "park", "threshold": 5}],
+  "expires_on": 135 }'
+# -> {"ok": true, "requirements": [{... "feasible": true, "actionable": true}], ...}
+# 422 with a `problems` list when the proposal does not hold up.
+```
+
+`narrative` is required for a `major` (it becomes the pursuit chapter's
+self-description, and is the *only* way the owner perceives the wish in their own
+prompts). Per resident: at most 1 active major + 2 active minor.
+
+**`feasible` vs `actionable`.** A requirement is *feasible* when it can progress
+at all, and *actionable* when this particular resident can go and do something
+about it. They differ: a `money_gain` requirement held by someone living on a
+pension is feasible (the wallet does grow) but not actionable (there is no work
+entry and no shop, so there is nothing to pursue). A non-actionable requirement
+still accrues progress from real events; the drive simply never chases it, so it
+never records a blocked day, never breeds frustration, and cannot be the
+requirement that justifies a major.
+
+**Privacy, and one accepted exception.** `title` / `statement` / `motivation` are
+private: they never enter another resident's prompt, another resident's memory, a
+public event, or the chronicle. Public beats are content-free (`wish_seeded`
+carries only the scale; a wish-linked chapter's beats say "a private chapter").
+
+The one place the private wording does leave the process is the **display-layer
+translation cache**: a major wish's chapter title and narrative are English
+knowledge text, so a zh run sends them to the translation provider like any
+biography line or belief. This has been reviewed and accepted — it is the same
+path phase 1 already uses for chapter and biography text, the operator's own
+inspector is the only reader, and no other resident's context is involved. If a
+future deployment needs the wording to stay in-process, seed the chapter
+narrative in the display language and skip the translate round-trip.
+
 ### `scripts/backfill_chapters.py` (one-shot, dry-run by default)
 
 Initializes every resident's chapter on a pre-chapter snapshot and retroactively
