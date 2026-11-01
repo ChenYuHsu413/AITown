@@ -101,6 +101,43 @@ class DialogueTurn(unittest.TestCase):
                 self.gate()
 
 
+class MultiNameNearest(unittest.TestCase):
+    """Developer ruling: in a line naming several residents, each 他/她 is read against
+    the nearest name before it in its sentence. Cases from the 1,587-line trial."""
+
+    def setUp(self):
+        make_world()
+
+    def test_the_true_errors_are_refused(self):
+        from backend.app.agents.decision import gender_ok
+        for t in ["跟你說——渡口市場那幾家我都想去!不過我還沒跟瓏約時間,等她回我再定。ㄐㄐ你最近咖啡館那邊還好吧?",
+                  "不用這麼客氣。我只是在等歐拉，她說喝完水就會過來，要一起去渡口市場找安哥拿吐司。",
+                  "我今天就去找雪,不過你先別急著跟安哥提這些。至於希希,她最近為技術上的問題煩得很。"]:
+            self.assertFalse(gender_ok(t), t)
+
+    def test_correct_multi_name_lines_pass(self):
+        from backend.app.agents.decision import gender_ok
+        for t in ["希希說他會直接過來,艾斯也說她晚點到。",
+                  "安哥說冷月今天很忙,她在診所待了一整天。",
+                  "冷月跟我說「他不會來了」,我才想到瓏。"]:                # quoted: someone else's words
+            self.assertTrue(gender_ok(t), t)
+
+
+class LocalHint(unittest.TestCase):
+    def test_the_turn_prompt_names_the_pronouns_of_the_people_in_play(self):
+        world, engine = make_world()
+        oula, aisi = world.agents["oula"], world.agents["aisi"]
+        oula.state.location = aisi.state.location = "home_a"
+        plan = asyncio.run(engine.decisions.start_conversation(oula, aisi, world, NOW))
+        hist = [{"speaker": aisi.name, "text": "希希留了一張紙條給我。"}]
+        with unittest.mock.patch.dict(os.environ, ZH):
+            user = builders.dialogue_turn_prompt(plan.ctx["oula"], hist, 2, 8, 2)[1]["content"]
+        hint = next(l for l in user.splitlines() if l.startswith("Pronouns for the people"))
+        self.assertIn("希希 = he (他)", hint)
+        self.assertIn("艾斯 = she (她)", hint)
+        self.assertIn("歐拉 = he (他)", hint)
+
+
 class MorningPlan(unittest.TestCase):
     def test_prompt_carries_the_roster(self):
         world, engine = make_world()

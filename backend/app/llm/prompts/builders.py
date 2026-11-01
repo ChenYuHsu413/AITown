@@ -277,6 +277,20 @@ def should_talk_prompt(agent: "Agent", other_name: str, memories: list[str]) -> 
     ]
 
 
+def local_pronoun_hint(texts_: list) -> str:
+    """The gender roster, narrowed to the people this speaker will actually be
+    talking or thinking about (b816652's whole-town roster, made local): "希希 = he
+    (他)". Placed in the speaker's own context, next to the names it governs."""
+    blob = " ".join(str(t or "") for t in texts_)
+    people = [(zh or en, g) for en, zh, g in _ROSTER if g and ((zh and zh in blob) or en in blob)]
+    if not people:
+        return ""
+    def word(g: str) -> str:
+        return "he (他)" if g == "male" else "she (她)"
+    return ("Pronouns for the people here and on your mind -- use exactly these: "
+            + "; ".join(f"{n} = {word(g)}" for n, g in people) + ".")
+
+
 _BOND_PHRASE = {"stranger": "someone you barely know", "acquaintance": "an acquaintance",
                 "friend": "a friend", "close": "one of your closest people"}
 
@@ -328,6 +342,12 @@ def dialogue_turn_prompt(ctx: dict, history: list[dict], turn_no: int, max_turns
     lines = [f"Scene: {ctx['time'] + ' ' if ctx.get('time') else ''}at {ctx['place']}. "
              f"You and {other} are both here, at {ctx['place']}, right now -- don't place the "
              f"two of you anywhere else."]
+    hint = local_pronoun_hint([me, other, ctx.get("card", ""), *(ctx.get("memories") or []),
+                               *(ctx.get("recent") or []), *(ctx.get("wishes") or []),
+                               *(ctx.get("private") or []), *(ctx.get("intents") or []),
+                               *(t.get("text", "") for t in history)])
+    if hint:
+        lines.append(hint)
     if ctx.get("nearby"):
         lines.append(f"Nearby: {ctx['nearby']}.")
     if ctx.get("objects"):
