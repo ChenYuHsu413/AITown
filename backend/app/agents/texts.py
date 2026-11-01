@@ -231,13 +231,33 @@ def talked_with_partner(text: str) -> str | None:
 
 # Occupations are structural ids (rules compare them, e.g. "job seeker"); this is
 # only how one is written in a zh-native town's prose.
-_OCCUPATION_ZH = {
-    "cafe owner": "咖啡館老闆", "baker": "麵包師傅", "postman": "郵差", "doctor": "醫生",
-    "freelance designer": "自由接案設計師", "student": "學生", "engineer": "工程師",
-    "office worker": "上班族", "repair technician": "維修技師", "retired": "退休人士",
-    "job seeker": "求職中", "cafe staff": "咖啡館店員", "bakery staff": "麵包店店員",
-    "freelancer": "自由工作者",
+_OCCUPATION_ZH = {   # the wording the UI already used (frontend OCCS)
+    "cafe owner": "咖啡館老闆", "baker": "烘焙師", "postman": "郵差", "doctor": "醫生",
+    "freelance designer": "自由設計師", "student": "學生", "engineer": "工程師",
+    "office worker": "上班族", "repair technician": "修理師傅", "retired": "退休",
+    "job seeker": "求職中", "cafe staff": "咖啡館員工", "bakery staff": "烘焙坊員工",
+    "freelancer": "自由接案者",
 }
+
+# Traits are structural too ("gossipy" moves the gossip odds); this is their prose.
+# The UI's wording (frontend TRAITS), plus the three it never needed.
+_TRAIT_ZH = {
+    "curious": "好奇", "friendly": "友善", "gossipy": "八卦", "quiet": "安靜", "loyal": "忠誠",
+    "stressed": "焦慮", "calm": "冷靜", "observant": "敏銳", "helpful": "樂於助人",
+    "creative": "有創意", "night-owl": "夜貓子", "hardworking": "勤奮", "proud": "自豪",
+    "competitive": "好勝", "cheerful": "開朗", "restless": "閒不住", "shy": "害羞",
+    "kind": "善良", "private": "內斂", "technical": "技術控", "focused": "專注",
+    "easygoing": "隨和", "sociable": "善交際",
+    "blunt": "直率", "self-assured": "自信", "abrasive": "說話帶刺",
+}
+
+
+def trait_text(trait: str) -> str:
+    return _TRAIT_ZH.get(trait, trait) if zh_native() else trait
+
+
+def landmark_name(lm: dict) -> str:
+    return (lm.get("name_zh") or lm.get("name", "")) if zh_native() else lm.get("name", "")
 
 
 def occupation_text(occupation: str) -> str:

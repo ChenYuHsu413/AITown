@@ -183,7 +183,7 @@ class World:
                     minute=now, importance=4,
                     text=texts.T("landmark_finished_seen", lid=lm["id"], loc=loc.id, who=agent.id),
                 ))
-        return {"verb": "landmark_done", "location": loc.id, "text": lm["name"], "id": lm["id"]}
+        return {"verb": "landmark_done", "location": loc.id, "text": texts.landmark_name(lm), "id": lm["id"]}
 
     # ---- execution (Level 0, pure rules) ----------------------------
 

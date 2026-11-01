@@ -524,8 +524,10 @@ def _referential_ok(parsed: object, a: "Agent", b: "Agent") -> bool:
 
 
 # Memory text stores {agent:id}/{loc:id}/{landmark:id} placeholders. For the LLM
-# context we resolve them to pinyin/English (the model stays in an English name
-# space); the UI resolves the same placeholders to zh/en names at display time.
+# context we resolve them to the names the model should write with: pinyin/English
+# in an English town, the Chinese names in a zh-native one (an English name inside
+# Chinese context invites English back out). The UI resolves the same placeholders
+# at display time.
 _PLACEHOLDER_RE = re.compile(r"\{(agent|loc|landmark):([a-z_]+)\}")
 
 
@@ -533,14 +535,16 @@ def _resolve_placeholders(text: str, world: "World") -> str:
     def repl(m: "re.Match") -> str:
         kind, key = m.group(1), m.group(2)
         if kind == "agent":
-            return key.capitalize()                       # pinyin name for the model
+            return texts.display_name(key)                # pinyin, or the zh name
         if kind == "loc":
             loc = world.locations.get(key)
-            return loc.name if loc is not None else key
+            if loc is None:
+                return key
+            return (loc.name_zh or loc.name) if texts.zh_native() else loc.name
         for loc in world.locations.values():              # landmark: find by id
             for lm in loc.landmarks:
                 if lm.get("id") == key:
-                    return lm.get("name", key)
+                    return texts.landmark_name(lm) or key
         return key
     return _PLACEHOLDER_RE.sub(repl, text)
 
@@ -2006,9 +2010,10 @@ class DecisionEngine:
         if loc is None or not loc.landmarks:
             return None
         lm = loc.landmarks[0]
+        name = texts.landmark_name(lm)
         if lm.get("state") == "completed":
-            return f"{lm['name']}, now complete"
-        return f"{lm['name']}, {int(lm['progress'] * 100)}% complete"
+            return f"{name}, now complete"
+        return f"{name}, {int(lm['progress'] * 100)}% complete"
 
     @staticmethod
     def _impression_of(agent: Agent, other_id: str) -> str | None:

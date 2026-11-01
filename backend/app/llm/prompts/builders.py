@@ -236,8 +236,8 @@ def character_card(agent: "Agent", name: str | None = None, speech: bool = False
     is what the character is about right then."""
     from ...agents import chapters as chapters_mod
     p = agent.profile
-    traits = ", ".join(p.traits)
     from ...agents import texts as texts_mod
+    traits = ", ".join(texts_mod.trait_text(t) for t in p.traits)
     card = (f"{name or p.name}, {p.age}, {texts_mod.occupation_text(p.occupation)}. "
             f"Traits: {traits}. {chapters_mod.narrative(agent)}")
     if chapters_mod.chapter_type(agent) == "ordinary" and p.goals:

@@ -1,12 +1,17 @@
 """Seed world: 7 locations, 10 residents with distinct routines/personalities.
 
-Names are shown in Chinese in the UI; ids stay pinyin and all internal text
-(memories, secrets, goals) stays English -- the internal-English rule.
+Names are shown in Chinese in the UI; ids stay pinyin. The descriptive text the
+prompts read (speech style, goals, memories, secrets, the seeded pursuits) is
+written twice: English, and -- for the zh-native era -- a faithful Traditional
+Chinese transcription of the same settings (see the ``*_ZH`` tables; nothing added,
+removed or changed). Structural values (occupation, traits, ids, routines,
+personality numbers, relationships) are one set, shared by both.
 """
 
 from __future__ import annotations
 
 from backend.app.agents import chapters as chapters_mod
+from backend.app.agents import texts
 from backend.app.agents.agent import Agent
 from backend.app.agents.core import AgentState, MemoryItem, Profile
 from backend.app.agents.routine import Routine, RoutineEntry, hm
@@ -34,6 +39,40 @@ SPEECH_STYLE = {
            "apologizes even when it isn't her fault.",
     "long": "Says whatever comes to mind on the spot, unpolished, heedless of where it lands.",
     "kuaizheng": "Few words and slow, brief and mild, almost never asks a question back.",
+}
+# zh-native era: the same voices, transcribed. ㄐㄐ's line names no pronoun -- the
+# English says "herself" for a resident whose gender is male; Chinese needs neither.
+SPEECH_STYLE_ZH = {
+    "jiji": "被問到自己的事時,總用一句玩笑帶過,再把話題丟回你身上,打聽你的近況(一部分是為了掩飾咖啡館的困境)。",
+    "ange": "句子簡短、就事論事;什麼事都拿烘焙坊的做法來比較。",
+    "oula": "說話很快,人總是已經走到半路要趕下一站;講消息像在念頭條;開口必帶口頭禪「跟你說——」(只有他會這樣說)。",
+    "lengyue": "說話緩慢而精準;切入正題前,會先點出她從你身上讀到的狀態。",
+    "azong": "不疾不徐;喜歡用鮮明、畫面感十足的比喻。",
+    "xixi": "說話猶豫,話說到一半又收回去——直到碰上技術話題,像開關被打開,他瞬間變得流暢又能言善道。",
+    "aisi": "用字精簡,只回答字面上的問題;把每件事都當成待解的問題來看。",
+    "xue": "開口前總會先鋪墊緩和;明明有事卻說「沒什麼」;就算不是她的錯也會道歉。",
+    "long": "想到什麼就當場說什麼,不修飾,也不管話會落在誰身上。",
+    "kuaizheng": "話少又慢,簡短溫和,幾乎從不反問。",
+}
+
+# Standing aims, seed memories and secrets, transcribed (keyed by the English).
+GOALS_ZH = {
+    "Make the cafe popular": "讓咖啡館受歡迎",
+    "Make the bakery more popular than the cafe": "讓烘焙坊比咖啡館更受歡迎",
+    "Get to know every single person in town": "認識鎮上的每一個人",
+    "Keep the town healthy": "守護小鎮的健康",
+    "Build a steady freelance client base without losing balance": "建立穩定的接案客源,同時不失去生活的平衡",
+    "Keep the town's machines running -- and get paid what I'm owed": "讓鎮上的機器都好好運轉——而且該拿的錢一分都不能少",
+    "Tend his garden well": "把他的花園照顧好",
+}
+MEMORIES_ZH = {
+    "{agent:xue} mentioned she wants to resign from her job.": "{agent:xue}提過她想辭掉工作。",
+    "{agent:xue} likes black coffee.": "{agent:xue}喜歡喝黑咖啡。",
+    "Noticed I look forward to {agent:azong} showing up every morning more than I'd admit.":
+        "我發現自己每天早上都期待{agent:azong}出現,期待的程度超過我願意承認的。",
+    "The {landmark:installation} in {loc:park} is about a third done.": "{loc:park}的{landmark:installation}大約完成了三分之一。",
+    "Argued with the manager last week.": "上週和主管吵了一架。",
+    "{loc:cafe} feels like a safe place.": "{loc:cafe}讓人覺得安心。",
 }
 
 
@@ -102,12 +141,29 @@ SEED_PURSUITS = {
 }
 
 
+SEED_PURSUITS_ZH = {
+    "aisi": ("完成公園裡的互動光影裝置",
+             "打造光影裝置",
+             "我正在公園裡打造一座互動光影裝置——下午和週末都投入在上面,直到它整座亮起來之前,我都無法安心。",
+             "installation"),
+    "xixi": ("鼓起勇氣請艾斯教我寫程式",
+             "鼓起勇氣去問艾斯",
+             "我一直想鼓起勇氣請艾斯教我寫程式;每次靠近她,我都在心裡排練一遍,然後就僵住了。",
+             ""),
+    "xue": ("想清楚要不要辭掉工作",
+            "決定要不要辭職",
+            "我正在默默考慮要不要辭掉工作——辦公室讓我身心俱疲,我還沒決定要往哪邊跳。",
+            ""),
+}
+
+
 def seed_chapters(agents: list[Agent], day: int = 1) -> None:
     """Install the seeded pursuit chapters (fresh start only; a resumed run restores
     its own from the snapshot). Residents without a pursuit stay chapter=None,
     which every reader treats as ordinary days."""
+    pursuits = SEED_PURSUITS_ZH if texts.zh_native() else SEED_PURSUITS
     for a in agents:
-        spec = SEED_PURSUITS.get(a.id)
+        spec = pursuits.get(a.id)
         if spec is None:
             continue
         goal, title, narrative, landmark_id = spec
@@ -136,7 +192,7 @@ def build_locations() -> list[Location]:
             # Aisi's interactive light installation, seeded a third done -- an
             # engineering piece she builds up over afternoons in the park until
             # it lights up completely.
-            {"id": "installation", "name": "the interactive light installation",
+            {"id": "installation", "name": "the interactive light installation", "name_zh": "互動光影裝置",
              "state": "in_progress", "progress": 0.3, "created_by": "aisi"},
         ]),
     ]
@@ -441,8 +497,14 @@ def build_agents() -> list[Agent]:
     _rel(xixi, "aisi", 45, 40)
 
     residents = [jiji, ange, oula, lengyue, azong, xixi, aisi, xue, long, kuaizheng]
+    zh = texts.zh_native()
     for a in residents:                       # attach each resident's locked speech style + inclination
-        a.profile.speech_style = SPEECH_STYLE.get(a.id, "")
+        a.profile.speech_style = (SPEECH_STYLE_ZH if zh else SPEECH_STYLE).get(a.id, "")
+        if zh:                                # the same settings, in the town's language
+            for g in a.profile.goals:
+                g["goal"] = GOALS_ZH.get(g["goal"], g["goal"])
+            for m in a.memory.items:
+                m.text = MEMORIES_ZH.get(m.text, m.text)
         a.profile.romantic_inclination = ROMANTIC_INCLINATION.get(a.id, 0.45)
         a.profile.personality["conscientiousness"] = CONSCIENTIOUSNESS[a.id]
         if a.id in ORIENTATION_BIAS:
@@ -466,12 +528,21 @@ SEED_SECRETS = [
     ("azong", "I've been undercharging clients because I'm afraid to lose them.", 0.55),  # the freelancer's fear
     # long's quiet generosity and kuaizheng's inner life are left for reflection to grow.
 ]
+SECRETS_ZH = {
+    "I've been interviewing at a company in Taipei.": "我最近一直在台北的一家公司面試。",
+    "I check Jiji's cafe menu every week to keep my prices lower.": "我每週都會去看ㄐㄐ咖啡館的菜單,好讓我的價格壓得比較低。",
+    "The cafe barely breaks even; I put on a confident face every day.": "咖啡館只能勉強打平;我每天都裝出一副很有自信的樣子。",
+    "I'm secretly worried my installation is too ambitious to finish.": "我偷偷擔心我的裝置野心太大,根本做不完。",
+    "I want to ask Aisi to teach me programming but I freeze every time.": "我想請艾斯教我寫程式,可是每次都僵住。",
+    "I've been undercharging clients because I'm afraid to lose them.": "我一直把報價壓得太低,因為我怕失去客戶。",
+}
 
 
 def seed_secrets(registry, minute: int = 0) -> None:
     """Plant the initial secrets into a SecretRegistry (fresh start only; a
     resumed run restores its own from the snapshot)."""
+    zh = texts.zh_native()
     for owner, text, sensitivity, *rest in SEED_SECRETS:
-        s = registry.add(owner, text, sensitivity, minute)
+        s = registry.add(owner, SECRETS_ZH.get(text, text) if zh else text, sensitivity, minute)
         if rest and rest[0]:
             s.about = rest[0]
