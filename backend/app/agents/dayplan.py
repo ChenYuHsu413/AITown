@@ -183,7 +183,7 @@ def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slot
         if world.locations[loc].kind == "home" and loc != agent.home:
             dropped.append("action: someone else's home"); continue
         if _names_someone(what + leaves, agent, world):
-            dropped.append("action: involves someone else"); continue
+            dropped.append(f"action: involves someone else ({what[:24]})"); continue
         owner = world.locations[loc].owner
         if leaves and owner and owner != agent.id:
             leaves = ""        # a customer may do things in a shop, but not leave things in it
@@ -192,12 +192,17 @@ def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slot
         if cost > pacing.FREE_ACTION_MAX_COST:
             dropped.append("action: too costly"); continue
         fr, to = hour * 60, hour * 60 + 60
-        if any(fr < x["to"] and x["from"] < to for x in slots):
-            dropped.append("action: overlaps"); continue
+        clash = [x for x in slots if fr < x["to"] and x["from"] < to]
+        # Inside a stretch they already mean to spend at that very place, the doing
+        # simply happens there; a stretch somewhere else is a real conflict.
+        within = bool(clash) and all(x["location"] == loc and x["action"] != "free" for x in clash)
+        if clash and not within:
+            dropped.append(f"action: overlaps ({what[:24]})"); continue
         idx = len(out)
         out.append({"what": what, "leaves": leaves, "cost": cost, "location": loc,
-                    "from": fr, "to": to, "state": "planned"})
-        slots.append({"from": fr, "to": to, "location": loc, "action": "free", "act": idx})
+                    "from": fr, "to": to, "state": "planned", "within": within})
+        if not within:
+            slots.append({"from": fr, "to": to, "location": loc, "action": "free", "act": idx})
     return out, dropped
 
 
@@ -262,6 +267,18 @@ def action_at(agent: "Agent", start: int) -> dict | None:
     """The planned free action whose hour starts at ``start`` (minute of day)."""
     for a in (agent.state.day_plan or {}).get("actions") or []:
         if a["from"] == start:
+            return a
+    return None
+
+
+def action_due(agent: "Agent", now: int) -> dict | None:
+    """A planned doing that rides inside a same-place stretch and whose hour is now."""
+    plan = agent.state.day_plan
+    if not plan or plan.get("day") != now // DAY + 1:
+        return None
+    mod = now % DAY
+    for a in plan.get("actions") or []:
+        if a.get("within") and a.get("state") == "planned" and a["from"] <= mod < a["to"]:
             return a
     return None
 

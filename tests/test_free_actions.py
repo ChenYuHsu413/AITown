@@ -68,7 +68,7 @@ class PlanSide(unittest.TestCase):
                      act(what="leave a note for Lengyue"),               # names someone
                      act(hour=16, place="Rainlisten House"))             # someone else's home
         self.assertEqual(p["actions"], [])
-        self.assertIn("action: involves someone else", p["dropped"])
+        self.assertTrue(p["dropped"][0].startswith("action: involves someone else"))
 
     def test_limits(self):
         p = plan_for(self.kz, self.world, act(cost=pacing.FREE_ACTION_MAX_COST + 1), act(hour=22),
@@ -77,6 +77,27 @@ class PlanSide(unittest.TestCase):
         self.assertEqual(len(p["actions"]), 0)                    # the cap is 2: the third is never read
         p = plan_for(self.kz, self.world, act(hour=10), act(hour=11), act(hour=12))
         self.assertEqual(len(p["actions"]), pacing.FREE_ACTIONS_PER_DAY)
+
+    def test_a_doing_inside_a_stretch_at_the_same_place_is_fine(self):
+        p = plan_for(self.kz, self.world, act(hour=15),
+                     slots=[{"from": 14, "to": 17, "place": "Firefly Park", "doing": "visit"}])
+        self.assertEqual(len(p["actions"]), 1)
+        self.assertTrue(p["actions"][0]["within"])
+        self.assertEqual([s["action"] for s in p["slots"]], ["idle"])          # no extra slot
+        p = plan_for(self.kz, self.world, act(hour=15),
+                     slots=[{"from": 14, "to": 17, "place": "Tide Cafe", "doing": "visit"}])
+        self.assertEqual(p["actions"], [])                                     # elsewhere: a real clash
+
+    def test_a_doing_inside_a_stretch_lands_when_its_hour_comes(self):
+        p = plan_for(self.kz, self.world, act(hour=15),
+                     slots=[{"from": 14, "to": 17, "place": "Firefly Park", "doing": "visit"}])
+        self.kz.state.day_plan = p
+        self.kz.state.location, self.kz.state.current_action = "park", "idle"
+        decide(self.engine, self.world, self.kz, DAY0 + 14 * 60 + 30)
+        self.assertEqual(self.world.objects, [])                               # not its hour yet
+        decide(self.engine, self.world, self.kz, DAY0 + 15 * 60 + 5)
+        self.assertEqual(p["actions"][0]["state"], "done")
+        self.assertEqual(len(self.world.objects), 1)
 
     def test_nothing_may_be_left_in_someone_elses_shop(self):
         p = plan_for(self.kz, self.world, act(place="Tide Cafe", what="read a whole book", leaves="a bookmark"))

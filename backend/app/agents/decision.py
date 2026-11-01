@@ -723,6 +723,16 @@ class DecisionEngine:
         # spent at the place.
         for act in dayplan_mod.lapsed_actions(agent, now):
             self.outbox.append(actions_mod.fail(agent, act, texts.T("fail_time"), now))
+        due = dayplan_mod.action_due(agent, now)        # a doing inside a same-place stretch
+        if due is not None:
+            why = actions_mod.failure_reason(agent, world, due, now)
+            if why:
+                self.outbox.append(actions_mod.fail(agent, due, why, now))
+            elif agent.state.location == due["location"] and agent.state.current_action != "sleep":
+                beat, obj = actions_mod.land(agent, world, due, now)
+                self.outbox.append(beat)
+                if obj is not None:
+                    self.outbox.append({"verb": "__object__", "object": obj})
         if plan_hit is not None and entry.action == "free":
             act = dayplan_mod.action_at(agent, entry.start)
             why = actions_mod.failure_reason(agent, world, act, now) \

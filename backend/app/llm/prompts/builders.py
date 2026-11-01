@@ -386,7 +386,10 @@ def day_plan_prompt(agent: "Agent", mat: dict) -> list[dict]:
         "something new. \"what\" is a short phrase of what they do, without the subject; "
         "\"leaves\" is something it leaves behind in that place for others to see, short, or "
         "\"\"; \"cost\" is the money it takes (0 if none). Only their own doing: never another "
-        "person's reaction, belongings or body, and nobody else's home. [] when nothing."
+        "person's reaction, belongings or body, and nobody else's home. Something done for or "
+        "with another person is not an action -- that happens when they talk -- so an action "
+        "names no one. It may fall inside a stretch they already spend at that place. [] when "
+        "nothing."
         + roster_directive() + roster_gender_directive() + _lang_directive()
         + dialogue_locale_directive() + " Task: day_plan."
     )
