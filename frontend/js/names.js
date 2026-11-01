@@ -88,6 +88,17 @@ export function dialogueSubst(text) {
 const dayRevZh = sp => { const m = String(sp || '').match(/\$\s*(\d+)/); return m ? `營收 $${m[1]}` : String(sp || ''); };
 const WISH_CLOSED = {completed:'完成了一件放在心上的事', failed:'的一個心願沒能實現', abandoned:'放下了一個心願'};
 
+// A thing left in a public place, from its structured fields (agents/actions.py):
+// subject once, place translated, the words quoted. An event from before the split
+// carries the old phrase in ev.speech.
+const OBJ_ITEM = {note: '一張字條', notice: '一張告示', gift: '一份小禮物', craft: '一件手作', other: '一樣東西'};
+function objectLine(a, l, o, sp) {
+  if (!o) return `${a} 在 ${l} 留下了${resolve(sp || '一樣東西')}`;
+  if (o.kind === 'repair') return `${a} 在 ${l} 動手整理了${resolve(o.item || '一個角落')}`;
+  const item = resolve(o.item || OBJ_ITEM[o.kind] || OBJ_ITEM.other);
+  return o.content ? `${a} 在 ${l} 留下了${item}:「${resolve(o.content)}」` : `${a} 在 ${l} 留下了${item}`;
+}
+
 // One event -> one zh sentence. Wish beats are content-free by construction: they
 // never read ev.speech beyond the closed outcome word.
 export function evText(ev) {
@@ -132,15 +143,17 @@ export function evText(ev) {
     case 'promise_missed': return `${a} 和 ${tg} 說好在 ${l} 見面,結果沒見成`;
     case 'stormed_off': return `${a} 和 ${tg} 不歡而散`;
     case 'skipped_work': return `${a} 今天沒去上班`;
-    case 'free_action': return `${a} 在 ${l}${ev.text ? ':' + resolve(ev.text) : ''}`;
-    case 'made_object': return `${a} 在 ${l} 留下了${resolve(ev.text || '一樣東西')}`;
-    case 'action_failed': return `${a} 本來想${resolve(ev.text || '做點什麼')},但沒做成`;
+    // ev.speech is the free text; ev.text is the deprecated English sentence and is
+    // never shown (it put "瓏 left … at Firefly Park" inside a zh line).
+    case 'free_action': return `${a} 在 ${l}${sp ? ':' + resolve(sp) : ''}`;
+    case 'made_object': return objectLine(a, l, ev.obj, sp);
+    case 'action_failed': return `${a} 本來想${resolve(sp || '做點什麼')},但沒做成`;
     case 'chapter_closed': return sp ? `${a} 翻過了人生的一頁——${resolve(sp)}` : `${a} 的人生翻過了一頁`;
     case 'chapter_started': return (!sp || sp === PRIVATE_CHAPTER) ? `${a} 開始了新的篇章` : `${a} 展開了新章節:${resolve(chapterTitle(sp))}`;
     case 'wish_born': case 'wish_seeded': return `${a} 心裡悄悄有了一個新的願望`;
     case 'wish_frustrated': return `${a} 默默努力的事又卡住了`;
     case 'wish_closed': return `${a}${WISH_CLOSED[sp] || '的一個心願落幕了'}`;
-    default: return ev.text || `${a} ${ev.verb}`;
+    default: return sp ? `${a}:${resolve(sp)}` : `${a} ${ev.verb}`;
   }
 }
 

@@ -133,6 +133,11 @@ class Persistence:
             # Public objects: a one-way delivery's addressee ("" for things left for anyone).
             await conn.execute(sql_text(
                 "ALTER TABLE public_objects ADD COLUMN IF NOT EXISTS recipient VARCHAR(32) NOT NULL DEFAULT ''"))
+            # Structured objects: what the thing is and the words on it, kept apart.
+            for col, ddl in (("kind", "VARCHAR(16)"), ("item", "TEXT"), ("content", "TEXT")):
+                await conn.execute(sql_text(
+                    f"ALTER TABLE public_objects ADD COLUMN IF NOT EXISTS {col} {ddl} NOT NULL DEFAULT ''"))
+            await conn.execute(sql_text("ALTER TABLE events ADD COLUMN IF NOT EXISTS obj JSONB"))
             await self._migrate_wishes(conn)
 
         resumed = False
@@ -284,7 +289,7 @@ class Persistence:
                         run_id=self.run_id, minute=item.minute, kind=item.kind,
                         verb=item.verb, actor=item.actor, target=item.target,
                         location=item.location, speech=item.text,
-                        tier=item.tier, detail=item.detail,
+                        tier=item.tier, detail=item.detail, obj=item.obj,
                     ))
                 elif isinstance(item, LLMCall):
                     s.add(LLMCallRow(
@@ -328,6 +333,8 @@ class Persistence:
                     s.add(PublicObject(
                         id=str(o["id"]), run_id=self.run_id, location=str(o.get("location", "")),
                         creator=str(o.get("creator", "")), description=str(o.get("description", "")),
+                        kind=str(o.get("kind", "")), item=str(o.get("item", "")),
+                        content=str(o.get("content", "")),
                         recipient=str(o.get("recipient", "")),
                         born_minute=int(o.get("born_minute", 0)),
                         born_day=int(o.get("born_minute", 0)) // (24 * 60) + 1))
@@ -587,7 +594,7 @@ class Persistence:
                     "minute": r.minute, "kind": r.kind, "verb": r.verb,
                     "actor": r.actor, "target": r.target,
                     "location": r.location, "speech": r.speech,
-                    "tier": r.tier, "detail": r.detail,
+                    "tier": r.tier, "detail": r.detail, "obj": r.obj,
                 }
                 for (r,) in rows
             ]

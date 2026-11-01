@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 import uuid
 from typing import TYPE_CHECKING
 
@@ -43,6 +44,92 @@ def _roll(*parts: object) -> float:
     return random.Random(seed).random()
 
 
+# ---- what a public object is ---------------------------------------------------
+#
+# An object is stored structured: ``kind`` (one of OBJECT_KINDS), ``item`` (what the
+# thing is, a short noun phrase) and ``content`` (the words written on it -- only a
+# note or a notice has any). Every sentence about an object is built from these by
+# ONE phrase (object_phrase); nothing pastes the model's own wording into a template
+# any more, which is how "在螢火公園看到了今天下午我在螢火公園等你—艾斯" happened.
+
+OBJECT_KINDS = ("note", "notice", "craft", "repair", "gift", "other")
+WRITTEN_KINDS = ("note", "notice")
+_QUOTED_RE = re.compile(r"[「『\"“](.+?)[」』\"”]")
+_SIGNED_RE = re.compile(r"[—–]\s*\S{1,4}$")
+_KIND_WORDS = (
+    ("notice", ("告示", "公告", "海報", "看板", "notice", "poster", "sign")),
+    ("note", ("紙條", "字條", "便條", "留言", "卡片", "note", "card")),
+    ("gift", ("禮物", "小禮", "gift")),
+    ("repair", ("修好", "修補", "整理", "佈置", "布置", "擦亮", "鎖緊", "mend", "fix", "tidy", "arrange")),
+    ("craft", ("手作", "做了", "刻", "編", "畫", "sketch", "made", "carve")),
+)
+
+
+def _kind_from(text: str, what: str = "") -> str:
+    """The thing's own name decides; the doing behind it only when the name is mute
+    ("去公告處留一張字條" is a note left at the notice board, not a notice)."""
+    for source in (text, what):
+        for kind, words in _KIND_WORDS:
+            if any(w in source for w in words):
+                return kind
+    return "other"
+
+
+def parse_leaves(raw: object, what: str = "") -> dict | None:
+    """The plan's "leaves" -> {kind, item, content}, or None when nothing is left.
+
+    The contract asks for {"kind", "item", "words"}. A plain string -- an older plan,
+    a model answering the old way, a stored object from before the split -- is taken
+    apart: quoted words become the content and the wrapper around them ("一張寫著「…」
+    的小紙條") the item; bare signed words under a doing that leaves a note are the
+    note's content; anything else is the item itself."""
+    if isinstance(raw, dict):
+        kind = str(raw.get("kind") or "").strip().lower()
+        item = str(raw.get("item") or "").strip().rstrip("。.")
+        content = str(raw.get("words") or raw.get("content") or "").strip().strip("「」『』\"").rstrip("。")
+        if kind not in OBJECT_KINDS:
+            kind = _kind_from(item, what)
+        if kind not in WRITTEN_KINDS:
+            content = ""
+        if not item and not content:
+            return None
+        return {"kind": kind, "item": item, "content": content}
+    text = str(raw or "").strip().rstrip("。.")
+    if not text:
+        return None
+    m = _QUOTED_RE.search(text)
+    if m:
+        content = m.group(1).strip()
+        item = text[:m.start()] + text[m.end():]
+        item = item.replace("寫著的", "").replace("上面寫著", "").replace("寫著", "")
+        item = item.strip().strip(":：,， ").strip()
+        kind = _kind_from(item, what)
+        if kind not in WRITTEN_KINDS:
+            kind = "note"
+        if item and texts.zh_native() and not item.startswith("一"):
+            item = "一張" + item
+        return {"kind": kind, "item": item, "content": content}
+    if _SIGNED_RE.search(text) and _kind_from(what) in WRITTEN_KINDS:
+        return {"kind": _kind_from(what), "item": "", "content": text}     # bare words, signed
+    return {"kind": _kind_from(text, what), "item": text, "content": ""}
+
+
+def object_fields(o: dict) -> dict:
+    """{kind, item, content} of a stored object -- one from before the split too."""
+    if "kind" in o:
+        return {"kind": o.get("kind") or "other", "item": o.get("item") or "", "content": o.get("content") or ""}
+    return (parse_leaves(o.get("description", ""), o.get("note", ""))
+            or {"kind": "other", "item": "", "content": ""})
+
+
+def object_phrase(o: dict) -> str:
+    """The one noun phrase for an object, in the town's language: "一張字條,上面寫著
+    「…」", "一隻漂流木刻的小鳥"."""
+    f = object_fields(o)
+    item = f["item"] or texts.T("obj_item_" + (f["kind"] if f["kind"] in OBJECT_KINDS else "other"))
+    return texts.T("obj_written", item=item, content=f["content"]) if f["content"] else item
+
+
 def objects_at(world: "World", location: str) -> list[dict]:
     """The objects in a place's scene: its newest OBJECTS_PER_PLACE."""
     here = [o for o in world.objects if o.get("location") == location]
@@ -54,7 +141,9 @@ def scene_lines(world: "World", location: str, now: int) -> list[str]:
     out = []
     for o in objects_at(world, location)[-3:]:
         age = (now - int(o.get("born_minute", now))) // DAY
-        out.append(texts.aged_name(o["description"], age, pacing.FRESH_DAYS))
+        name = object_phrase(o)
+        # a thing left is new, not "finished" -- a landmark's wording does not fit it
+        out.append(texts.T("obj_new", name=name) if age < pacing.FRESH_DAYS else name)
     return out
 
 
@@ -125,13 +214,15 @@ def land(agent: "Agent", world: "World", act: dict, now: int) -> tuple[dict, dic
     agent.memory.add(MemoryItem(minute=now, importance=5, kind="reflection", tags=["action"],
                                 text=texts.T("action_self", loc=loc, what=act["what"])))
     obj = None
-    if act.get("leaves"):
-        obj = {"id": uuid.uuid4().hex[:10], "location": loc, "creator": agent.id,
-               "description": act["leaves"], "born_minute": now,
+    left = parse_leaves(act.get("leaves"), act["what"])
+    if left:
+        obj = {"id": uuid.uuid4().hex[:10], "location": loc, "creator": agent.id, **left,
+               "born_minute": now,
                "recipient": act.get("recipient", ""), "note": act["what"] if act.get("recipient") else ""}
+        obj["description"] = object_phrase(obj)    # the ledger's readable column; never parsed back
         world.objects.append(obj)
         agent.memory.add(MemoryItem(minute=now, importance=5, kind="reflection", tags=["action"],
-                                    text=texts.T("action_left", loc=loc, what=act["leaves"])))
+                                    text=texts.T("action_left", loc=loc, what=object_phrase(obj))))
         agent.state.seen_objects.append(obj["id"])
     for other in world.agents.values():         # whoever is there may notice
         if other.id == agent.id or other.state.location != loc or other.state.current_action == "sleep":
@@ -143,8 +234,9 @@ def land(agent: "Agent", world: "World", act: dict, now: int) -> tuple[dict, dic
                 other.state.seen_objects.append(obj["id"])
     beat = {"verb": "made_object" if obj else "free_action", "actor": agent.id,
             "target": (obj or {}).get("recipient", ""),
-            "location": loc, "text": act["leaves"] if obj else act["what"],
-            "detail": act["what"]}
+            "location": loc, "text": obj["content"] if obj else act["what"],
+            "detail": act["what"],
+            "obj": {k: obj[k] for k in ("kind", "item", "content")} if obj else None}
     return beat, obj
 
 
@@ -160,10 +252,10 @@ def notice_objects(agent: "Agent", world: "World", now: int) -> None:
         if o.get("recipient") == agent.id:
             agent.memory.add(MemoryItem(minute=now, importance=5, kind="observation", tags=["delivery"],
                                         text=texts.T("found_for_me", who=o["creator"], loc=o["location"],
-                                                     what=o["description"], note=o.get("note") or o["description"])))
+                                                     what=object_phrase(o), note=o.get("note") or object_phrase(o))))
             continue
         if _roll("notice", agent.id, o["id"]) < pacing.OBJECT_NOTICE_P:
             agent.memory.add(MemoryItem(minute=now, importance=3, kind="observation",
-                                        text=texts.T("object_noticed", loc=o["location"], what=o["description"])))
+                                        text=texts.T("object_noticed", loc=o["location"], what=object_phrase(o))))
     if len(seen) > 400:
         del seen[:-400]

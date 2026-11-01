@@ -178,6 +178,10 @@ def restore(payload: dict, engine: "SimulationEngine", world: "World",
         world.active_effects = [dict(e) for e in (payload.get("active_effects") or [])]
     if "objects" in payload:     # v16+; older snapshots: no public objects yet
         world.objects = [dict(o) for o in (payload.get("objects") or []) if isinstance(o, dict)]
+        from ..agents.actions import object_fields
+        for o in world.objects:  # an object from before the kind/item/content split
+            if "kind" not in o:
+                o.update(object_fields(o))
 
     dialogue = payload.get("dialogue") or {}
     if "day" in dialogue:

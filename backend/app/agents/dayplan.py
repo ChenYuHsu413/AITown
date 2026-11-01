@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from .. import pacing
 from . import mood as mood_mod
 from . import texts
+from . import actions as actions_mod
 from . import transitions as transitions_mod
 from . import wishes as wishes_mod
 from .routine import RoutineEntry
@@ -275,7 +276,11 @@ def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slot
         if not isinstance(a, dict):
             continue
         what = str(a.get("what") or "").strip().rstrip("。")
-        leaves = str(a.get("leaves") or "").strip().rstrip("。")
+        left = actions_mod.parse_leaves(a.get("leaves"), what)
+        if left and (len(left["item"]) > 30 or len(left["content"]) > 60
+                     or not all(_knowledge_lang_ok(x) for x in (left["item"], left["content"]) if x)):
+            left = None
+        leaves = f"{left['item']} {left['content']}".strip() if left else ""   # the words, for the checks
         try:
             hour = int(a.get("hour"))
             cost = max(0, int(a.get("cost") or 0))
@@ -284,8 +289,6 @@ def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slot
         loc = _action_place(world, agent, a.get("place"))
         if not what or len(what) > 60 or not _knowledge_lang_ok(what):
             dropped.append("action: unreadable"); continue
-        if leaves and (len(leaves) > 40 or not _knowledge_lang_ok(leaves)):
-            leaves = ""
         if not loc:
             dropped.append("action: no such place"); continue
         if world.locations[loc].kind == "home" and loc != agent.home:
@@ -301,7 +304,7 @@ def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slot
         recipient = addressee(what + "," + leaves, agent, world) if leaves else ""
         owner = world.locations[loc].owner
         if leaves and owner and owner != agent.id and owner != recipient:
-            leaves = ""        # a customer may not leave things in a shop -- unless it is for its owner
+            leaves, left = "", None    # a customer may not leave things in a shop -- unless it is for its owner
         if not 7 <= hour <= 21 or agent.routine.current(hour * 60, dow).action == "sleep":
             dropped.append("action: sleep time"); continue
         if cost > pacing.FREE_ACTION_MAX_COST:
@@ -314,7 +317,7 @@ def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slot
         if clash and not within:
             dropped.append(f"action: overlaps ({what[:24]})"); continue
         idx = len(out)
-        out.append({"what": what, "leaves": leaves, "cost": cost, "location": loc,
+        out.append({"what": what, "leaves": left, "cost": cost, "location": loc,
                     "from": fr, "to": to, "state": "planned", "within": within,
                     "recipient": recipient if leaves else "", "seek": seek, "mode": mode,
                     "wish": serves_wish(agent, what, seek, loc)})

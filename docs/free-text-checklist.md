@@ -26,7 +26,7 @@
 |---|---|---|---|---|---|---|---|---|
 | 逐輪台詞 | `dialogue_turn(_tense)` | 事件(say)、聽者記憶 | ✓ | ✓ | ✓ | ✓ text + tells | ✓ | ✓ |
 | 晨間意圖 | `day_plan` | 本人記憶 | ✓ | ✓(第一人稱) | ✓ | ✓ intent | ✓ | ✓ |
-| 自由行動文字 / 物件 | `day_plan.actions` | 記憶、事件、`public_objects` | ✓ | ✓ | ✓ | ✓ what + leaves | ✓ | 記入 `dropped` |
+| 自由行動文字 / 物件 | `day_plan.actions` | 記憶、事件、`public_objects` | ✓ | ✓ | ✓ | ✓ what + leaves(item、words) | ✓ | 記入 `dropped`;物件存 kind / item / content,所有句子都由 `actions.object_phrase` 組 |
 | 反思 / 信念 / 秘密 | `reflection` | 記憶、信念 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | 願望 | `wish_generation` | 願望 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | 收束傳記句 | `chapter_closure` | 傳記記憶 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |

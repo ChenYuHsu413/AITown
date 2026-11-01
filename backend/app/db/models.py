@@ -66,6 +66,8 @@ class EventRow(Base):
     # chronicle's richer context. NULL on rows written before it -- never backfilled.
     tier: Mapped[str | None] = mapped_column(String(8), nullable=True, default=None)
     detail: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    # made_object: the thing left, {kind, item, content}. NULL for every other verb.
+    obj: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
 
     __table_args__ = (Index("ix_events_run_minute", "run_id", "minute"),)
 
@@ -277,7 +279,10 @@ class PublicObject(Base):
     run_id: Mapped[str] = mapped_column(String(32), default="")
     location: Mapped[str] = mapped_column(String(32), default="")
     creator: Mapped[str] = mapped_column(String(32), default="")
-    description: Mapped[str] = mapped_column(Text, default="")
+    description: Mapped[str] = mapped_column(Text, default="")      # readable phrase, built from the three below
+    kind: Mapped[str] = mapped_column(String(16), default="")         # note|notice|craft|repair|gift|other
+    item: Mapped[str] = mapped_column(Text, default="")               # what the thing is
+    content: Mapped[str] = mapped_column(Text, default="")            # the words on it (note / notice only)
     recipient: Mapped[str] = mapped_column(String(32), default="")   # a one-way delivery's addressee
     born_minute: Mapped[int] = mapped_column(Integer, default=0)
     born_day: Mapped[int] = mapped_column(Integer, default=0)

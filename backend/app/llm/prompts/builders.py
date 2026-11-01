@@ -397,17 +397,24 @@ def day_plan_prompt(agent: "Agent", mat: dict) -> list[dict]:
         f"and sleep is not yours to change. Respond ONLY with JSON: "
         '{"intent": "...", "nothing_special": true|false, "skip_work": 0..1, '
         '"slots": [{"from": 14, "to": 16, "place": "<place name>", "doing": "visit|rest|idle|work|eat"}], '
-        '"actions": [{"hour": 15, "place": "<place name>", "what": "...", "leaves": "", "cost": 0}]}'
+        '"actions": [{"hour": 15, "place": "<place name>", "what": "...", '
+        '"leaves": null | {"kind": "note|notice|craft|repair|gift|other", "item": "...", "words": "..."}, '
+        '"cost": 0}]}'
         "\n- intent: one first-person sentence: how they mean to spend today, and why."
         "\n- slots: at most 3 changes to the usual day, whole hours from 7 to 22, each at most "
         "4 hours; [] when nothing changes. \"visit\" means spending time at a place."
         "\n- skip_work: how much they want to skip work today, honestly (0 = not at all). "
         "Only meaningful on a work day."
         "\n- actions: at most 2 small things they want to DO today, by themselves, beyond where "
-        "they spend time -- sketch something, tidy or plant something, put up a notice, try "
-        "something new. \"what\" is a short phrase of what they do, without the subject; "
-        "\"leaves\" is something it leaves behind in that place for others to see, short, or "
-        "\"\"; \"cost\" is the money it takes (0 if none). Only their own doing: it may involve "
+        "they spend time. The kinds of thing a person does: make a small thing; mend, tidy or "
+        "arrange a corner of a place; leave a message or a small gift for someone; get ready "
+        "for something coming up; a small ritual of their own. Choose what fits THIS person "
+        "today -- a written note is one of these, not the default. \"what\" is a short phrase "
+        "of what they do, without the subject. \"leaves\" is what it leaves behind in that "
+        "place for others to see, or null: \"kind\" is one of note, notice, craft, repair, "
+        "gift, other; \"item\" is the thing itself as a short noun phrase; \"words\" is exactly "
+        "what is written on it -- only for a note or a notice, otherwise \"\". \"cost\" is the "
+        "money it takes (0 if none). Only their own doing: it may involve "
         "someone -- waiting for them somewhere, leaving them a note, a small gift or an "
         "invitation (\"leaves\" is then that thing, and they will find it themselves) -- but it "
         "never decides another person's response or outcome (not \"make up with X\", not \"get X "

@@ -1065,6 +1065,7 @@ def generation_material(agent: "Agent", world: "World", day: int, residue: str =
     """Everything the reflection is allowed to build a wish out of, assembled by
     rules. Biography first: those lines are the sediment of the life so far, and they
     are what makes one chapter follow from another instead of restarting."""
+    from .actions import object_phrase as _object_phrase
     biography = [{"id": memory_id(agent.id, m), "text": m.text}
                  for m in agent.memory.items if m.kind == "biography"]
     recent = [m for m in agent.memory.items if m.kind != "biography"]
@@ -1108,7 +1109,7 @@ def generation_material(agent: "Agent", world: "World", day: int, residue: str =
         "mood": _mood_line(agent, world),
         # What residents have left around town, and what this one did lately (their
         # own free actions, kept or failed) -- raw text; the caller resolves names.
-        "town_objects": [f"{o['description']} ({{loc:{o['location']}}})"
+        "town_objects": [f"{_object_phrase(o)} ({{loc:{o['location']}}})"
                          for o in world.objects[-6:]],
         "my_actions": [m.text for m in agent.memory.items
                        if "action" in (m.tags or []) and m.minute >= (day - 14) * 24 * 60][-5:],

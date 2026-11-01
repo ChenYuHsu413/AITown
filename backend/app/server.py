@@ -958,6 +958,7 @@ class Sim:
             "text": e.text_en,       # DEPRECATED: prerendered English sentence (old-frontend compat)
             "tier": e.tier,          # major | notable | ambient (narrative layer)
             "detail": e.detail,
+            "obj": e.obj,            # made_object: {kind, item, content}
         }
 
     async def _broadcast_tick(self) -> None:

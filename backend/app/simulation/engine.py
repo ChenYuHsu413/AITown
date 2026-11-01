@@ -140,6 +140,7 @@ class Event:
     text_en: str = ""         # deprecated: prerendered English sentence
     detail: str = ""          # optional richer context for the chronicle (secret text, rumor wording, ...)
     tier: str = "ambient"     # major | notable | ambient (see simulation/narrative.py)
+    obj: dict | None = None   # made_object: the thing left, {kind, item, content} (agents/actions.py)
 
     def render(self) -> str:
         return f"[{fmt_time(self.minute)}] {self.text_en}"
@@ -396,6 +397,7 @@ class SimulationEngine:
         target_name: str | None = None,
         detail: str = "",
         minute: int | None = None,
+        obj: dict | None = None,
     ) -> None:
         # ``minute`` lets a background settlement stamp its events at the
         # conversation's initiation time (the exchange narratively happened then,
@@ -417,6 +419,7 @@ class SimulationEngine:
         )
         ev.text = text
         ev.detail = detail
+        ev.obj = obj
         ev.text_en = render_en(
             verb, ev.actor_name, ev.target_name, ev.location_name, text
         )
@@ -443,6 +446,8 @@ class SimulationEngine:
             "location": ev.location, "location_name": ev.location_name,
             "speech": ev.text, "detail": ev.detail, "tier": ev.tier,
         }
+        if ev.obj:
+            entry["obj"] = dict(ev.obj)
         if ev.verb in self._CONV_VERBS:  # the surrounding exchange spans a few sim-minutes
             entry["conversation_minutes"] = [ev.minute, ev.minute + 20]
         self.chronicle.append(entry)
@@ -821,6 +826,9 @@ class SimulationEngine:
         for beat in self.decisions.drain_outbox():     # a promise that came to nothing, a free action
             if beat["verb"] == "__object__":            # a public object came into the world
                 self.action_stats["objects"] += 1
+                kinds = self.action_stats.setdefault("objects_by_kind", {})
+                kind = beat["object"].get("kind") or "other"
+                kinds[kind] = kinds.get(kind, 0) + 1
                 if self.on_public_object is not None:
                     self.on_public_object(dict(beat["object"]))
                 continue
@@ -830,7 +838,7 @@ class SimulationEngine:
                 self.action_stats[beat["verb"]] += 1
             self._publish("action", beat["verb"], actor=self.world.agents.get(beat["actor"]),
                           target=self.world.agents.get(beat["target"]), location_id=beat.get("location", ""),
-                          text=beat.get("text", ""), detail=beat.get("detail", ""))
+                          text=beat.get("text", ""), detail=beat.get("detail", ""), obj=beat.get("obj"))
 
         if decision.action == "talk" and decision.talk_partner:
             await self._initiate_conversation(

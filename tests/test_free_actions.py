@@ -96,7 +96,7 @@ class PlanSide(unittest.TestCase):
             p = plan_for(xixi, self.world, act(place="Tide Cafe", what="在角落的桌邊寫下一張小小的留言卡,祝ㄐㄐ的咖啡館生意興隆",
                                                leaves="一張寫給ㄐㄐ的留言卡"))
             a = p["actions"][0]
-            self.assertEqual((a["recipient"], a["leaves"]), ("jiji", "一張寫給ㄐㄐ的留言卡"))   # for the owner: may stay
+            self.assertEqual((a["recipient"], a["leaves"]["item"]), ("jiji", "一張寫給ㄐㄐ的留言卡"))   # for the owner: may stay
             xixi.state.day_plan = p
             xixi.state.location, xixi.state.current_action = "cafe", "rest"
             decide(self.engine, self.world, xixi, DAY0 + 15 * 60 + 2)
@@ -145,7 +145,7 @@ class PlanSide(unittest.TestCase):
 
     def test_nothing_may_be_left_in_someone_elses_shop(self):
         p = plan_for(self.kz, self.world, act(place="Tide Cafe", what="read a whole book", leaves="a bookmark"))
-        self.assertEqual(p["actions"][0]["leaves"], "")
+        self.assertIsNone(p["actions"][0]["leaves"])
 
 
 class Execution(unittest.TestCase):
@@ -181,8 +181,9 @@ class Execution(unittest.TestCase):
         asyncio.run(self.engine.tick())
         self.assertEqual([o["description"] for o in written], ["a chalk sketch by the pond"])
         ev = [e for e in self.engine.bus.events if e.verb == "made_object"]
-        self.assertEqual((ev[-1].actor, ev[-1].location, ev[-1].text),
+        self.assertEqual((ev[-1].actor, ev[-1].location, ev[-1].obj["item"]),
                          ("kuaizheng", "park", "a chalk sketch by the pond"))
+        self.assertEqual(ev[-1].text, "")                          # no words written on a sketch
         self.assertEqual(ev[-1].tier, "notable")
         self.assertEqual(self.engine.action_stats["made_object"], 1)
 
@@ -334,13 +335,13 @@ class Objects(unittest.TestCase):
         seen = [m for m in jiji.memory.items if "chalk sketch" in m.text]
         self.assertEqual(len(seen), 1)
         lines = actions_mod.scene_lines(world, "park", DAY0 + 60)
-        self.assertEqual(lines, [texts.T("aged_today", name="a chalk sketch by the pond")])
+        self.assertEqual(lines, [texts.T("obj_new", name="a chalk sketch by the pond")])
         self.assertEqual(actions_mod.scene_lines(world, "park", DAY0 + 30 * DAY_MIN),
                          ["a chalk sketch by the pond"])
         lengyue = world.agents["lengyue"]
         lengyue.state.location = "park"
         plan = asyncio.run(engine.decisions.start_conversation(jiji, lengyue, world, DAY0 + 600))
-        self.assertIn("Also here: " + texts.T("aged_today", name="a chalk sketch by the pond"),
+        self.assertIn("Also here: " + texts.T("obj_new", name="a chalk sketch by the pond"),
                       plan.preview("jiji"))
 
     def test_wish_and_closure_material_see_actions_objects_and_promises(self):
@@ -438,6 +439,57 @@ class WishBlocked(unittest.TestCase):
         self.assertEqual(a["wish"], "")
         self.miss(a, 3)
         self.assertEqual(self.wishes.abandonment_pressure(self.wish), 0)
+
+
+class StructuredObjects(unittest.TestCase):
+    """An object is kind / item / content, and every sentence about it is built from
+    those once (Era 3: "在螢火公園看到了今天下午我在螢火公園長椅邊等你—艾斯。")."""
+
+    def setUp(self):
+        self.env = unittest.mock.patch.dict(os.environ, {"AI_TOWN_LANG": "zh-TW"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def test_the_era3_strings_come_apart(self):
+        P = actions_mod.parse_leaves
+        cases = [
+            ("一張寫著「想當面聊聊紙條的事,今天下午在螢火公園等你—歐拉」的小紙條", "",
+             {"kind": "note", "item": "一張小紙條", "content": "想當面聊聊紙條的事,今天下午在螢火公園等你—歐拉"}),
+            ("一張字跡輕快的小紙條:「今天下午在螢火公園,有空的話可以陪我走走嗎?—ㄐㄐ」", "",
+             {"kind": "note", "item": "一張字跡輕快的小紙條", "content": "今天下午在螢火公園,有空的話可以陪我走走嗎?—ㄐㄐ"}),
+            ("寫著「感測器的事,今天下午我在螢火公園長椅邊等你—瓏」的小字條", "",
+             {"kind": "note", "item": "一張小字條", "content": "感測器的事,今天下午我在螢火公園長椅邊等你—瓏"}),
+            ("今天下午我在螢火公園長椅邊等你,想當面把話說清楚—歐拉", "在長椅邊留個字條約冷月見面",
+             {"kind": "note", "item": "", "content": "今天下午我在螢火公園長椅邊等你,想當面把話說清楚—歐拉"}),
+            ("一張寫著「爐心烘焙坊新品試吃,歡迎路過嚐嚐—安哥」的新告示", "",
+             {"kind": "notice", "item": "一張新告示", "content": "爐心烘焙坊新品試吃,歡迎路過嚐嚐—安哥"}),
+            ("一張手寫的新品試吃告示", "", {"kind": "notice", "item": "一張手寫的新品試吃告示", "content": ""}),
+        ]
+        for raw, what, want in cases:
+            self.assertEqual(P(raw, what), want, raw)
+
+    def test_the_contract_shape_is_taken_as_is(self):
+        self.assertEqual(actions_mod.parse_leaves({"kind": "craft", "item": "一隻漂流木刻的小鳥", "words": "x"}),
+                         {"kind": "craft", "item": "一隻漂流木刻的小鳥", "content": ""})   # only notes carry words
+        self.assertIsNone(actions_mod.parse_leaves(None))
+        self.assertIsNone(actions_mod.parse_leaves({"kind": "note", "item": "", "words": ""}))
+
+    def test_one_phrase_for_every_sentence(self):
+        o = {"kind": "note", "item": "", "content": "今天下午我在長椅邊等你—歐拉"}
+        self.assertEqual(actions_mod.object_phrase(o), "一張字條,上面寫著「今天下午我在長椅邊等你—歐拉」")
+        seen = texts.T("object_noticed", loc="park", what=actions_mod.object_phrase(o))
+        self.assertTrue(seen.endswith("看到了一張字條,上面寫著「今天下午我在長椅邊等你—歐拉」。"), seen)
+
+    def test_a_made_object_event_carries_the_structure(self):
+        world, engine = make_world()
+        oula = world.agents["oula"]
+        oula.state.location = "park"
+        act_ = {"what": "在長椅邊留個字條約冷月見面", "location": "park", "cost": 0, "recipient": "lengyue",
+                "leaves": {"kind": "note", "item": "", "content": "今天下午我在長椅邊等你—歐拉"}}
+        beat, obj = actions_mod.land(oula, world, act_, DAY0 + 15 * 60)
+        self.assertEqual(beat["obj"], {"kind": "note", "item": "", "content": "今天下午我在長椅邊等你—歐拉"})
+        self.assertEqual(beat["text"], "今天下午我在長椅邊等你—歐拉")
+        self.assertEqual(obj["description"], "一張字條,上面寫著「今天下午我在長椅邊等你—歐拉」")
 
 
 if __name__ == "__main__":
