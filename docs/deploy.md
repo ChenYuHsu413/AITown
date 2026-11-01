@@ -220,6 +220,71 @@ five tables and (if a prior snapshot exists) resumes the town from it.
 
 ---
 
+## Local Postgres (the live home-machine database)
+
+The live town's database runs in Docker on the same machine as the server. It
+moved off Supabase on 2026-11-01; the Supabase project stays **paused as an
+off-site cold backup** (its URL is kept, commented out, in `.env` — don't delete
+it). This is separate from the `db` service in `docker-compose.yml` (different
+name, port and volume), so the two never clash.
+
+**Match the major version to the source.** The Supabase project runs Postgres
+17, so the local container is `pgvector/pgvector:pg17`: `pg_dump` refuses a newer
+server than itself, and a 17 dump restored into 16 can trip on newer syntax.
+
+```bash
+# one-time: a named volume (data survives container rebuilds) + the container
+docker volume create aitown-pgdata
+docker run -d --name aitown-pg --restart unless-stopped \
+  -e POSTGRES_USER=aitown -e POSTGRES_DB=aitown -e POSTGRES_PASSWORD=<password> \
+  -v aitown-pgdata:/var/lib/postgresql/data \
+  -v <backup-dir>:/backup:ro \
+  -p 127.0.0.1:5433:5432 \
+  pgvector/pgvector:pg17
+```
+
+`--restart unless-stopped` brings the DB back by itself after a reboot (Docker
+Desktop must start at login). Port `5433` on loopback only avoids clashing with
+the compose `db` service on `5432`. Then in `.env`:
+
+```
+AI_TOWN_DB_URL=postgresql+asyncpg://aitown:<password>@127.0.0.1:5433/aitown
+```
+
+No pooler here, so the app keeps asyncpg's prepared-statement cache on.
+
+**Dump / restore.** Run the client tools from the same image so their version
+always matches. Dump the whole database (custom format) to a directory outside
+the repo; restore only `public` — Supabase's own schemas (`auth`, `storage`,
+`realtime`, `vault`, …) are platform plumbing owned by roles that don't exist
+locally, and the app's tables only depend on the `vector` type in `public`:
+
+```bash
+# dump (read-only against the source); DBURL is a libpq URI (postgresql://...)
+docker run --rm -e DBURL -v <backup-dir>:/backup pgvector/pgvector:pg17 \
+  sh -c 'PGOPTIONS="-c default_transaction_read_only=on" \
+         pg_dump -Fc -d "$DBURL" -f /backup/aitown-<date>.dump'
+
+# check the archive before trusting it
+docker exec aitown-pg pg_restore --list /backup/aitown-<date>.dump | grep "TABLE DATA public"
+
+# restore into an empty database: extension first, then the public schema
+docker exec aitown-pg psql -U aitown -d aitown -c "CREATE EXTENSION IF NOT EXISTS vector"
+docker exec aitown-pg pg_restore -U aitown -d aitown -n public --no-owner --no-acl \
+  --exit-on-error /backup/aitown-<date>.dump
+```
+
+After a restore, compare `count(*)` of every `public` table against the source
+before pointing the server at it. The same dump restores back into Supabase (or
+anywhere else) if the town ever has to move again.
+
+**Cold backup.** The paused Supabase project is a frozen off-site copy as of the
+move (Day 131, run `f2024443…`); nothing writes to it any more. Fresh backups
+are local dumps (`pg_dump` against `127.0.0.1:5433` with the same command), kept
+outside the repo.
+
+---
+
 ## Snapshot & resume (surviving a restart)
 
 Once `AI_TOWN_DB_URL` is set, the server persists a **full world snapshot**
