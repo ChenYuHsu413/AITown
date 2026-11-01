@@ -490,6 +490,11 @@ class Sim:
                   f"(run {p.run_id})")
         else:
             print("[resume] fresh start")
+            # The seeded chapters opened before the ledger was attached: write their
+            # started rows now, so the ledger never learns of a chapter only at its close.
+            for agent in self.world.agents.values():
+                if agent.chapter is not None:
+                    self.engine._emit_chapter_record(agent, chapter=agent.chapter)
             # Write the new run's first snapshot now: until one exists, a restart would
             # find only an archived era's snapshot and open yet another fresh run.
             self._take_snapshot()
