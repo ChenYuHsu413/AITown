@@ -157,6 +157,7 @@ _CATALOGUE: dict[str, tuple[str, str]] = {
     # turn-by-turn dialogue consequences
     "answered": ("when I asked, the answer was: \"{text}\"", "我問了之後,得到的回答是:「{text}」"),
     "told_me": ("{{agent:{teller}}} told me: {text}", "{{agent:{teller}}}跟我說:{text}"),
+    "i_told": ("I told {{agent:{listener}}}: {text}", "我跟{{agent:{listener}}}說了:{text}"),
     "stormed_off_self": ("Things went sour with {{agent:{other}}} at {{loc:{loc}}} and I walked away.",
                          "在{{loc:{loc}}}和{{agent:{other}}}話不投機,我轉身走了。"),
     "stormed_off_other": ("{{agent:{other}}} walked away from me mid-conversation at {{loc:{loc}}}.",

@@ -267,6 +267,7 @@ class AnswersLand(unittest.TestCase):
     def run_talk(self, lines, azong_wish=True):
         from backend.app.agents import wishes as wishes_mod
         world, engine = make_world()
+        self.world = world
         for i in ("azong", "oula"):
             world.agents[i].state.location = "cafe"
         engine.decisions.secrets.secrets.clear()
@@ -331,6 +332,44 @@ class AnswersLand(unittest.TestCase):
             told = self.run_talk(lines, azong_wish=False)
         self.assertEqual(len(told), 1 + pacing.DIALOGUE_TELLS_MAX)        # the answer + capped others
         self.assertTrue(any("渡口市場" in m.text for m in told))
+
+
+class SpeakerKeeps(AnswersLand):
+    """Developer ruling, Era 3: a concrete claim a speaker hands over is also kept as
+    the speaker's own memory, one notch lighter (Oula invented the letters on D1,
+    forgot, and denied them on D7). Promises and bare unmarked answers are not."""
+
+    test_the_answer_to_her_own_question_lands_and_weighs_more = None
+    test_an_answer_not_marked_as_news_still_lands = None
+    test_an_answer_unrelated_to_her_aims_lands_at_the_usual_weight = None
+    test_answers_land_beyond_the_cap_but_unasked_news_stays_capped = None
+
+    def said(self):
+        return [m for m in self.world.agents["oula"].memory.items if "said" in m.tags]
+
+    def test_the_teller_remembers_each_claim_one_notch_lighter(self):
+        told = self.run_talk(self.AZONG_CASE)
+        said = self.said()
+        self.assertEqual(len(said), 2, [m.text for m in said])
+        for m in said:
+            self.assertTrue(m.text.startswith("我跟{agent:azong}說了:"), m.text)
+            heard = next(t for t in told if m.text.split("說了:", 1)[1] in t.text)
+            self.assertEqual(m.importance, heard.importance - 1)
+
+    def test_a_bare_unmarked_answer_is_not_a_claim(self):
+        lines = [line("早啊。"), line("那封沒署名的信,你知不知道是誰寫的?"),
+                 line("沒署名的信我這趟還真沒經手,誰寫的我哪知道。"), line("算了。", end=True)]
+        self.run_talk(lines, azong_wish=False)
+        self.assertEqual(self.said(), [])
+
+    def test_a_meeting_proposal_is_left_to_the_promise_memory(self):
+        lines = [line("早啊。"),
+                 line("明天下午三點在咖啡館見?", plan={"place": "cafe", "day": "tomorrow", "hour": 15}),
+                 line("好,明天三點咖啡館見。", tells="歐拉約好明天三點在咖啡館碰面。",
+                      plan={"place": "cafe", "day": "tomorrow", "hour": 15}),
+                 line("那就說定了。", end=True)]
+        self.run_talk(lines, azong_wish=False)
+        self.assertEqual(self.said(), [])
 
 
 class PromiseDays(unittest.TestCase):

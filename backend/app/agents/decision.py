@@ -2261,15 +2261,22 @@ class DecisionEngine:
         pair and is a beat the town sees."""
         a, b = plan.a, plan.b
         beats: list[dict] = []
-        for listener, tell, answer in self._tells_to_land(plan, turns):
-            speaker_id = b.id if listener is a else a.id
+        for listener, tell, answer, own in self._tells_to_land(plan, turns):
+            speaker = b if listener is a else a
             # An answer to the listener's own question that bears on what they are
             # after (an active wish, today's plan) is what they came for: weightier.
             weight = 5 if answer and self._bears_on(listener, tell, now) else 4
             listener.memory.add(MemoryItem(
                 minute=now, importance=weight, kind="conversation",
                 tags=["answer"] if answer else [],
-                text=texts.T("told_me", teller=speaker_id, text=tell)))
+                text=texts.T("told_me", teller=speaker.id, text=tell)))
+            if own:
+                # The speaker keeps what they claimed, one notch lighter (developer
+                # ruling, Era 3: Oula invented the letters on D1, forgot, and denied
+                # them on D7). A story told is a story the teller can be held to.
+                speaker.memory.add(MemoryItem(
+                    minute=now, importance=weight - 1, kind="conversation", tags=["said"],
+                    text=texts.T("i_told", listener=listener.id, text=tell)))
         promise = self._promise_from(plan, world, turns, now)
         if promise is not None:
             beats.append(promise)
@@ -2293,7 +2300,7 @@ class DecisionEngine:
     _QUESTION_RE = re.compile(r"[?？]|嗎|呢$")
 
     def _tells_to_land(self, plan: ConvPlan, turns: list) -> list:
-        """News handed over in a conversation -> (listener, text, is_answer) to keep.
+        """News handed over in a conversation -> (listener, text, is_answer, speaker_keeps).
 
         A speaker restating one thing line after line counts once (the fuller, later
         version replaces a near-duplicate). Every distinct piece of news is kept up to
@@ -2309,6 +2316,10 @@ class DecisionEngine:
             prev = turns[i - 1] if i else None
             answer = bool(prev and prev.get("speaker_id") != sid
                           and self._QUESTION_RE.search(str(prev.get("text", "")).strip()))
+            # the speaker's own record follows the same marked news -- not the bare line
+            # kept for an unmarked answer, and not a meeting proposal (promises have
+            # their own memory)
+            own = bool(tell) and not t.get("plan")
             if answer and not tell:
                 # An answer the model didn't mark as news ("I never handled it, I don't
                 # know") is still the answer the listener came for: keep the line itself.
@@ -2316,18 +2327,18 @@ class DecisionEngine:
             if not tell or len(tell) > 120 or sid not in per or not _knowledge_lang_ok(tell):
                 continue
             items = per[sid]
-            dup = next((k for k, (x, _a) in enumerate(items) if self._same_news(x, tell)), None)
+            dup = next((k for k, (x, _a, _o) in enumerate(items) if self._same_news(x, tell)), None)
             if dup is None:
-                items.append((tell, answer))
+                items.append((tell, answer, own))
             else:
-                items[dup] = (tell, items[dup][1] or answer)
+                items[dup] = (tell, items[dup][1] or answer, own)
         out = []
         for sid, items in per.items():
             listener = b if sid == a.id else a
             answers = [x for x in items if x[1]]
             others = [x for x in items if not x[1]]
-            for tell, ans in answers + others[:pacing.DIALOGUE_TELLS_MAX]:
-                out.append((listener, tell, ans))
+            for tell, ans, own in answers + others[:pacing.DIALOGUE_TELLS_MAX]:
+                out.append((listener, tell, ans, own))
         return out
 
     @staticmethod
