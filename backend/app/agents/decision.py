@@ -770,7 +770,7 @@ class DecisionEngine:
                     sim_minute=now,
                     schema={"type": "object"},
                     cache_key=f"{agent.id}|{partner_id}|{agent.state.mood}|{obs.location}",
-                    max_tokens=60,
+                    max_tokens=160 if builders.lang_is_zh() else 60,   # zh needs more tokens for the same words
                     per_call_timeout=SYNC_CALL_TIMEOUT_S,   # in-tick: never park the pacing loop on a hung provider
                 )
                 model_used = f"{res.provider}/{res.model}"
@@ -808,7 +808,7 @@ class DecisionEngine:
                 agent_id=agent.id,
                 sim_minute=now,
                 schema={"type": "object"},
-                max_tokens=80,
+                max_tokens=160 if builders.lang_is_zh() else 80,
                 per_call_timeout=SYNC_CALL_TIMEOUT_S,   # in-tick: never park the pacing loop on a hung provider
             )
             model_used = f"{res.provider}/{res.model}"
@@ -1263,7 +1263,7 @@ class DecisionEngine:
                 agent_id=a.id,
                 sim_minute=now,
                 schema={"type": "object"},
-                max_tokens=80,
+                max_tokens=160 if builders.lang_is_zh() else 80,
                 per_call_timeout=SYNC_CALL_TIMEOUT_S,   # in-tick (start_conversation): don't park the loop
             )
             new = str(res.parsed.get("text") or "") if isinstance(res.parsed, dict) else ""
@@ -1373,7 +1373,7 @@ class DecisionEngine:
                     task="wish_generation",
                     messages=builders.wish_generation_prompt(agent, material, rejection),
                     agent_id=agent.id, sim_minute=day * 24 * 60,
-                    schema={"type": "object"}, max_tokens=500,
+                    schema={"type": "object"}, max_tokens=800 if builders.lang_is_zh() else 500,
                     validate=lambda r: (_note_zh_gate(_wish_text_zh_ok(r.parsed))
                                         and _note_gender_gate(_wish_text_gender_ok(r.parsed))),
                     per_call_timeout=45.0, no_floor=True,
@@ -1450,7 +1450,7 @@ class DecisionEngine:
                                            for k in ("memories", "aftermath")}},
                     outcome, chapters_mod.relationship_summary_lines(material, world)),
                 agent_id=agent.id, sim_minute=material["window"]["end_minute"],
-                schema={"type": "object"}, max_tokens=200,
+                schema={"type": "object"}, max_tokens=300 if builders.lang_is_zh() else 200,
                 validate=lambda r: (chapters_mod.validate_closure_output(r.parsed, material) is not None
                                     and _note_gender_gate(gender_ok(
                                         str((r.parsed or {}).get("biography_line", ""))
@@ -1617,7 +1617,7 @@ class DecisionEngine:
         owner_name = texts.display_name(secret.owner) if owner else secret.owner
         res = await self.router.generate(       # rephrase to a 3rd-person rumor + appraise, in one call
             task="leak", messages=builders.leak_prompt(owner_name, secret.text),
-            agent_id=b.id, sim_minute=now, schema={"type": "object"}, max_tokens=80,
+            agent_id=b.id, sim_minute=now, schema={"type": "object"}, max_tokens=160 if builders.lang_is_zh() else 80,
             per_call_timeout=SYNC_CALL_TIMEOUT_S,   # in-tick (start_conversation): don't park the loop
         )
         parsed = res.parsed if isinstance(res.parsed, dict) else {}
