@@ -723,16 +723,14 @@ class DecisionEngine:
         # spent at the place.
         for act in dayplan_mod.lapsed_actions(agent, now):
             self.outbox.append(actions_mod.fail(agent, act, texts.T("fail_time"), now))
+        seek_partner = ""                                # a doing that went to find someone who is here
         due = dayplan_mod.action_due(agent, now)        # a doing inside a same-place stretch
         if due is not None:
             why = actions_mod.failure_reason(agent, world, due, now)
             if why:
                 self.outbox.append(actions_mod.fail(agent, due, why, now))
             elif agent.state.location == due["location"] and agent.state.current_action != "sleep":
-                beat, obj = actions_mod.land(agent, world, due, now)
-                self.outbox.append(beat)
-                if obj is not None:
-                    self.outbox.append({"verb": "__object__", "object": obj})
+                seek_partner = self._do_action(agent, world, due, now)
         if plan_hit is not None and entry.action == "free":
             act = dayplan_mod.action_at(agent, entry.start)
             why = actions_mod.failure_reason(agent, world, act, now) \
@@ -744,10 +742,7 @@ class DecisionEngine:
                 entry = agent.routine.current(minute_of_day, dow)
             else:
                 if agent.state.location == act["location"] and agent.state.current_action != "sleep":
-                    beat, obj = actions_mod.land(agent, world, act, now)
-                    self.outbox.append(beat)
-                    if obj is not None:
-                        self.outbox.append({"verb": "__object__", "object": obj})
+                    seek_partner = self._do_action(agent, world, act, now) or seek_partner
                 entry = RoutineEntry(entry.start, "idle", entry.location)
         obs_text = obs.describe(world)
         self._record_observations(agent, world, now)
@@ -817,6 +812,8 @@ class DecisionEngine:
         # A wish may nominate who is worth approaching, but never that they must be.
         wish_social = wish_drive if (wish_drive or {}).get("action") == "talk_bias" else None
         candidates = [wish_social["target"]] if wish_social else list(obs.arrivals)
+        if seek_partner:                    # they came here to find this person: strongly weighted
+            candidates = [seek_partner]
         if decision is None and candidates and not self.dialogue_cap_reached(now):
             partner_id = candidates[0]
             partner = world.agents[partner_id]
@@ -831,7 +828,7 @@ class DecisionEngine:
             # no attempt and records no blocked day, so it costs the routine nothing.
             # (Scoping it to the drive's window was over-narrow: the pair whose only
             # overlap is a meal would never have got it.)
-            wish_bonus = (wishes_mod.wants_contact(agent, partner_id)
+            wish_bonus = ((wishes_mod.wants_contact(agent, partner_id) or partner_id == seek_partner)
                           and partner.state.location == agent.state.location)
             if partner_free and now - last >= TALK_COOLDOWN_MIN and agent.state.current_action != "sleep" \
                     and self._social_gate(agent, partner_id, now,
@@ -1114,6 +1111,23 @@ class DecisionEngine:
             return True
         seed = int(hashlib.sha256(f"talk|{agent.id}|{partner_id}|{now}".encode()).hexdigest()[:8], 16)
         return random.Random(seed).random() < p
+
+    def _do_action(self, agent: Agent, world: World, act: dict, now: int) -> str:
+        """Land a free action at its place. One that goes to find someone becomes
+        "go there and approach": if they are here, the doer's own approach is
+        recorded and the person is handed to the social trigger (returned); if not,
+        it is a "didn't find them" failure. Anything else lands as a doing."""
+        if act.get("seek"):
+            if not actions_mod.person_here(world, act):
+                self.outbox.append(actions_mod.fail(agent, act, texts.T("fail_missed_person", who=act["seek"]), now))
+                return ""
+            self.outbox.append(actions_mod.approach(agent, world, act, now))
+            return act["seek"]
+        beat, obj = actions_mod.land(agent, world, act, now)
+        self.outbox.append(beat)
+        if obj is not None:
+            self.outbox.append({"verb": "__object__", "object": obj})
+        return ""
 
     def _record_observations(self, agent: Agent, world: World, now: int) -> None:
         if agent.state.current_action != "sleep":
@@ -1901,12 +1915,24 @@ class DecisionEngine:
             p = getattr(r, "parsed", None)
             return (isinstance(p, dict) and bool(str(p.get("intent") or "").strip())
                     and _knowledge_lang_ok(str(p.get("intent"))))
-        res = await self.router.generate(
-            task="day_plan", messages=builders.day_plan_prompt(agent, mat), agent_id=agent.id,
-            sim_minute=now, schema={"type": "object"},
-            max_tokens=400 if builders.lang_is_zh() else 260, validate=ok,
-            per_call_timeout=DIALOGUE_PROVIDER_TIMEOUT_S, no_floor=True)
-        return dayplan_mod.validate(res.parsed, agent, world, day)
+        messages = builders.day_plan_prompt(agent, mat)
+        plan: dict = {}
+        for attempt in range(2):        # one retry, with the reason, for an action told as a shared outcome
+            res = await self.router.generate(
+                task="day_plan", messages=messages, agent_id=agent.id,
+                sim_minute=now, schema={"type": "object"},
+                max_tokens=400 if builders.lang_is_zh() else 260, validate=ok,
+                per_call_timeout=DIALOGUE_PROVIDER_TIMEOUT_S, no_floor=True)
+            plan = dayplan_mod.validate(res.parsed, agent, world, day)
+            shared = [d for d in plan.get("dropped") or [] if d.startswith("action: states a shared outcome")]
+            if not shared or attempt:
+                return plan
+            messages = messages[:-1] + [{"role": "user", "content": messages[-1]["content"] + (
+                "\n\nYour previous answer was refused: an action told something as done together with "
+                "someone (" + "; ".join(shared) + "). Tell every action from their own side only -- what "
+                "they set out to do or whom they go to find -- never what the other person does. "
+                "Answer again in full.")}]
+        return plan
 
     # A crush is carried privately: saying it out loud is the romance track's call
     # (a confession scene arrives as an explicit intent), never a line's whim.

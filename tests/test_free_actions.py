@@ -207,6 +207,77 @@ class Execution(unittest.TestCase):
         self.assertEqual(self.kz.state.day_plan["actions"][0]["state"], "failed")
 
 
+class JointWording(unittest.TestCase):
+    """Developer ruling: a doing is told from the doer's side; the other person's
+    presence and part are the world's to decide."""
+
+    def setUp(self):
+        self.world, self.engine = make_world()
+        self.xixi = self.world.agents["xixi"]
+
+    def plan(self, what, place="Tide Cafe", leaves=""):
+        with unittest.mock.patch.dict(os.environ, {"AI_TOWN_LANG": "zh-TW"}):
+            return plan_for(self.xixi, self.world, act(place=place, what=what, leaves=leaves))
+
+    def test_a_done_together_wording_is_refused_an_intent_is_not(self):
+        p = self.plan("跟安哥一起看燈座接線的東西")                    # the D46 wording
+        self.assertEqual(p["actions"], [])
+        self.assertTrue(p["dropped"][0].startswith("action: states a shared outcome"))
+        p = self.plan("去找安哥,想一起看燈座接線")
+        self.assertEqual((p["actions"][0]["mode"], p["actions"][0]["seek"]), ("seek", "ange"))
+
+    def test_a_shared_outcome_is_sent_back_once_with_the_reason(self):
+        from backend.app.llm.providers.base import LLMResult
+        answers = [
+            {"intent": "今天想多跟安哥相處。", "actions": [act(place="Tide Cafe", what="跟安哥一起看燈座接線的東西", leaves="")]},
+            {"intent": "今天想多跟安哥相處。", "actions": [act(place="Tide Cafe", what="去找安哥,想一起看燈座接線", leaves="")]},
+        ]
+        seen = []
+
+        async def gen(**kw):
+            seen.append(kw["messages"][-1]["content"])
+            return LLMResult(text="", parsed=answers[len(seen) - 1], provider="fake", model="f")
+        with unittest.mock.patch.dict(os.environ, {"AI_TOWN_LANG": "zh-TW"}),                 unittest.mock.patch.object(self.engine.decisions.router, "generate", gen):
+            plan = asyncio.run(self.engine.decisions.plan_day(self.xixi, self.world, DAY, DAY0))
+        self.assertEqual(len(seen), 2)
+        self.assertIn("previous answer was refused", seen[1])
+        self.assertEqual(plan["actions"][0]["seek"], "ange")
+
+    def test_a_greeting_is_routed_to_talk(self):
+        p = self.plan("在市場裡找冷月,主動打個招呼,問她最近過得如何", place="Ferry Crossing Market")  # the D46 wording
+        self.assertEqual((p["actions"][0]["mode"], p["actions"][0]["seek"]), ("greet", "lengyue"))
+
+    def go(self, what, partner_at):
+        p = self.plan(what)
+        self.xixi.state.day_plan = p
+        self.xixi.state.location, self.xixi.state.current_action = "cafe", "idle"
+        ange = self.world.agents["ange"]
+        ange.state.location, ange.state.current_action, ange.state.busy_until = partner_at, "idle", 0
+        decide(self.engine, self.world, self.xixi, DAY0 + 15 * 60 + 2)
+        return p["actions"][0], [m.text for m in self.xixi.memory.items]
+
+    def test_finding_someone_who_is_there_hands_them_to_the_social_trigger(self):
+        calls = []
+
+        async def gen(**kw):
+            calls.append(kw["task"])
+            from backend.app.llm.providers.base import LLMResult
+            return LLMResult(text="", parsed={"talk": True, "reason": "came to find him"}, provider="fake", model="f")
+        with unittest.mock.patch.object(self.engine.decisions.router, "generate", gen),                 unittest.mock.patch.object(self.engine.decisions, "_social_gate", lambda *a, **k: True):
+            a, mem = self.go("去找安哥,想一起看燈座接線", "cafe")
+        self.assertEqual(a["state"], "done")
+        self.assertIn("should_talk", calls)
+        self.assertTrue(any("去找" in m for m in mem))
+        self.assertFalse(any("一起看" in m and "想" not in m for m in mem))   # no shared outcome remembered
+
+    def test_finding_someone_who_is_not_there_is_a_missed_meeting(self):
+        a, mem = self.go("去找安哥,想一起看燈座接線", "bakery")
+        self.assertEqual(a["state"], "failed")
+        beat = self.engine.decisions.outbox[-1]
+        self.assertEqual((beat["verb"], beat["detail"]), ("action_failed", texts.T("fail_missed_person", who="ange")))
+        self.assertTrue(any("沒做成" in m or "But" in m or "couldn't" in m for m in mem))
+
+
 class FrozenTime(unittest.TestCase):
     def test_a_doing_lost_to_a_generating_conversation_is_deferred_not_failed(self):
         world, engine = make_world()

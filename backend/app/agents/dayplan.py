@@ -191,6 +191,46 @@ def controls_someone(text: str, agent: "Agent", world: "World") -> str:
     return ""
 
 
+# A free action is told from the doer's side only. "去找安哥,想一起看接線" is an intent;
+# "跟安哥一起看了接線" states the other person's part -- whether they are there and join
+# in is the world's to decide, and a joint memory only ever comes from a real
+# interaction. Finding someone is "go there and approach"; a greeting or a chat is
+# not an action at all but a talk, routed to the conversation system.
+_INTENT = r"(?:想|要|約|邀|打算|希望|準備|看能不能|試著)"
+_JOINT = r"(?:和|跟|與|陪)(?:著)?{name}(?:一起|一塊|一同)"
+_GREET = r"(?:打(?:個|聲)?招呼|問候|問好|聊聊|聊天|寒暄|說說話|說幾句|聊幾句|說聲)"
+_SEEK = r"(?:找|等|去見|見見|拜訪|等候)"
+
+
+def joint_outcome(text: str, agent: "Agent", world: "World") -> str:
+    """The resident whose part this action states as done ("" = none)."""
+    import re
+    for oid in world.agents:
+        if oid == agent.id:
+            continue
+        for n in _forms(oid, world):
+            e = re.escape(n)
+            if re.search(_JOINT.format(name=e), text) and not re.search(
+                    rf"{_INTENT}[^,，。;；]{{0,4}}(?:和|跟|與|陪)(?:著)?{e}|{_SEEK}{e}[^。;；]{{0,8}}{_INTENT}", text):
+                return oid
+    return ""
+
+
+def social_intent(text: str, agent: "Agent", world: "World") -> tuple[str, str]:
+    """("greet"|"seek", resident) when the action is about finding someone."""
+    import re
+    for oid in world.agents:
+        if oid == agent.id:
+            continue
+        for n in _forms(oid, world):
+            e = re.escape(n)
+            if re.search(rf"(?:{_SEEK}|向|跟|和){e}[^。;；]{{0,10}}{_GREET}", text):
+                return "greet", oid
+            if re.search(rf"{_SEEK}{e}", text):
+                return "seek", oid
+    return "", ""
+
+
 def addressee(text: str, agent: "Agent", world: "World") -> str:
     """The resident a one-way delivery is for: the first one named ("" = nobody)."""
     from . import texts as texts_mod
@@ -231,6 +271,9 @@ def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slot
         from .decision import gender_ok
         if controls_someone(what + "," + leaves, agent, world):
             dropped.append(f"action: controls someone else ({what[:24]})"); continue
+        if joint_outcome(what, agent, world):
+            dropped.append(f"action: states a shared outcome ({what[:24]})"); continue
+        mode, seek = social_intent(what, agent, world)
         if not gender_ok(what) or (leaves and not gender_ok(leaves)):
             dropped.append(f"action: wrong pronoun ({what[:24]})"); continue
         recipient = addressee(what + "," + leaves, agent, world) if leaves else ""
@@ -251,7 +294,7 @@ def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slot
         idx = len(out)
         out.append({"what": what, "leaves": leaves, "cost": cost, "location": loc,
                     "from": fr, "to": to, "state": "planned", "within": within,
-                    "recipient": recipient if leaves else ""})
+                    "recipient": recipient if leaves else "", "seek": seek, "mode": mode})
         if not within:
             slots.append({"from": fr, "to": to, "location": loc, "action": "free", "act": idx})
     return out, dropped

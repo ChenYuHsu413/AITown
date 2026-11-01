@@ -85,6 +85,30 @@ def fail(agent: "Agent", act: dict, reason: str, now: int) -> dict:
             "text": act["what"], "detail": reason}
 
 
+def person_here(world: "World", act: dict) -> bool:
+    who = world.agents.get(act.get("seek") or "")
+    return (who is not None and who.state.location == act["location"]
+            and who.state.current_action != "sleep")
+
+
+def approach(agent: "Agent", world: "World", act: dict, now: int) -> dict:
+    """Finding someone who is here: the doer's own side only (they went and found
+    them). Whatever happens between them is the conversation's to produce."""
+    act["state"] = "done"
+    loc, who = act["location"], act["seek"]
+    if act.get("mode") != "greet":                # a greeting leaves no doing of its own
+        agent.memory.add(MemoryItem(minute=now, importance=4, kind="reflection", tags=["action"],
+                                    text=texts.T("action_seek", loc=loc, who=who, what=act["what"])))
+        for other in world.agents.values():
+            if other.id in (agent.id, who) or other.state.location != loc or other.state.current_action == "sleep":
+                continue
+            if _roll("witness", other.id, agent.id, now) < pacing.ACTION_WITNESS_P:
+                other.memory.add(MemoryItem(minute=now, importance=3, kind="observation",
+                                            text=texts.T("action_seek_seen", actor=agent.id, loc=loc, who=who)))
+    return {"verb": "free_action", "actor": agent.id, "target": who, "location": loc,
+            "text": act["what"], "detail": act["what"]}
+
+
 def land(agent: "Agent", world: "World", act: dict, now: int) -> tuple[dict, dict | None]:
     """The doing happens. Returns (event beat, new public object or None)."""
     act["state"] = "done"

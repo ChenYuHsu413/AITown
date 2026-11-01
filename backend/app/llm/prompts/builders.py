@@ -390,7 +390,11 @@ def day_plan_prompt(agent: "Agent", mat: dict) -> list[dict]:
         "invitation (\"leaves\" is then that thing, and they will find it themselves) -- but it "
         "never decides another person's response or outcome (not \"make up with X\", not \"get X "
         "to agree\"), never handles their belongings or body, and never enters someone else's "
-        "home. It may fall inside a stretch they already spend at that place. [] when nothing."
+        "home. Tell every action from their own side only, as what they set out to do: \"去找安哥,"
+        "想一起看接線\" is fine, \"跟安哥一起看了接線\" is not -- whether the other person is there "
+        "and joins in is up to the world. A greeting or a chat is not an action: just say whom "
+        "they go to find. It may fall inside a stretch they already spend at that place. [] when "
+        "nothing."
         + roster_directive() + roster_gender_directive() + _lang_directive()
         + dialogue_locale_directive() + " Task: day_plan."
     )
