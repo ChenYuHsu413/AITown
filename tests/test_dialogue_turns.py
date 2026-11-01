@@ -260,6 +260,71 @@ class Consequences(unittest.TestCase):
         self.assertLess(lj.friendship, w0.agents["lengyue"].rel("jiji").friendship)
 
 
+class AnswersLand(unittest.TestCase):
+    """Era 3, D6: Azong asked Oula where the registered letter went; he answered,
+    then talked about Xixi's note, and only the note survived as her memory."""
+
+    def run_talk(self, lines, azong_wish=True):
+        from backend.app.agents import wishes as wishes_mod
+        world, engine = make_world()
+        for i in ("azong", "oula"):
+            world.agents[i].state.location = "cafe"
+        engine.decisions.secrets.secrets.clear()
+        azong, oula = world.agents["azong"], world.agents["oula"]
+        if azong_wish:
+            clean, errs = wishes_mod.validate_seed(
+                {"scale": "minor", "title": "把那封掛號信的下落問清楚",
+                 "statement": "我想親自去問問歐拉,把那封掛號信到底交給了誰弄個明白。",
+                 "requirements": [{"kind": "talk_count", "target": "oula", "threshold": 3}]},
+                azong, world, NOW // DAY_MIN + 1)
+            self.assertIsNotNone(clean, errs)
+            wishes_mod.install(azong, clean, NOW // DAY_MIN + 1)
+        gen, _ = scripted(lines)
+
+        async def go():
+            plan = await engine.decisions.start_conversation(oula, azong, world, NOW)
+            with unittest.mock.patch.object(engine.decisions.router, "generate", gen):
+                res = await engine.decisions.generate_conversation(plan)
+            engine.decisions.settle_conversation(plan, world, res)
+        with unittest.mock.patch.dict(os.environ, {"AI_TOWN_LANG": "zh-TW"}):
+            asyncio.run(go())
+        return [m for m in azong.memory.items if "跟我說" in m.text or "told me" in m.text]
+
+    AZONG_CASE = [
+        line("早啊阿總,我剛送完一趟信。"),
+        line("早啊歐拉。你那封掛號是寄給艾斯的吧?"),
+        line("對啊,是艾斯的掛號,她一拿到就笑得合不攏嘴。",
+             tells="歐拉說寄給艾斯的那封掛號信已經送到她手上了。"),
+        line("那就好。"),
+        line("跟你說——希希那張紙條還貼在公園,我想找他問問。",
+             tells="歐拉想找到希希,聽他說說那張紙條背後的事。", end=True),
+    ]
+
+    def test_the_answer_to_her_own_question_lands_and_weighs_more(self):
+        told = self.run_talk(self.AZONG_CASE)
+        texts_ = [m.text for m in told]
+        self.assertTrue(any("掛號信已經送到" in t for t in texts_), texts_)
+        self.assertTrue(any("紙條" in t for t in texts_), texts_)          # the other news lands too
+        ans = next(m for m in told if "掛號信已經送到" in m.text)
+        self.assertEqual(ans.importance, 5)                               # bears on her active wish
+        self.assertIn("answer", ans.tags)
+
+    def test_an_answer_unrelated_to_her_aims_lands_at_the_usual_weight(self):
+        told = self.run_talk(self.AZONG_CASE, azong_wish=False)
+        ans = next(m for m in told if "掛號信已經送到" in m.text)
+        self.assertEqual(ans.importance, 4)
+
+    def test_answers_land_beyond_the_cap_but_unasked_news_stays_capped(self):
+        lines = [line("早啊。"), line("你今天去了哪?"), line("市場。", tells="歐拉今天去了渡口市場。")]
+        for news in ["瓏在修長椅", "安哥換了新烤箱", "雪買了一盆花"]:
+            lines += [line("嗯。"), line(f"還有,{news}。", tells=f"歐拉說{news}。")]
+        lines[-1]["end"] = True
+        with unittest.mock.patch.object(pacing, "DIALOGUE_MAX_TURNS", 12):
+            told = self.run_talk(lines, azong_wish=False)
+        self.assertEqual(len(told), 1 + pacing.DIALOGUE_TELLS_MAX)        # the answer + capped others
+        self.assertTrue(any("渡口市場" in m.text for m in told))
+
+
 class PromiseDays(unittest.TestCase):
     """Era-3 report: a meeting agreed on D3 for "tomorrow 15:00" was still "tomorrow"
     in both residents' memories on D4. The day is stored ({day:N}) and the word is

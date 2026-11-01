@@ -279,6 +279,32 @@ class PauseWritesTheFrozenWorld(unittest.TestCase):
             asyncio.run(server.control({"cmd": "pause"}))   # already paused: no second write
         self.assertTrue(sim.paused)
         self.assertEqual(len(writes), 1)
+
+    def test_work_still_in_flight_at_pause_is_written_once_it_lands(self):
+        """Era 3: three wishes grown 2 s after a pause snapshot were lost at restart.
+        A pause with background work in flight writes again once that work is done."""
+        from backend.app import server
+        sim = server.Sim()
+        writes = Writes(sim.engine, sim.world)
+        sim.engine.on_snapshot = writes
+        landed = []
+
+        async def scenario():
+            async def late_wish():                       # a background call returning after the pause
+                await asyncio.sleep(0.2)
+                landed.append(sim.engine.now)
+            sim.engine._spawn(late_wish())
+            await server.control({"cmd": "pause"})
+            self.assertEqual(sim.inflight(), 1)
+            self.assertFalse(sim.drained)
+            while sim.engine._tasks or not sim.drained:
+                await asyncio.sleep(0.05)
+        with mock.patch.object(server, "sim", sim):
+            asyncio.run(asyncio.wait_for(scenario(), 10))
+        self.assertEqual(landed, [sim.engine.now])
+        self.assertEqual(len(writes), 2)                 # the pause, and the drained rewrite
+        self.assertTrue(sim.drained)
+        self.assertEqual(sim.inflight(), 0)
         self.assertEqual(writes.queue[0]["minute"], sim.engine.now)
 
 

@@ -890,6 +890,26 @@ class Sim:
             })
         return out
 
+    def inflight(self) -> int:
+        """Background work still running (dialogues, reflections, wish growth, morning
+        plans). A pause freezes the clock, not these: each can still change the world
+        when it returns, so a shutdown waits for 0 and the drained snapshot."""
+        return len(self.engine._tasks)
+
+    async def snapshot_when_drained(self, timeout_s: float = 300.0) -> None:
+        """After a pause: let in-flight background work land, then write the snapshot
+        again, so the frozen world on disk includes everything that finished after the
+        pause (Era 3: three wishes grown 2 s after a pause snapshot were lost at restart)."""
+        self.drained = False
+        t0 = asyncio.get_event_loop().time()
+        while self.engine._tasks and asyncio.get_event_loop().time() - t0 < timeout_s:
+            await asyncio.sleep(0.5)
+        if self.paused:
+            self.engine._event_snapshot("paused-drained", force=True)
+        self.drained = not self.engine._tasks
+        print(f"[pause] background work drained={self.drained}; snapshot rewritten at minute {self.engine.now}",
+              flush=True)
+
     def snapshot(self) -> dict:
         return {
             "type": "snapshot",
@@ -897,6 +917,8 @@ class Sim:
             "clock": fmt_time(self.engine.now),
             "day_of_week": (self.engine.now // (24 * 60)) % 7,   # 0=Mon .. 6=Sun
             "paused": self.paused,
+            "inflight": self.inflight(),
+            "drained": getattr(self, "drained", False),
             "idle": self._idle,
             "speed": self.speed,
             "unattended": self.unattended,
@@ -1067,7 +1089,13 @@ async def control(body: dict) -> JSONResponse:
     if cmd == "pause":
         if not sim.paused:
             sim.paused = True
+            sim.drained = False
             sim.engine._event_snapshot("paused", force=True)   # a paused clock is always on disk
+            # ...and once in-flight background work has landed, again (see snapshot_when_drained)
+            if sim.engine._tasks:
+                asyncio.ensure_future(sim.snapshot_when_drained())
+            else:
+                sim.drained = True
     elif cmd == "play":
         sim.paused = False
     elif cmd == "speed":

@@ -2265,17 +2265,14 @@ class DecisionEngine:
         pair and is a beat the town sees."""
         a, b = plan.a, plan.b
         beats: list[dict] = []
-        # One piece of news per speaker per conversation: a speaker restates the same
-        # thing line after line, and the last version is usually the fullest.
-        last_tell: dict[str, str] = {}
-        for t in turns:
-            tell = t.get("tells") or ""
-            if tell and len(tell) <= 120 and _knowledge_lang_ok(tell):
-                last_tell[t.get("speaker_id", "")] = tell
-        for speaker_id, tell in list(last_tell.items())[:pacing.DIALOGUE_TELLS_MAX]:
-            listener = b if speaker_id == a.id else a
+        for listener, tell, answer in self._tells_to_land(plan, turns):
+            speaker_id = b.id if listener is a else a.id
+            # An answer to the listener's own question that bears on what they are
+            # after (an active wish, today's plan) is what they came for: weightier.
+            weight = 5 if answer and self._bears_on(listener, tell, now) else 4
             listener.memory.add(MemoryItem(
-                minute=now, importance=4, kind="conversation",
+                minute=now, importance=weight, kind="conversation",
+                tags=["answer"] if answer else [],
                 text=texts.T("told_me", teller=speaker_id, text=tell)))
         promise = self._promise_from(plan, world, turns, now)
         if promise is not None:
@@ -2296,6 +2293,66 @@ class DecisionEngine:
                 r.clamp()
             beats.append({"verb": "stormed_off", "actor": x.id, "target": y.id, "location": plan.location})
         return beats
+
+    _QUESTION_RE = re.compile(r"[?？]|嗎|呢$")
+
+    def _tells_to_land(self, plan: ConvPlan, turns: list) -> list:
+        """News handed over in a conversation -> (listener, text, is_answer) to keep.
+
+        A speaker restating one thing line after line counts once (the fuller, later
+        version replaces a near-duplicate). Every distinct piece of news is kept up to
+        DIALOGUE_TELLS_MAX per speaker -- and an answer to a question the listener
+        asked in the line just before always lands, on top of that cap (Era 3: Oula
+        told Azong where the registered letter went, a later aside about Xixi's note
+        overwrote it, and she went looking for him a fourth time)."""
+        a, b = plan.a, plan.b
+        per: dict[str, list] = {a.id: [], b.id: []}
+        for i, t in enumerate(turns):
+            tell = str(t.get("tells") or "").strip()
+            sid = t.get("speaker_id", "")
+            if not tell or len(tell) > 120 or sid not in per or not _knowledge_lang_ok(tell):
+                continue
+            prev = turns[i - 1] if i else None
+            answer = bool(prev and prev.get("speaker_id") != sid
+                          and self._QUESTION_RE.search(str(prev.get("text", "")).strip()))
+            items = per[sid]
+            dup = next((k for k, (x, _a) in enumerate(items) if self._same_news(x, tell)), None)
+            if dup is None:
+                items.append((tell, answer))
+            else:
+                items[dup] = (tell, items[dup][1] or answer)
+        out = []
+        for sid, items in per.items():
+            listener = b if sid == a.id else a
+            answers = [x for x in items if x[1]]
+            others = [x for x in items if not x[1]]
+            for tell, ans in answers + others[:pacing.DIALOGUE_TELLS_MAX]:
+                out.append((listener, tell, ans))
+        return out
+
+    @staticmethod
+    def _same_news(x: str, y: str) -> bool:
+        """Near-duplicate news: half the topic words of the shorter one recur (CJK
+        bigrams, plus longer Latin words for an English town)."""
+        def topic(t: str) -> set:
+            return {w for w in texts.word_set(t) if len(w) > 3 or texts.cjk_bigrams(w)}
+        bx, by = topic(x), topic(y)
+        if not bx or not by:
+            return x.strip() == y.strip()
+        return len(bx & by) / min(len(bx), len(by)) >= 0.5
+
+    @staticmethod
+    def _bears_on(listener: Agent, tell: str, now: int) -> bool:
+        """Does this news touch what the listener is after -- an active wish or
+        today's own plan? (Topic bigrams, the town's usual cheap overlap.)"""
+        tb = texts.cjk_bigrams(tell)
+        if not tb:
+            return False
+        aims = [f"{w.title} {w.statement}" for w in wishes_mod.active_wishes(listener)]
+        plan = listener.state.day_plan
+        if plan and plan.get("day") == now // (24 * 60) + 1:
+            aims.append(str(plan.get("intent") or ""))
+        return any(len(tb & texts.cjk_bigrams(x)) >= 2 for x in aims)
 
     @staticmethod
     def _place_id(world: World, raw: object) -> str:
