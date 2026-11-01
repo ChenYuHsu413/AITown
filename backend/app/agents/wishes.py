@@ -999,6 +999,7 @@ def novelty_ok(vector: list, agent: "Agent", world: "World",
 STRUCT_OVERLAP = 0.5           # share of the new proposal's (kind, target) pairs already held
 STRUCT_RECENT_DAYS = 14        # an ended wish counts as "recent" this long after it ended
 STRUCT_COOLDOWN_DAYS = 7       # after letting something go, how long before it may return
+STRUCT_SEQUEL_MIN_DAYS = 3     # an identical rerun of a completed wish is refused this soon after
 
 
 def _req_keys(reqs) -> set:
@@ -1023,8 +1024,10 @@ def structural_novelty_ok(agent: "Agent", reqs, day: int) -> tuple:
       - overlapping a recently ABANDONED / FAILED one inside the cooldown -> refused:
         letting go needs time, or the abandonment friction means nothing;
       - overlapping a recently COMPLETED one -> allowed: a sequel (the material already
-        told the model it finished it, see generation_material's recent_completed);
-        so is a failed / abandoned one past the cooldown -- trying again is human."""
+        told the model it finished it, see generation_material's recent_completed) --
+        unless it is the very same (kind, target) set under STRUCT_SEQUEL_MIN_DAYS after
+        the completion: that is a rerun, not a next chapter;
+      - a failed / abandoned one past the cooldown -> allowed: trying again is human."""
     for w in recent_wishes(agent, day):
         share = struct_overlap(reqs, w.requirements)
         if share < STRUCT_OVERLAP:
@@ -1037,6 +1040,11 @@ def structural_novelty_ok(agent: "Agent", reqs, day: int) -> tuple:
             return False, (f"repeats \"{w.title}\", which they let go only {day - w.ended_on} "
                            f"day(s) ago ({share:.0%} the same requirements) -- something just "
                            f"put down needs time; want something else")
+        if (w.status == "completed" and _req_keys(reqs) == _req_keys(w.requirements)
+                and day - w.ended_on < STRUCT_SEQUEL_MIN_DAYS):
+            return False, (f"is exactly \"{w.title}\" again, which they completed only "
+                           f"{day - w.ended_on} day(s) ago -- having just done the same thing, "
+                           f"they need a new direction; a sequel adds or changes something")
     return True, ""
 
 

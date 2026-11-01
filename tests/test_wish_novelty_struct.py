@@ -63,14 +63,21 @@ class RealCases(unittest.TestCase):
         a.wishes = [wish(*r) for r in rows]
         return a
 
-    def test_jiji_d19_follows_a_completed_d13_and_is_a_sequel(self):
-        # D19 「去市場看看人氣」 = D13's exact requirements; D13 completed on D18.
+    def test_jiji_d19_is_an_identical_rerun_one_day_after_d13(self):
+        # D19 「去市場看看人氣」 = D13's exact requirements, one day after D13 completed
+        # (D18): a rerun, not a sequel -- refused under the 3-day rule. From D21 on the
+        # same set would be allowed, and anything added makes it a sequel at once.
         a = self.holding("jiji", JIJI)
         d19 = [R(kind="location_visits", target="market", threshold=1), R(kind="talk_count", target="xue", threshold=2)]
         self.assertEqual(wishes_mod.struct_overlap(d19, a.wishes[3].requirements), 1.0)
-        self.assertEqual(wishes_mod.structural_novelty_ok(a, d19, 19), (True, ""))
+        ok, why = wishes_mod.structural_novelty_ok(a, d19, 19)
+        self.assertFalse(ok)
+        self.assertIn("completed only 1 day(s) ago", why)
+        self.assertTrue(wishes_mod.structural_novelty_ok(a, d19, 21)[0])
+        more = d19 + [R(kind="talk_count", target="ange", threshold=1)]
+        self.assertTrue(wishes_mod.structural_novelty_ok(a, more, 19)[0])
         titles = [w["title"] for w in wishes_mod.generation_material(a, self.world, 19)["recent_completed"]]
-        self.assertIn("把咖啡館帶去市集", titles)     # ...and the prompt tells it so
+        self.assertIn("把咖啡館帶去市集", titles)     # the prompt names it as a possible sequel
 
     def test_jiji_d13_after_the_completed_d3_passes_at_half_overlap(self):
         a = self.holding("jiji", JIJI[:2])
@@ -79,6 +86,8 @@ class RealCases(unittest.TestCase):
         self.assertTrue(wishes_mod.structural_novelty_ok(a, d13, 13)[0])
 
     def test_azong_d8_to_d17_is_a_lawful_deepening(self):
+        # Unaffected by the rerun rule: D17's set is a subset of D8's, not the same set,
+        # and it came 7 days after the completion.
         # 「再進一次辦公室」(D17): office + kuaizheng, after the completed D8 (ended D10).
         a = self.holding("azong", [AZONG_D8])
         d17 = [R(kind="location_visits", target="office", threshold=1), R(kind="talk_count", target="kuaizheng", threshold=1)]
