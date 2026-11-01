@@ -1022,6 +1022,9 @@ class DecisionEngine:
             until_next = agent.routine.next_boundary(minute_of_day, dow) - minute_of_day
             if plan_until is not None:
                 until_next = min(until_next, plan_until - minute_of_day)
+            nxt = dayplan_mod.next_start(agent, now)       # don't sleepwalk past one's own plan
+            if nxt is not None:
+                until_next = min(until_next, nxt - minute_of_day)
             if agent.state.location != dest:
                 decision = Decision(
                     "move", target_location=dest, duration=10,

@@ -121,6 +121,19 @@ class Priority(unittest.TestCase):
         self.assertIn("today's own plan", d.reason)
 
 
+class SlotsStartOnTime(unittest.TestCase):
+    def test_a_routine_stretch_stops_where_the_plan_begins(self):
+        world, engine = make_world()
+        kz = world.agents["kuaizheng"]
+        kz.state.day_plan = {"day": DAY, "intent": "x", "skip_work": False,
+                             "slots": [{"from": 15 * 60, "to": 17 * 60, "location": "cafe", "action": "idle"}]}
+        kz.state.location, kz.state.current_action = "park", "rest"
+        now = DAY0 + 14 * 60 + 5
+        obs = world.observe(kz, since_minute=now - 1, now=now)
+        d = asyncio.run(engine.decisions.decide(kz, world, obs, now))
+        self.assertLessEqual(now + d.duration, DAY0 + 15 * 60)
+
+
 class SkippedWork(unittest.TestCase):
     def test_an_owner_who_skips_shuts_the_shop_and_customers_find_it_closed(self):
         world, engine = make_world()

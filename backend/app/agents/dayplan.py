@@ -279,6 +279,17 @@ def lapsed_actions(agent: "Agent", now: int) -> list[dict]:
     return out
 
 
+def next_start(agent: "Agent", now: int) -> int | None:
+    """Minute-of-day at which today's next plan slot begins (None = no more today),
+    so a long routine stretch never runs over the start of the resident's own plan."""
+    plan = agent.state.day_plan
+    if not plan or plan.get("day") != now // DAY + 1:
+        return None
+    mod = now % DAY
+    starts = [s["from"] for s in plan.get("slots") or [] if s["from"] > mod]
+    return min(starts) if starts else None
+
+
 def entry_for(agent: "Agent", now: int, routine_entry: RoutineEntry) -> tuple | None:
     """Today's own plan, where it applies at ``now``: (entry, slot end minute-of-day
     or None). Never during sleep."""
