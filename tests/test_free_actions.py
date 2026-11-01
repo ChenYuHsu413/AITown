@@ -381,5 +381,64 @@ class Objects(unittest.TestCase):
         self.assertEqual(w3.objects, [])
 
 
+class WishBlocked(unittest.TestCase):
+    """A doing planned for an active wish that the world turns away is a blocked day
+    for that wish (Era 3: Azong went looking for Oula eight times over nine days and
+    the pressure on her letter wish stayed at 0.25)."""
+
+    SEEK_OULA = "去找歐拉,想當面問那封掛號信有沒有交給別人"
+
+    def setUp(self):
+        from backend.app.agents import wishes as wishes_mod
+        self.wishes = wishes_mod
+        self.env = unittest.mock.patch.dict(os.environ, {"AI_TOWN_LANG": "zh-TW"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.world, self.engine = make_world()
+        self.azong = self.world.agents["azong"]
+        clean, errs = wishes_mod.validate_seed(
+            {"scale": "minor", "title": "把那封掛號信的下落問清楚",
+             "statement": "我想親自去問問歐拉,把瓏託我打聽的那封掛號信到底交給了誰弄個明白。",
+             "requirements": [{"kind": "talk_count", "target": "oula", "threshold": 3}]},
+            self.azong, self.world, 1)
+        self.assertIsNotNone(clean, errs)
+        self.wish = wishes_mod.install(self.azong, clean, 1) or wishes_mod.active_wishes(self.azong)[0]
+
+    def planned(self, what):
+        acts, dropped = dayplan_mod.validate_actions(
+            [{"hour": 15, "place": "office", "what": what, "cost": 0}], self.azong, self.world, DAY, [])
+        self.assertEqual(len(acts), 1, dropped)
+        return acts[0]
+
+    def miss(self, a, day, hour=15):
+        actions_mod.fail(self.azong, dict(a), texts.T("fail_missed_person", who="oula"),
+                         (day - 1) * DAY_MIN + hour * 60)
+
+    def test_the_doing_carries_the_wish_it_was_planned_for(self):
+        self.assertEqual(self.planned(self.SEEK_OULA)["wish"], self.wish.id)
+
+    def test_eight_misses_in_a_row_build_real_pressure(self):
+        a = self.planned(self.SEEK_OULA)
+        for day in range(3, 11):
+            self.miss(a, day)
+        st = self.wish.drive
+        self.assertEqual(st["blocked_streak"], 8)
+        self.assertGreaterEqual(self.wish.frustration_count, 2)       # the frustration pipeline ran
+        self.assertGreater(self.wishes.abandonment_pressure(self.wish),
+                           self.wishes.abandonment_threshold(self.azong, self.wish, 10))
+
+    def test_two_misses_on_one_day_count_once(self):
+        a = self.planned(self.SEEK_OULA)
+        self.miss(a, 3, 11)
+        self.miss(a, 3, 15)
+        self.assertEqual(self.wish.drive["blocked_streak"], 1)
+
+    def test_an_unrelated_doing_that_fails_does_not_count(self):
+        a = self.planned("去事務所把報價單重新整理一遍")
+        self.assertEqual(a["wish"], "")
+        self.miss(a, 3)
+        self.assertEqual(self.wishes.abandonment_pressure(self.wish), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

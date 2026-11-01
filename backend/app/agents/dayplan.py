@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from .. import pacing
 from . import mood as mood_mod
+from . import texts
 from . import transitions as transitions_mod
 from . import wishes as wishes_mod
 from .routine import RoutineEntry
@@ -239,6 +240,27 @@ def addressee(text: str, agent: "Agent", world: "World") -> str:
     return min(hits)[1] if hits else ""
 
 
+def serves_wish(agent: "Agent", what: str, seek: str, loc: str) -> str:
+    """The active wish a planned doing is for, or "". Every active wish is on the
+    morning card the doing was planned from; the doing points at one when its words
+    share three topic bigrams with that wish -- or two, when the person sought or the
+    place gone to is one of the wish's open requirements. Among several, such an
+    aimed wish wins, then the closer wording, then the older wish. A failed doing that
+    serves a wish is a blocked day for it (Era 3: Azong went looking for Oula eight
+    times over nine days and the wish's pressure never moved)."""
+    words = texts.cjk_bigrams(what)
+    best, key = "", None
+    for w in wishes_mod.active_wishes(agent):
+        overlap = len(words & texts.cjk_bigrams(f"{w.title} {w.statement}"))
+        aimed = any(not r.completed and r.target and r.target in (seek, loc) for r in w.requirements)
+        if overlap < 2 or (overlap == 2 and not aimed):
+            continue
+        k = (aimed, overlap, -w.created_on)
+        if key is None or k > key:
+            best, key = w.id, k
+    return best
+
+
 def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slots: list) -> tuple:
     """The free-action contract, plan side: a real, permitted place, waking hours, a
     sane cost, readable Chinese, and control of nobody else (never another person's
@@ -294,7 +316,8 @@ def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slot
         idx = len(out)
         out.append({"what": what, "leaves": leaves, "cost": cost, "location": loc,
                     "from": fr, "to": to, "state": "planned", "within": within,
-                    "recipient": recipient if leaves else "", "seek": seek, "mode": mode})
+                    "recipient": recipient if leaves else "", "seek": seek, "mode": mode,
+                    "wish": serves_wish(agent, what, seek, loc)})
         if not within:
             slots.append({"from": fr, "to": to, "location": loc, "action": "free", "act": idx})
     return out, dropped

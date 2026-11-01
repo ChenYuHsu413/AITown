@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from .. import pacing
 from . import texts
+from . import wishes as wishes_mod
 from .core import MemoryItem
 
 if TYPE_CHECKING:
@@ -78,6 +79,11 @@ def failure_reason(agent: "Agent", world: "World", act: dict, now: int) -> str:
 
 def fail(agent: "Agent", act: dict, reason: str, now: int) -> dict:
     act["state"] = "failed"
+    # A doing planned for a wish that the world turned away is a blocked day for that
+    # wish -- the same distinct-day counting and frustration memories as the drive.
+    wish = next((w for w in agent.wishes if w.id == act.get("wish") and w.status == "active"), None)
+    if wish is not None:
+        wishes_mod.note_blocked(agent, wish, now)
     agent.memory.add(MemoryItem(minute=now, importance=4, kind="reflection", tags=["action"],
                                 text=texts.T("action_failed", what=act["what"], loc=act["location"],
                                              reason=reason)))
