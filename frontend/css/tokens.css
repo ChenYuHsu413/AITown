@@ -1,0 +1,64 @@
+/* 鎮誌 × 觀測站 — the ONE token file. Every color, font, radius, shadow and motion
+   timing the UI uses is defined here. Day/night: app.js writes two numbers on :root
+   from the sim minute — --n (0 day … 1 night) and --dusk (0 … 1, peaks at dusk/dawn)
+   — and every surface/ink token below is an interpolation of its day / dusk / night
+   stops, so the whole UI's color temperature follows the clock without a jump. */
+
+@property --n    { syntax: '<number>'; inherits: true; initial-value: 0; }
+@property --dusk { syntax: '<number>'; inherits: true; initial-value: 0; }
+
+:root{
+  --n: 0; --dusk: 0;
+  transition: --n 1.6s linear, --dusk 1.6s linear;
+
+  /* ---- stops (day → dusk → night) ---- */
+  --desk-day:#D9CDB5;  --desk-dusk:#C4905A;  --desk-night:#231811;   /* the desk the notebook lies on */
+  --paper-day:#FBF7EE; --paper-dusk:#F8E8D0; --paper-night:#F5E4C3;  /* page: off-white → lamp-lit amber */
+  --card-day:#FFFDF7;  --card-dusk:#FCF0DD;  --card-night:#FAEBCD;   /* paper card / sticky note */
+  --ink-day:#2B2520;   --ink-night:#33241A;                          /* never pure black */
+  --soft-day:#6B6155;  --soft-night:#6F5A43;                         /* secondary ink */
+  --line-day:#DCD2C1;  --line-night:#D8BF93;                         /* hairlines, dashed rules */
+
+  /* ---- interpolated tokens (use these) ---- */
+  --desk:  color-mix(in oklab, color-mix(in oklab, var(--desk-day),  var(--desk-dusk)  calc(var(--dusk) * 100%)), var(--desk-night)  calc(var(--n) * 100%));
+  --paper: color-mix(in oklab, color-mix(in oklab, var(--paper-day), var(--paper-dusk) calc(var(--dusk) * 100%)), var(--paper-night) calc(var(--n) * 100%));
+  --card:  color-mix(in oklab, color-mix(in oklab, var(--card-day),  var(--card-dusk)  calc(var(--dusk) * 100%)), var(--card-night)  calc(var(--n) * 100%));
+  --ink:   color-mix(in oklab, var(--ink-day),  var(--ink-night)  calc(var(--n) * 100%));
+  --soft:  color-mix(in oklab, var(--soft-day), var(--soft-night) calc(var(--n) * 100%));
+  --line:  color-mix(in oklab, var(--line-day), var(--line-night) calc(var(--n) * 100%));
+  --wash:  color-mix(in oklab, var(--ink) 6%, transparent);                     /* hover / selected tint */
+  --lamp:  rgba(255, 186, 92, calc(var(--n) * 0.32 + var(--dusk) * 0.12));     /* lamp glow on the desk */
+  --shadow: 0 1px 0 rgba(60, 40, 20, .05), 0 3px 10px rgba(60, 40, 20, calc(.08 + var(--n) * .14));
+
+  /* ---- the one accent: gold ink, reserved for major events (never a resident color) ---- */
+  --gold:#9A6B12; --gold-soft:rgba(186, 132, 30, .14); --gold-glow:rgba(214, 160, 40, .55);
+
+  /* ---- residents: one identity color each (map cloth hue, tuned with the dataviz validator) ---- */
+  --r-jiji:#a42e38; --r-ange:#7f4000; --r-oula:#229b8c; --r-lengyue:#8a409c; --r-azong:#a48c05;
+  --r-xixi:#598af0; --r-aisi:#c87088; --r-xue:#2372b0; --r-long:#318329; --r-kuaizheng:#a5651f;
+
+  /* ---- sequential ramps (heatmap), single hue, light end ≥ 2:1 on both papers ---- */
+  --ramp-cool-0:#7FA6B5; --ramp-cool-1:#5E8DA0; --ramp-cool-2:#40738A; --ramp-cool-3:#265A72; --ramp-cool-4:#123F55;
+  --ramp-warm-0:#C98C70; --ramp-warm-1:#B56C50; --ramp-warm-2:#97503A; --ramp-warm-3:#733424; --ramp-warm-4:#4E1C16;
+
+  /* ---- status (sparingly) ---- */
+  --up:#3E7A3A; --down:#A3402F;
+
+  /* ---- map ---- */
+  --map-ground:#E8E6D3; --night-sky:#131F35;
+  --map-bg: color-mix(in oklab, var(--map-ground), var(--night-sky) calc(var(--n) * 45%));   /* letterbox around the map, matching its nightfall */
+
+  /* ---- type ---- */
+  --f-head:'Huninn','Noto Sans TC',sans-serif;
+  --f-body:'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif;
+  --f-mono:'JetBrains Mono','Noto Sans TC',monospace;
+
+  /* ---- shape & motion ---- */
+  --r-sm:4px; --r-md:7px; --r-lg:10px;
+  --t-fast:160ms; --t-mid:220ms; --t-slow:420ms;
+  --ease:cubic-bezier(.2,.7,.2,1);
+}
+
+@media (prefers-reduced-motion: reduce){
+  :root{ transition:none; --t-fast:0ms; --t-mid:0ms; --t-slow:0ms; }
+}

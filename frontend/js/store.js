@@ -2,9 +2,12 @@
 import {reactive, markRaw} from 'vue';
 import {setPlaces, dayOf} from './names.js';
 
+function readMode() { try { return localStorage.getItem('aitown.detail') === 'full' ? 'full' : 'lean'; } catch (e) { return 'lean'; } }
+export function setDetail(m) { store.detail = m; try { localStorage.setItem('aitown.detail', m); } catch (e) { /* private mode */ } }
+
 export const store = reactive({
   connected: false, ready: false,
-  minute: 0, paused: false, pausePending: false, speed: 1, night: false, llmBusy: false,
+  minute: 0, paused: false, pausePending: false, speed: 1, userSpeed: 1, night: false, llmBusy: false,
   locations: [], agents: [], landmarks: [], effects: [],
   today: [],          // today's major/notable beats (seeded from /api/day, then live)
   todayDay: 0,
@@ -16,10 +19,13 @@ export const store = reactive({
   replay: null,       // {day, minute, runId}
   relPair: null,      // [a, b] preselected in the relationships view
   unseenMajor: 0,
+  heartbeat: 0,
+  detail: readMode(),  // 'lean' (精簡) | 'full' (詳細): live column + chronicle, remembered per viewer       // bumped (at most every 2.5 s) when a major beat arrives -> one gold pulse
 });
 
-// Non-reactive tick listeners (the live map: bubbles, event cards).
+// Non-reactive event listeners (the live map + column): fn(events, msg, isSnapshot).
 const tickFns = new Set();
+let lastBeat = 0;
 export const onTick = fn => { tickFns.add(fn); return () => tickFns.delete(fn); };
 
 export async function getJSON(url) {
@@ -44,6 +50,7 @@ async function loadToday(day) {
 
 function applyFrame(msg) {
   store.minute = msg.minute; store.paused = msg.paused; store.speed = msg.speed; store.night = !!msg.night;
+  if (msg.user_speed != null || msg.speed != null) store.userSpeed = msg.user_speed ?? msg.speed;   // the chosen tier survives a night cruise
   if (msg.paused) store.pausePending = false;
   if ('llm_busy' in msg) store.llmBusy = !!(msg.llm_busy && (msg.busy_ms || 0) >= 2000);
   if (msg.type === 'status') return;
@@ -64,6 +71,7 @@ function handle(e) {
     if (day !== store.todayDay) loadToday(day).then(() => pushToday(msg.events || []));
     else pushToday(msg.events || []);
     store.ready = true;
+    for (const fn of tickFns) { try { fn(msg.events || [], msg, true); } catch (err) { console.error(err); } }
     return;
   }
   const before = store.todayDay;
@@ -79,7 +87,35 @@ function handle(e) {
     if (ev.tier === 'major' && store.view !== 'village') store.unseenMajor++;
   }
   pushToday(evs);
-  for (const fn of tickFns) { try { fn(evs, msg); } catch (err) { console.error(err); } }
+  if (evs.some(e => e.tier === 'major') && performance.now() - lastBeat > 2500) { lastBeat = performance.now(); store.heartbeat++; }
+  emit(evs.filter(e => e.verb !== 'say'), msg);
+  for (const e of evs) if (e.verb === 'say') paceSay(e, msg);
+}
+
+// ONE event source for everything that shows the live town (map bubbles + live column):
+// the same events, in the same order, at the same moment. A conversation's lines are
+// generated in the background and arrive in one burst; they are released here one at a
+// time at a speaking pace (per pair, so two conversations still overlap naturally).
+function emit(evs, msg) {
+  if (!evs.length) return;
+  for (const fn of tickFns) { try { fn(evs, msg, false); } catch (err) { console.error(err); } }
+}
+const pacing = new Map();   // pair -> {queue, busy}
+function paceSay(ev, msg) {
+  const pair = [ev.actor, ev.target].sort().join('|');
+  const p = pacing.get(pair) || {queue: [], busy: false}; pacing.set(pair, p);
+  p.queue.push([ev, msg]);
+  if (!p.busy) release(pair);
+}
+function release(pair) {
+  const p = pacing.get(pair);
+  if (!p || !p.queue.length) { if (p) p.busy = false; pacing.delete(pair); return; }
+  p.busy = true;
+  const [ev, msg] = p.queue.shift();
+  emit([ev], msg);
+  const len = (ev.speech || '').length;
+  const wait = document.hidden || p.queue.length > 10 ? 250 : Math.max(1100, Math.min(3200, 700 + len * 55));
+  setTimeout(() => release(pair), wait);
 }
 export function connect() {
   clearTimeout(timer);
@@ -101,6 +137,14 @@ export function togglePause() {
     .then(r => r.json()).then(d => { store.paused = d.paused; if (d.paused) store.pausePending = false; }).catch(() => {});
 }
 
+// Live speed tiers (sim speed multipliers). One list: add 60 here and it just appears.
+export const SPEED_TIERS = [1, 5, 20];
+export function setSpeed(n) {
+  store.userSpeed = n;
+  fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({cmd:'speed', speed:n})})
+    .then(r => r.json()).then(d => { store.paused = d.paused; }).catch(() => {});
+}
+
 async function pollUsage() { try { store.usage = markRaw(await getJSON('/api/usage')); } catch (e) {} }
 setInterval(pollUsage, 5000); pollUsage();
 
@@ -113,12 +157,16 @@ export const nav = {
   pair(a, b) { store.relPair = [a, b]; nav.go('relations'); },
 };
 
-// Cached /api/day/{n} (closed days never change; today is always refetched).
+// Cached /api/day/{n} (closed days never change; today is always refetched). The
+// promise itself is cached, so a page full of nodes asking for one day fetches it once.
 const dayCache = new Map();
-export async function fetchDay(day, runId = '') {
+export function fetchDay(day, runId = '') {
   const key = `${runId}|${day}`;
   if (day < store.todayDay && dayCache.has(key)) return dayCache.get(key);
-  const d = await getJSON(`/api/day/${day}` + (runId ? `?run_id=${encodeURIComponent(runId)}` : ''));
-  if (day < store.todayDay) dayCache.set(key, d);
-  return d;
+  const p = getJSON(`/api/day/${day}` + (runId ? `?run_id=${encodeURIComponent(runId)}` : ''));
+  if (day < store.todayDay) {
+    dayCache.set(key, p); p.catch(() => dayCache.delete(key));
+    if (dayCache.size > 60) dayCache.delete(dayCache.keys().next().value);   // bounded: oldest-fetched day goes
+  }
+  return p;
 }

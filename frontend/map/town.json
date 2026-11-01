@@ -1,0 +1,66 @@
+{
+  "_doc": "Gaobo town. Coordinates in tiles (tile = 16 px; fractions allowed). The fountain plaza is the town's heart (plaza.c, radius plaza.r). locations.*.door = bottom-centre of the building; locations.*.path = the curved path (paths[].id) a resident walks from that door to the plaza. paths[].pts are spline control points from the door front to the plaza edge, w = width in px. anchors = px offsets from the door where residents stand, in fill order. aprons = stone in front of doors [x, y, w, h]. patches = ground variation {kind, x, y, r}. decor = [kind, x, y] bottom-centre; lamps glow at night.",
+  "tile": 16,
+  "cols": 60,
+  "rows": 40,
+  "river": {"x": 56},
+  "pond": [8, 33, 2.6, 1.5],
+  "plaza": {"c": [30, 20], "r": 4.6},
+  "locations": {
+    "home_a": {"door": [9, 8], "path": "home_a"},
+    "home_b": {"door": [52, 7.5], "path": "home_b"},
+    "cafe": {"door": [22, 13], "path": "cafe"},
+    "bakery": {"door": [38.5, 13], "path": "bakery"},
+    "office": {"door": [48, 22], "path": "office"},
+    "market": {"door": [31, 31], "path": "market"},
+    "park": {"door": [12, 27.4], "path": "park", "landmark": true}
+  },
+  "paths": [
+    {"id": "home_a", "w": 12, "pts": [[9, 9.4], [11.6, 12.4], [16.4, 15.8], [21, 18.4], [25.5, 19.6]]},
+    {"id": "home_b", "w": 12, "pts": [[52, 8.9], [49.2, 11.6], [44.2, 14.6], [39.2, 16.7], [34.4, 18.4]]},
+    {"id": "cafe", "w": 17, "pts": [[22, 14.5], [24, 16.6], [26.7, 18]]},
+    {"id": "bakery", "w": 17, "pts": [[38.5, 14.5], [36.4, 16.5], [33.4, 17.9]]},
+    {"id": "office", "w": 22, "pts": [[48, 23.5], [44, 23.4], [39, 22.2], [34.5, 21.1]]},
+    {"id": "market", "w": 18, "pts": [[31, 32.4], [26.6, 31.4], [25.3, 27.6], [27.3, 23.9]]},
+    {"id": "park", "w": 14, "pts": [[13.2, 26.1], [17, 24.6], [21.2, 22.9], [25.6, 21.4]]},
+    {"id": "riverwalk", "w": 9, "pts": [[5.2, 1], [5.6, 10], [5, 20], [5.8, 30], [5.2, 40]]}
+  ],
+  "aprons": [[7.4, 8, 3.2, 1.5], [50.4, 7.5, 3.2, 1.5], [19.2, 13, 5.6, 1.6], [35.9, 13, 5.2, 1.6], [45.6, 22, 4.8, 1.6], [27.2, 31, 7.6, 1.5], [9.7, 27.4, 4.6, 1.6]],
+  "patches": [
+    {"kind": "gravel", "x": 36.5, "y": 26.5, "r": 1.6}, {"kind": "gravel", "x": 13, "y": 17, "r": 1.3}, {"kind": "gravel", "x": 47, "y": 27, "r": 1.5},
+    {"kind": "leaves", "x": 30.6, "y": 4.6, "r": 3}, {"kind": "leaves", "x": 55, "y": 30.2, "r": 3.2}, {"kind": "leaves", "x": 43, "y": 36, "r": 2.8},
+    {"kind": "leaves", "x": 21.2, "y": 35.6, "r": 2.6}, {"kind": "leaves", "x": 57.4, "y": 16.2, "r": 2.4}, {"kind": "leaves", "x": 8, "y": 18.2, "r": 2.2},
+    {"kind": "flowers", "x": 9, "y": 22, "r": 3.4}, {"kind": "flowers", "x": 47.5, "y": 32, "r": 2.6}, {"kind": "flowers", "x": 36, "y": 6.2, "r": 2.4}, {"kind": "flowers", "x": 15, "y": 31.5, "r": 2.6},
+    {"kind": "dark", "x": 50, "y": 16, "r": 4.4}, {"kind": "dark", "x": 15, "y": 34, "r": 4}, {"kind": "dark", "x": 38, "y": 33, "r": 3.6}, {"kind": "dark", "x": 26, "y": 5, "r": 3.4},
+    {"kind": "light", "x": 21, "y": 28.5, "r": 4}, {"kind": "light", "x": 42, "y": 9.5, "r": 4}, {"kind": "light", "x": 40, "y": 27, "r": 3}
+  ],
+  "anchors": {
+    "building": [[0, 22], [-34, 12], [30, 36], [-18, 42], [36, 12], [12, 52], [-46, 32], [50, 30], [-8, 62], [26, 64], [-32, 58], [46, 50]],
+    "park": [[-30, 8], [30, 8], [-16, 22], [16, 22], [-46, 20], [46, 20], [-62, 36], [58, 36], [-30, 40], [30, 40], [0, 48], [-10, 60]]
+  },
+  "decor": [
+    ["tree", 28, 4.6], ["pine", 30, 3.6], ["tree", 31.8, 5.2], ["tree", 33.2, 3.9],
+    ["pine", 56.5, 14], ["tree", 58, 15.7], ["pine", 57, 17.7], ["tree", 58.8, 19],
+    ["tree", 53, 28.6], ["tree", 55, 30.1], ["pine", 56.6, 27.8], ["tree", 54, 32.6], ["pine", 57.6, 31.9],
+    ["tree", 41, 35], ["pine", 42.6, 36.7], ["tree", 44, 34.8], ["tree", 45.4, 37.5],
+    ["pine", 19, 34.6], ["tree", 20.8, 36.1], ["tree", 22.4, 34.3], ["pine", 23.6, 37.3],
+    ["tree", 7.4, 16.5], ["pine", 8.8, 18.1], ["tree", 7.6, 20],
+    ["pine", 14, 3], ["tree", 15.6, 4.7], ["pine", 17.1, 2.9],
+    ["tree", 43, 7], ["pine", 44.7, 8.7], ["tree", 46.1, 6.7],
+    ["blossom", 15.2, 23.1], ["blossom", 17.7, 22.3], ["blossom", 20.2, 21.4], ["blossom", 22.8, 20.6],
+    ["blossom", 15.9, 27.2], ["blossom", 18.7, 26.2], ["blossom", 21.5, 25.1], ["blossom", 24.2, 24],
+    ["shrub", 6.4, 9], ["shrub", 11.8, 8.8], ["shrub", 49.6, 8.6], ["shrub", 55.2, 8.4], ["shrub", 18.6, 13.8], ["shrub", 41.8, 13.4],
+    ["shrub", 44.6, 22.8], ["shrub", 51.6, 22.6], ["shrub", 26.6, 32], ["shrub", 9, 25.4], ["shrub", 34.6, 25.6], ["shrub", 26.4, 15.6],
+    ["washline", 13.6, 6.6], ["woodpile", 5.4, 8.7], ["mailbox", 11.4, 9.8], ["pot", 7.6, 8.5], ["pot", 10.5, 8.5], ["well", 5.8, 12.6],
+    ["washline", 56.6, 6.2], ["woodpile", 48.2, 7.9], ["mailbox", 54.4, 9.3], ["pot", 50.7, 8], ["pot", 53.3, 8], ["bike", 56.2, 9.8],
+    ["terrace", 17.6, 15], ["terrace", 26.3, 15.4], ["pot", 19.8, 13.5], ["pot", 24.3, 13.5], ["sandwich", 25.2, 14.6],
+    ["sacks", 41.9, 14], ["sacks", 35.2, 14.2], ["pot", 36.8, 13.4], ["bike", 43.6, 14.6], ["crate", 40.6, 14.4],
+    ["postbox", 45.4, 23.6], ["bike", 51.8, 23.8], ["pot", 46.5, 22.5], ["pot", 49.6, 22.5],
+    ["stall", 36.9, 30.2], ["stall", 34.6, 34.2], ["crate", 33.2, 32.4], ["crate", 34.1, 32.6], ["crate", 37.9, 31.6], ["barrel", 38.8, 32.2],
+    ["barrel", 32.4, 33.4], ["basket", 36.4, 32.6], ["basket", 31.6, 32.9], ["crate", 36.6, 34.6], ["sacks", 38.2, 34.4],
+    ["fountain", 30, 21.2], ["board", 26.2, 18.6], ["bench", 27.3, 23.6], ["bench", 32.7, 23.6], ["bench", 28.2, 16.4], ["bench", 31.9, 16.4], ["postbox", 33.9, 18.4],
+    ["flowers", 29, 25.6], ["flowers", 34.4, 15.6],
+    ["bench", 9.4, 29.6], ["bench", 15.2, 30], ["flowers", 10.2, 25.4], ["flowers", 13.8, 30.8]
+  ],
+  "lamps": [[25.6, 17.6], [34.4, 17.6], [25.6, 23.2], [34.4, 23.2], [16.4, 15.4], [44, 22.4], [40.8, 15.4], [14.8, 25], [25.2, 29], [47.8, 12.4], [10.6, 11.4], [6.4, 24], [6.2, 32]]
+}

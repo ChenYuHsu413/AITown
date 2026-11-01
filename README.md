@@ -213,8 +213,8 @@ backend/app/
     └── persistence.py   async write queue, vector retrieval, snapshots, replay reads, translation cache
 data/seed.py             10 residents, 7 locations, routines engineered to cause encounters
 scripts/run_day.py       headless one-day runner
-frontend/index.html      single-file town UI (map, feed, chronicle, graph, inspector, observatories)
-docs/                    event-contract.md, admin.md, deploy.md, formal-server-checklist.md
+frontend/                town UI, no build step: Vue (CDN) + ES modules + PixiJS map (see docs/frontend.md)
+docs/                    event-contract.md, admin.md, deploy.md, formal-server-checklist.md, frontend.md
 ```
 
 **Cost-control philosophy.** The LLM is treated as the expensive part and used as a last

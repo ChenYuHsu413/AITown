@@ -5,15 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>高柏小鎮</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Huninn (jf open 粉圓), Noto Sans TC, JetBrains Mono: all SIL OFL 1.1 (google/fonts ofl/*/METADATA.pb) -->
+<link href="https://fonts.googleapis.com/css2?family=Huninn&family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/tokens.css">
 <link rel="stylesheet" href="/static/css/app.css">
 <script type="importmap">
-{ "imports": { "vue": "https://unpkg.com/vue@3.5.13/dist/vue.esm-browser.prod.js" } }
+{ "imports": {
+  "vue": "https://unpkg.com/vue@3.5.13/dist/vue.esm-browser.prod.js",
+  "pixi.js": "https://cdn.jsdelivr.net/npm/pixi.js@8.22.0/dist/pixi.min.mjs"
+} }
 </script>
 </head>
 <body>
-<!-- villager sprite frames, built once by initSprites(); every map and avatar <use>s them -->
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs id="sprite-defs"></defs></svg>
 <div id="app"><p class="boot">高柏小鎮載入中…</p></div>
 <script type="module" src="/static/js/app.js"></script>
 </body>

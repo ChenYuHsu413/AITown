@@ -2,6 +2,8 @@
 // Maintenance, not a showcase -- pick an endpoint, edit its JSON, send, read the reply.
 // Destructive ones are prefilled as dry runs (the server's own default too).
 
+import {Icon} from './icons.js';
+
 const OPS = [
   {path: '/api/rumors', zh: '種謠言', body: {agent_id: 'oula', text: '聽說渡口市場下個月要收攤了。', subject: '', sentiment: -0.3}},
   {path: '/api/secrets', zh: '植入秘密', body: {owner: 'xue', text: '我其實很怕一個人過年。', sensitivity: 0.5}},
@@ -20,6 +22,7 @@ const OPS = [
 const READS = ['/api/admin/archives', '/api/admin/translations?limit=20', '/api/secrets', '/api/rumors', '/api/usage', '/api/runs'];
 
 export default {
+  components: {Icon},
   data: () => ({open: false, i: 0, body: JSON.stringify(OPS[0].body, null, 2), out: '', busy: false}),
   computed: { ops: () => OPS, reads: () => READS },
   watch: { i(v) { this.body = JSON.stringify(OPS[v].body, null, 2); this.out = ''; } },
@@ -41,10 +44,10 @@ export default {
     },
   },
   template: `
-  <button class="ops-toggle" @click="open = !open" title="維運工具">🛠</button>
+  <button class="ops-toggle" @click="open = !open" title="維運工具" aria-label="維運工具"><Icon name="wrench" :size="15"/></button>
   <section v-if="open" class="ops" aria-label="維運工具">
     <div class="ops-head"><b>維運工具</b><span class="muted small">操作者用;破壞性操作預設 dry-run</span>
-      <button class="x" @click="open = false" aria-label="關閉">✕</button></div>
+      <button class="x" @click="open = false" aria-label="關閉"><Icon name="x" :size="14"/></button></div>
     <select v-model.number="i"><option v-for="(o, k) in ops" :key="o.path" :value="k">{{ o.zh }} — POST {{ o.path }}</option></select>
     <textarea v-model="body" rows="9" spellcheck="false"></textarea>
     <button class="btn" :disabled="busy" @click="send">送出</button>
