@@ -858,8 +858,8 @@ class SimulationEngine:
                     actor=self.world.agents.get(sr["from"]),
                     target=self.world.agents.get(sr.get("subject", "")),
                     location_id=a.state.location, text=sr["text"],
-                    detail=(f'Secret: "{secret_text}"  ->  now spreading as: "{sr["text"]}"'
-                            if secret_text else f'Now spreading as: "{sr["text"]}"'),
+                    detail=(texts.T("leak_detail", secret=secret_text, rumor=sr["text"])
+                            if secret_text else texts.T("leak_detail_bare", rumor=sr["text"])),
                 )
         for cf in plan.confided:  # content-free to the world; the chronicle (god's-eye) keeps the detail
             self._publish(

@@ -158,9 +158,13 @@ export const CARD_KIND = {
   romance_dating: {icon:'💕', label:'告白成功', cls:'romance'}, romance_rejected: {icon:'💔', label:'告白落空', cls:'romance'},
 };
 
-// A beat's detail line, where it is public prose (never for wish beats).
+// A beat's detail line, where it is public prose (never for wish beats). A secret's
+// own words never lie flat on the main views: a confide shows only that it happened,
+// a leak only the gossip now going round; the secret itself is in the inspector.
 export function beatDetail(ev) {
-  if (!ev.detail || String(ev.verb).startsWith('wish_') || ev.verb === 'chapter_closed') return '';
+  if (ev.verb === 'leak') return ev.speech ? `傳言:「${resolve(ev.speech)}」` : '';
+  if (!ev.detail || String(ev.verb).startsWith('wish_') || ev.verb === 'chapter_closed'
+      || ev.verb === 'confide') return '';
   return /[㐀-鿿]/.test(ev.detail) ? resolve(ev.detail) : '';
 }
 

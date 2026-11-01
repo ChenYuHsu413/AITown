@@ -148,6 +148,9 @@ _CATALOGUE: dict[str, tuple[str, str]] = {
     "confronted_detail": ('About the rumor "{rumor}" -> {{agent:{who}}} {outcome}',
                           "關於傳言「{rumor}」:{{agent:{who}}}{outcome}"),
     "confronted_detail_bare": ("{{agent:{who}}} {outcome}", "{{agent:{who}}}{outcome}"),
+    "leak_detail": ('Secret: "{secret}"  ->  now spreading as: "{rumor}"',
+                    "秘密:「{secret}」→ 現在流傳成:「{rumor}」"),
+    "leak_detail_bare": ('Now spreading as: "{rumor}"', "現在流傳成:「{rumor}」"),
     "outcome_admitted": ("admitted it", "承認了"),
     "outcome_denied": ("denied it", "否認了"),
     # romance

@@ -8,6 +8,7 @@ import Village from './views/village.js';
 import Replay from './views/replay.js';
 import Relations from './views/relations.js';
 import Inspector from './inspector.js';
+import Ops from './ops.js';
 
 initSprites(document.getElementById('sprite-defs'));
 
@@ -23,7 +24,7 @@ fromHash();
 addEventListener('hashchange', fromHash);
 
 createApp({
-  components: {Chronicle, Village, Replay, Relations, Inspector},
+  components: {Chronicle, Village, Replay, Relations, Inspector, Ops},
   setup: () => ({VIEWS}),
   computed: {
     store: () => store,
@@ -74,6 +75,7 @@ createApp({
     <Replay v-if="store.view === 'replay'"/>
     <Relations v-if="store.view === 'relations'"/>
     <Inspector/>
+    <Ops/>
   </main>`,
 }).mount('#app');
 

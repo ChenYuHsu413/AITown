@@ -25,7 +25,7 @@ from backend.app.world.world import Location
 # Oula carries the only literal verbal tic ("跟你說——"), kept in zh so it surfaces
 # verbatim in Chinese dialogue.
 SPEECH_STYLE = {
-    "jiji": "Waves off questions about herself with a joke and flips it back on you, "
+    "jiji": "Waves off questions about himself with a joke and flips it back on you, "
             "fishing for your news (partly to keep the cafe's troubles covered).",
     "ange": "Short, matter-of-fact sentences; measures everything against how it's done at the bakery.",
     "oula": "Talks fast, always half-way to the next stop; drops news in headlines; "
@@ -40,8 +40,7 @@ SPEECH_STYLE = {
     "long": "Says whatever comes to mind on the spot, unpolished, heedless of where it lands.",
     "kuaizheng": "Few words and slow, brief and mild, almost never asks a question back.",
 }
-# zh-native era: the same voices, transcribed. ㄐㄐ's line names no pronoun -- the
-# English says "herself" for a resident whose gender is male; Chinese needs neither.
+# zh-native era: the same voices, transcribed.
 SPEECH_STYLE_ZH = {
     "jiji": "被問到自己的事時,總用一句玩笑帶過,再把話題丟回你身上,打聽你的近況(一部分是為了掩飾咖啡館的困境)。",
     "ange": "句子簡短、就事論事;什麼事都拿烘焙坊的做法來比較。",

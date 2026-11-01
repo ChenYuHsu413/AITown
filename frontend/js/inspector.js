@@ -9,7 +9,7 @@ const MEM_KIND = {rumor: '🗣️ ', secret: '🤫 ', reflection: '💭 '};
 
 export default {
   components: {Avatar},
-  data: () => ({a: null, loading: false, error: '', tab: 'life'}),
+  data: () => ({a: null, secrets: [], loading: false, error: '', tab: 'life'}),
   computed: { id: () => store.inspectId },
   watch: { id: { handler(v) { this.a = null; if (v) this.load(true); }, immediate: true } },
   created() { this.timer = setInterval(() => { if (this.id && !this.loading) this.load(false); }, 5000); },
@@ -19,7 +19,14 @@ export default {
     async load(fresh) {
       const id = this.id; this.loading = true;
       if (fresh) this.error = '';
-      try { const d = await getJSON('/api/agents/' + id); if (id === this.id) this.a = d; }
+      try {
+        const [d, sec] = await Promise.all([getJSON('/api/agents/' + id), getJSON('/api/secrets')]);
+        if (id === this.id) {
+          this.a = d;
+          // A secret's words live here: the owner's own, and those confided to them.
+          this.secrets = (sec.secrets || []).filter(x => x.owner === id || x.confided_to.some(c => c.id === id));
+        }
+      }
       catch (e) { if (id === this.id && fresh) this.error = '讀取失敗:' + e.message; }
       this.loading = false;
     },
@@ -109,6 +116,15 @@ export default {
           <h3>近期記憶</h3>
           <div class="mem" v-for="(m, i) in a.memories" :key="i">
             <time>{{ m.clock.replace(/^Day (\\d+) · /, 'D$1 ') }}</time><span>{{ memText(m) }}</span><span class="imp">重要度 {{ m.importance }}</span>
+          </div>
+          <h3>秘密 <span class="muted small">🔒 僅限操作者</span></h3>
+          <p v-if="!secrets.length" class="muted small">沒有秘密。</p>
+          <div class="blf" v-for="x in secrets" :key="x.id">
+            <div class="row"><b>{{ x.owner === id ? '自己的秘密' : agentName(x.owner) + ' 吐露的' }}</b>
+              <span class="muted small">{{ x.resolved ? '已釋懷' : x.leaked ? '已外洩' : '' }}</span></div>
+            <p class="small">{{ resolve(x.text) }}</p>
+            <p v-if="x.owner === id && x.confided_to.length" class="small muted">
+              吐露給:{{ x.confided_to.map(c => agentName(c.id)).join('、') }}</p>
           </div>
           <h3>長期印象</h3>
           <p v-if="!a.beliefs.length" class="muted small">尚無長期印象。</p>

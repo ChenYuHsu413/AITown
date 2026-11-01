@@ -15,6 +15,37 @@ guarantee no repeat of a data-loss incident:
 Both require persistence (`AI_TOWN_DB_URL`). Without a DB there is nothing to
 delete-from or archive, and `run_day.py` never touches any of this.
 
+## Every operator endpoint at a glance
+
+The UI's corner 🛠 panel sends any of these with an editable JSON body (destructive
+ones prefilled as dry runs). Same thing from a shell (`B=http://127.0.0.1:8010`):
+
+```bash
+# clock
+curl -X POST $B/api/control -H 'Content-Type: application/json' -d '{"cmd":"pause"}'   # also writes a snapshot
+curl -X POST $B/api/control -H 'Content-Type: application/json' -d '{"cmd":"play"}'
+# world (God Mode)
+curl -X POST $B/api/rumors -H 'Content-Type: application/json' -d '{"agent_id":"oula","text":"聽說…","subject":"","sentiment":-0.3}'
+curl -X POST $B/api/secrets -H 'Content-Type: application/json' -d '{"owner":"xue","text":"我其實…","sensitivity":0.5}'
+curl -X POST $B/api/world-event -H 'Content-Type: application/json' -d '{"type":"rain","duration_minutes":180}'
+curl -X POST $B/api/world-event -H 'Content-Type: application/json' -d '{"type":"festival","location":"park","duration_minutes":240}'
+curl -X POST $B/api/break-equipment -H 'Content-Type: application/json' -d '{"location":"cafe"}'
+curl -X POST $B/god/seed_wish -H 'Content-Type: application/json' -d @wish.json             # validate_only defaults to true
+curl -X POST $B/god/close_chapter -H 'Content-Type: application/json' -d '{"agent_id":"aisi","outcome":"completed","reason":"…"}'
+# maintenance (dry run unless {"dry_run": false})
+curl -X POST $B/api/admin/prune-beliefs -H 'Content-Type: application/json' -d '{}'
+curl -X POST $B/api/admin/resolve-stale-secrets -H 'Content-Type: application/json' -d '{}'
+curl -X POST $B/api/admin/rewrite-stale-goals -H 'Content-Type: application/json' -d '{}'
+curl -X POST $B/api/admin/resolve-completed-landmark-worries -H 'Content-Type: application/json' -d '{}'
+curl -X POST $B/api/admin/translations/clear -H 'Content-Type: application/json' -d '{"contains":"ok"}'
+# reads
+curl "$B/api/admin/archives"; curl "$B/api/admin/translations?limit=20"
+curl "$B/api/secrets"; curl "$B/api/rumors"; curl "$B/api/usage"; curl "$B/api/runs"
+```
+
+Scripts (stop the server first, dry run by default): `scripts/archive_run.py`,
+`scripts/fix_wish_born.py`, `scripts/backfill_chapters.py`, `scripts/reclose_chapter.py`.
+
 ## Endpoints
 
 ### `POST /api/admin/prune-beliefs`
