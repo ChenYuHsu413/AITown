@@ -22,6 +22,7 @@ from pathlib import Path
 
 from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from .agents import chapters as chapters_mod
 from .agents import texts
@@ -980,6 +981,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Gaobo Town (高柏小鎮)", lifespan=lifespan)
+# The UI's ES modules and assets (no build step: the browser loads them as-is).
+app.mount("/static", StaticFiles(directory=ROOT / "frontend"), name="static")
 
 
 @app.get("/api/history")
