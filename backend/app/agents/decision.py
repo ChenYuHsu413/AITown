@@ -397,6 +397,15 @@ def gender_ok(text: str) -> bool:
     return True
 
 
+def addressee_ok(text: str, listener: "Agent") -> bool:
+    """Face-to-face, "妳" can only be the listener -- so it is wrong, with nothing to
+    guess, when the listener is male (quoted speech is someone else's words and is
+    left out). "你" is fine for anyone."""
+    if getattr(listener.profile, "gender", "") != "male":
+        return True
+    return "妳" not in _REF_QUOTE_RE.sub(" ", text or "")
+
+
 def _wish_text_gender_ok(parsed: object) -> bool:
     """Every free-text field a generated wish would land in the world -- the same
     single-name gender rule the reflection path uses."""
@@ -2075,6 +2084,12 @@ class DecisionEngine:
         shaped = DialogueResult(parsed={"turns": [{"speaker": sp.name, "text": str(p["text"]).strip()}]},
                                 provider=getattr(r, "provider", "?"), model=getattr(r, "model", "?"))
         if not _dialogue_ok(shaped):
+            return False
+        listener = plan.b if sp is plan.a else plan.a
+        if not _note_gender_gate(addressee_ok(str(p["text"]), listener)):
+            if _GATE_DIAG:
+                print(f"[gender-reject] {shaped.provider}/{shaped.model} {sp.id} addressee={listener.id} "
+                      f"text={str(p['text'])[:140]!r}", flush=True)
             return False
         for label, part in (("text", str(p["text"]).strip()), ("tells", str(p.get("tells") or "").strip())):
             if part and not _note_gender_gate(gender_ok(part)):

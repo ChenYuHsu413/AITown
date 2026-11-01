@@ -278,6 +278,11 @@ export class TownMap {
       if (this.state.agents) this.updateAgents(this.state.agents);
     }
     const r = this.res[actor]; if (!r || r.asleep) return;
+    // Lines are paced out at reading speed, so at high sim speeds a line can arrive
+    // long after the talk -- by then the speaker may be somewhere else. Only speak
+    // over them while they are still where the conversation happened; the line
+    // itself is always in the live column's thread card.
+    if (loc && r.loc && r.loc !== loc) return;
     this.bubbles.filter(b => b.actor === actor).forEach(b => this.removeBubble(b));
     // The speaker is named in the bubble, and a tail points at their own head: with
     // several people at one place the name tags stack upward, and a bubble that

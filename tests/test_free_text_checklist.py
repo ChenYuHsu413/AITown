@@ -75,6 +75,22 @@ class DialogueTurn(unittest.TestCase):
             self.assertFalse(self.gate(text=BAD_LINE))
             self.assertEqual(builders.GATE_REJECTS["generation_gender"], n + 1)
 
+    def test_calling_a_male_listener_ni_is_refused(self):
+        """Era 3, Day 3: Azong to Ange (male), face to face: "妳要不要在門口掛塊手繪的小黑板"."""
+        world, engine = self.world, self.engine
+        azong, ange = world.agents["azong"], world.agents["ange"]
+        azong.state.location = ange.state.location = "market"
+        plan = asyncio.run(engine.decisions.start_conversation(azong, ange, world, NOW + 60))
+        bad = LLMResult(text="", parsed={"text": "妳要不要在門口掛塊手繪的小黑板,寫上今天新出爐的口味?"}, provider="f", model="f")
+        good = LLMResult(text="", parsed={"text": "你要不要在門口掛塊手繪的小黑板,寫上今天新出爐的口味?"}, provider="f", model="f")
+        quoted = LLMResult(text="", parsed={"text": "冷月跟我說「妳要小心」,我才想到要提醒你。"}, provider="f", model="f")
+        with unittest.mock.patch.dict(os.environ, ZH):
+            self.assertFalse(engine.decisions._turn_ok(bad, azong, plan))
+            self.assertTrue(engine.decisions._turn_ok(good, azong, plan))
+            self.assertTrue(engine.decisions._turn_ok(quoted, azong, plan))
+            back = LLMResult(text="", parsed={"text": "妳說得對,成本我回去就列。"}, provider="f", model="f")
+            self.assertTrue(engine.decisions._turn_ok(back, ange, plan))      # Ange to Azong (female): fine
+
     def test_misgendered_news_is_refused_too(self):
         with unittest.mock.patch.dict(os.environ, ZH):
             self.assertFalse(self.gate(tells="希希寫了好幾條問題,她卡在紅外線那條最久。"))
