@@ -44,7 +44,7 @@ class PromptProbe:
         async def wrapped(a, b, world, now, **kw):
             plan = await orig(a, b, world, now, **kw)
             if agent_id in (a.id, b.id):
-                self.prompts.append((now, a.state.location, plan.messages[-1]["content"]))
+                self.prompts.append((now, a.state.location, plan.preview(agent_id)))
             return plan
         engine.decisions.start_conversation = wrapped
 
@@ -109,21 +109,13 @@ class ClosureFlow(unittest.TestCase):
         self.assertGreater(len(drifts), 0)
         self.assertTrue(all(closed[0][0] <= t.minute < started[0][0] for t in drifts))
 
-        # Acceptance metric (F): installation mentions in AISI'S OWN half of the
-        # dialogue context. The prompt also carries her partner's card and memories,
-        # and a neighbour legitimately remembers the finished landmark -- the ripple
-        # memory every witness got when it completed. Down-weighting governs what she
-        # retrieves about it, and was never meant to erase the town's memory of a
-        # public thing, so the measurement has to be scoped to her side.
-        name = aisi.name                                           # her card opens with her name
-
+        # Acceptance metric (F): installation mentions in AISI'S OWN dialogue context.
+        # Turn by turn, the probe records her seat only (plan.preview) -- her partner's
+        # card and memories never enter her prompt. The scene lines (the place and what
+        # stands there) are the setting, not her context, so they're left out.
         def own_half(txt: str) -> str:
-            low = txt.lower()
-            a_at, b_at = low.find("\na: "), low.find("\nb: ")
-            if a_at < 0 or b_at < 0:
-                return low
-            a_half, b_half = low[a_at:b_at], low[b_at:]
-            return a_half if a_half.startswith(f"\na: {name.lower()}") else b_half
+            return "\n".join(l for l in txt.lower().split("\n")
+                             if not l.startswith(("scene:", "nearby:")))
 
         def rate(ps):
             return (sum(1 for _, _, txt in ps if "installation" in own_half(txt)) / len(ps)) if ps else 0.0

@@ -36,7 +36,12 @@ DAY_MIN = 24 * 60
 # ---- non-blocking dialogue / reflection ------------------------------------
 # A conversation's slow LLM generation runs in a background task so the town
 # keeps moving; only the two participants freeze. These bound that.
-DIALOGUE_MAX_CONCURRENT = 3   # in-flight dialogue generations (the design's cap); excess queue
+# In-flight conversations. Turn-by-turn dialogue holds a slot for several sequential
+# calls, so the cap is higher than the one-shot era's 3 or a 20x day would queue.
+try:
+    DIALOGUE_MAX_CONCURRENT = int(os.environ.get("AI_TOWN_DIALOGUE_CONCURRENCY", "6"))
+except ValueError:
+    DIALOGUE_MAX_CONCURRENT = 6
 REFLECT_MAX_CONCURRENT = 4    # in-flight reflections (smart-tier); a soft burst limit
 # Outer BACKSTOP on the whole dialogue generation. The router now bounds each
 # provider individually (DIALOGUE_PROVIDER_TIMEOUT_S) and falls through to the fast
@@ -92,7 +97,9 @@ DIALOGUE_LOCK_MIN = 30
 # generating conversation: the outer backstop is 90s wall, and at 20x that is 1800
 # sim-min, so keep this comfortably above that. (The finally is the real guarantee;
 # this is pure paranoia for the case where it somehow doesn't run.)
-WATCHDOG_STUCK_MIN = 3000
+# Turn by turn, the backstop is per conversation and scales with its lines (see
+# _dialogue_task): up to 4 x 90s wall = 7200 sim-min at 20x, so the watchdog sits above it.
+WATCHDOG_STUCK_MIN = 9000
 
 # Day 1 = Monday. day_of_week 0=Mon .. 6=Sun.
 _DOW_EN = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -171,6 +178,9 @@ _EN_TEMPLATES = {
     "meetup_arranged": "{actor} and {target} arranged to meet at {loc}",
     "meetup_declined": "{actor} asked {target} to meet, but they passed",
     "met_up": "{actor} and {target} met up as planned at {loc}",
+    "promise_made": "{actor} and {target} promised to meet at {loc}",
+    "promise_missed": "{actor} and {target} had promised to meet at {loc}, but it never happened",
+    "stormed_off": "{actor} walked away from {target} mid-conversation",
     "chapter_closed": "{actor} closed a chapter of their life — {text}",
     "chapter_started": "{actor} began a new chapter: {text}",
     # Wish beats are deliberately content-free: the intention itself is private.
@@ -187,7 +197,7 @@ CHRONICLE_VERBS = {
     "rain_start", "rain_end", "festival_start", "festival_end",
     "leak", "secret_born", "week_close", "transition", "milestone",
     "romance_dating", "romance_rejected", "romance_partners", "breakdown", "repaired",
-    "met_up", "chapter_closed", "chapter_started",
+    "met_up", "chapter_closed", "chapter_started", "stormed_off", "promise_missed",
 }
 CHRONICLE_ICONS = {
     "confide": "🤫", "confronted": "⚖️", "landmark_done": "🎨", "belief": "💭",
@@ -195,7 +205,7 @@ CHRONICLE_ICONS = {
     "festival_end": "🎏", "leak": "🕳️", "secret_born": "🔒", "week_close": "📅",
     "transition": "🔀", "milestone": "🤝",
     "romance_dating": "💕", "romance_rejected": "💔", "romance_partners": "💍",
-    "breakdown": "🛠️", "repaired": "🔧", "met_up": "🫂",
+    "breakdown": "🛠️", "repaired": "🔧", "met_up": "🫂", "stormed_off": "💢", "promise_missed": "⌛",
     "chapter_closed": "📖", "chapter_started": "📗",
 }
 
@@ -741,6 +751,9 @@ class SimulationEngine:
         self._accrue_copresence(agent, self.now - since)   # romance-spark fuel
 
         decision = await self.decisions.decide(agent, self.world, obs, self.now)
+        for beat in self.decisions.drain_outbox():     # e.g. a promise that came to nothing
+            self._publish("action", beat["verb"], actor=self.world.agents.get(beat["actor"]),
+                          target=self.world.agents.get(beat["target"]), location_id=beat.get("location", ""))
 
         if decision.action == "talk" and decision.talk_partner:
             await self._initiate_conversation(
@@ -831,9 +844,15 @@ class SimulationEngine:
         )
         init = self.now
         if is_meetup:   # both kept the appointment -> clear the mirror, mark the beat
+            promised = bool((b.state.pending_meetup or {}).get("promised"))
             a.state.pending_meetup = None
             b.state.pending_meetup = None
-            self._publish("action", "met_up", actor=a, target=b, location_id=a.state.location)
+            if promised:    # a meeting they promised each other in conversation: kept
+                for x, y in ((a, b), (b, a)):
+                    x.memory.add(MemoryItem(minute=self.now, importance=5, kind="conversation",
+                                            text=texts.T("promise_kept", other=y.id, loc=a.state.location)))
+            self._publish("action", "met_up", actor=a, target=b, location_id=a.state.location,
+                          detail="promised" if promised else "")
         # Lock both. ``_in_dialogue`` is the authoritative lock + settlement token;
         # busy_until mirrors it for the UI ("talk" bubble) and third-party free checks,
         # and is the resume self-heal window (see DIALOGUE_LOCK_MIN).
@@ -891,8 +910,11 @@ class SimulationEngine:
             for attempt in range(rounds):
                 try:
                     async with self._dialogue_sem:
+                        # The backstop covers the whole exchange, so it scales with its
+                        # lines; a timeout keeps the lines already spoken (plan.turns).
                         res = await asyncio.wait_for(
-                            self.decisions.generate_conversation(plan), timeout=DIALOGUE_TIMEOUT_S)
+                            self.decisions.generate_conversation(plan),
+                            timeout=DIALOGUE_TIMEOUT_S * max(1, plan.max_turns // 2))
                     if retried:
                         self.dialogue_retry_stats["recovered"] += 1  # a retry rescued this from mock
                     break  # a real, gate-passing exchange
@@ -948,7 +970,7 @@ class SimulationEngine:
                   f"({a.id}/{b.id} @ min {init})", flush=True)
         duration = 6
         if res is not None:
-            turns, _signals, confrontation, milestone, romance_events = \
+            turns, _signals, confrontation, milestone, romance_events, beats = \
                 self.decisions.settle_conversation(plan, self.world, res)
             duration = max(6, len(turns) * 2)
             by_name = {a.name.lower(): a, b.name.lower(): b}
@@ -980,6 +1002,13 @@ class SimulationEngine:
                 self._publish_milestone(a, b, milestone, minute=init)
             for ev in romance_events:  # a confession that just resolved (accepted -> dating, or turned down)
                 self._publish_romance(ev, minute=init)
+            for beat in beats:         # read off the lines: a promise made, a walk-out
+                self._publish("action", beat["verb"], actor=self.world.agents.get(beat["actor"]),
+                              target=self.world.agents.get(beat["target"]),
+                              location_id=beat.get("location", ""), minute=init + len(turns))
+                if beat["verb"] == "promise_made":   # both get a tick at the appointed time
+                    self.scheduler.schedule(beat["actor"], beat["at"])
+                    self.scheduler.schedule(beat["target"], beat["at"])
         # Narrative duration: the exchange occupies ``init .. init+duration`` in sim
         # time regardless of how long generation took. Unlock and reschedule both;
         # if that window is already in the past, they decide again immediately.

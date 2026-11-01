@@ -52,6 +52,7 @@ const VERB_ICON = {
   chapter_closed: 'bookopen', chapter_started: 'bookmark', confronted: 'scale',
   romance_dating: 'heart', romance_rejected: 'heartoff', romance_partners: 'ring',
   milestone: 'users', talk_start: 'users', met_up: 'users', meetup_arranged: 'users', meetup_declined: 'users',
+  promise_made: 'users', promise_missed: 'flag', stormed_off: 'heartoff',
   landmark_done: 'palette', transition: 'shuffle', rain_start: 'rain', rain_end: 'sun', festival_start: 'star', festival_end: 'star',
   breakdown: 'wrench', repaired: 'wrench', day_summary: 'coins', broke: 'coins', secret_born: 'lock', week_close: 'coins',
 };

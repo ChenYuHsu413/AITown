@@ -1,0 +1,258 @@
+"""Turn-by-turn dialogue (活化 phase A).
+
+    python -m unittest tests.test_dialogue_turns -v
+
+One LLM call per line, each from inside ONE speaker: the speaker's own context
+only, the shared transcript, consequences read off structured fields by rules.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import unittest
+import unittest.mock
+
+os.environ["AI_TOWN_LIVE"] = "0"
+os.environ["AI_TOWN_LANG"] = "en"
+os.environ["AI_TOWN_DB_URL"] = ""
+
+from backend.app import pacing
+from backend.app.agents import texts
+from backend.app.agents import wishes as wishes_mod
+from backend.app.agents.decision import DecisionEngine
+from backend.app.llm.factory import build_router
+from backend.app.llm.providers.base import LLMResult
+from backend.app.simulation.engine import DAY_MIN, SimulationEngine
+from backend.app.world.world import World
+from data.seed import build_agents, build_locations, seed_secrets
+
+NOW = 2 * DAY_MIN + 10 * 60     # day 3, 10:00
+
+
+def make_world():
+    router = build_router(live=False)
+    world = World(build_locations(), build_agents())
+    engine = SimulationEngine(world, DecisionEngine(router))
+    seed_secrets(engine.decisions.secrets)
+    engine.bootstrap(6 * 60)
+    return world, engine
+
+
+def put_at_park(world, *ids):
+    for i in ids:
+        world.agents[i].state.location = "park"
+
+
+def scripted(lines):
+    """A router.generate stand-in that serves ``lines`` in order (one per call) and
+    records each call's task + messages."""
+    calls = []
+
+    async def gen(**kw):
+        calls.append(kw)
+        parsed = lines[min(len(calls) - 1, len(lines) - 1)]
+        res = LLMResult(text="", parsed=parsed, provider="fake", model="fake-1")
+        assert kw["validate"](res), parsed
+        return res
+    return gen, calls
+
+
+def line(text, **kw):
+    return {"text": text, "end": False, "sentiment": 0.6, "trust_signal": 0.1, "conflict_signal": 0.0,
+            "tells": "", "plan": None, "storm_off": False, **kw}
+
+
+class MockTurns(unittest.TestCase):
+    def test_mock_exchange_is_multi_turn_and_deterministic(self):
+        def run():
+            world, engine = make_world()
+            put_at_park(world, "jiji", "lengyue")
+            a, b = world.agents["jiji"], world.agents["lengyue"]
+
+            async def go():
+                plan = await engine.decisions.start_conversation(a, b, world, NOW)
+                return plan, await engine.decisions.generate_conversation(plan)
+            return asyncio.run(go())
+        plan1, res1 = run()
+        plan2, res2 = run()
+        turns = res1.parsed["turns"]
+        self.assertGreaterEqual(len(turns), 2)
+        self.assertLessEqual(len(turns), pacing.DIALOGUE_MAX_TURNS)
+        self.assertEqual([t["text"] for t in turns], [t["text"] for t in res2.parsed["turns"]])
+        self.assertEqual([t["speaker_id"] for t in turns][:2], ["jiji", "lengyue"])   # alternating
+        self.assertTrue(turns[-1]["end"])
+        self.assertEqual(res1.provider, "mock")
+
+    def test_confrontation_runs_at_least_the_intimate_minimum_and_gives_a_verdict(self):
+        world, engine = make_world()
+        put_at_park(world, "lengyue", "oula")
+        a, b = world.agents["lengyue"], world.agents["oula"]
+
+        async def go():
+            plan = await engine.decisions.start_conversation(
+                a, b, world, NOW, confront_text="people say you have been talking", confront_rumor_id="r1")
+            return plan, await engine.decisions.generate_conversation(plan)
+        plan, res = asyncio.run(go())
+        self.assertEqual(plan.task, "dialogue_turn_tense")
+        self.assertGreaterEqual(len(res.parsed["turns"]), pacing.DIALOGUE_INTIMATE_MIN_TURNS)
+        self.assertIsInstance(res.parsed["admitted"], bool)
+        verdicts = [t["admitted"] for t in res.parsed["turns"] if t["speaker_id"] == "oula"]
+        self.assertTrue(any(v is not None for v in verdicts))
+
+
+class Asymmetry(unittest.TestCase):
+    def test_each_seat_sees_only_its_own_inner_life(self):
+        world, engine = make_world()
+        put_at_park(world, "jiji", "lengyue")
+        a, b = world.agents["jiji"], world.agents["lengyue"]
+        sec = engine.decisions.secrets.active_secrets_of("jiji")
+        plan = asyncio.run(engine.decisions.start_conversation(a, b, world, NOW))
+        mine, theirs = plan.preview("jiji"), plan.preview("lengyue")
+        for s in sec:
+            if s.id not in {c["secret_id"] for c in plan.confided}:
+                self.assertIn(s.text, mine)
+            self.assertNotIn(s.text, theirs)
+        self.assertEqual(mine.count("Traits:"), 1)
+        self.assertEqual(theirs.count("Traits:"), 1)
+
+    def test_wish_bearing_talk_goes_to_the_smart_tier(self):
+        world, engine = make_world()
+        put_at_park(world, "jiji", "lengyue")
+        a, b = world.agents["jiji"], world.agents["lengyue"]
+        engine.decisions.secrets.secrets.clear()                    # no confide bar in reach
+        plan = asyncio.run(engine.decisions.start_conversation(a, b, world, NOW))
+        self.assertEqual(plan.task, "dialogue_turn")
+        clean, errs = wishes_mod.validate_seed(
+            {"scale": "minor", "title": "Know her", "statement": "I want to really know Lengyue.",
+             "requirements": [{"kind": "talk_count", "target": "lengyue", "threshold": 3}]},
+            a, world, NOW // DAY_MIN + 1)
+        self.assertIsNotNone(clean, errs)
+        wishes_mod.install(a, clean, NOW // DAY_MIN + 1)
+        a.state.busy_until = b.state.busy_until = 0
+        plan2 = asyncio.run(engine.decisions.start_conversation(a, b, world, NOW + 30))
+        self.assertEqual(plan2.task, "dialogue_turn_tense")
+        self.assertIn("I want to really know", plan2.preview("jiji"))       # own wish, full text
+        self.assertNotIn("I want to really know", plan2.preview("lengyue"))
+
+
+class Consequences(unittest.TestCase):
+    def _talk(self, lines):
+        world, engine = make_world()
+        put_at_park(world, "jiji", "lengyue")
+        engine.decisions.secrets.secrets.clear()
+        a, b = world.agents["jiji"], world.agents["lengyue"]
+        gen, calls = scripted(lines)
+
+        async def go():
+            plan = await engine.decisions.start_conversation(a, b, world, NOW)
+            with unittest.mock.patch.object(engine.decisions.router, "generate", gen):
+                res = await engine.decisions.generate_conversation(plan)
+            return plan, res, engine.decisions.settle_conversation(plan, world, res)
+        plan, res, settled = asyncio.run(go())
+        return world, engine, plan, res, settled, calls
+
+    def test_one_call_per_line_and_the_model_may_end_it(self):
+        _, _, plan, res, settled, calls = self._talk([line("Morning."), line("Morning to you.", end=True)])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([c["agent_id"] for c in calls], ["jiji", "lengyue"])
+        jiji = plan.a.name
+        self.assertIn(f"{jiji}: Morning.", calls[1]["messages"][-1]["content"])   # the transcript so far
+        self.assertEqual(len(settled[0]), 2)
+
+    def test_the_hard_cap_holds(self):
+        _, _, plan, res, _, calls = self._talk([line("Go on.")])
+        self.assertEqual(len(calls), pacing.DIALOGUE_MAX_TURNS)
+
+    def test_news_becomes_the_listeners_memory(self):
+        world, *_ = self._talk([line("The bakery is closing early this week.",
+                                     tells="Jiji says the bakery is closing early this week."),
+                                line("Good to know.", end=True)])
+        mem = [m.text for m in world.agents["lengyue"].memory.items]
+        self.assertIn(texts.T("told_me", teller="jiji", text="Jiji says the bakery is closing early this week."), mem)
+        self.assertFalse(any("closing early" in m.text for m in world.agents["jiji"].memory.items
+                             if m.kind == "conversation" and "told me" in m.text))
+
+    def test_a_promise_needs_both_voices_and_becomes_an_appointment(self):
+        world, engine, plan, res, settled, _ = self._talk([
+            line("Coffee tomorrow at the cafe?", plan={"place": "Tide Cafe", "day": "tomorrow", "hour": 15}),
+            line("Sure, three o'clock at the cafe.", end=True, plan={"place": "cafe", "day": "tomorrow", "hour": 15}),
+        ])
+        beats = settled[5]
+        self.assertEqual([b["verb"] for b in beats], ["promise_made"])
+        a, b = world.agents["jiji"], world.agents["lengyue"]
+        self.assertEqual(a.state.pending_meetup["partner"], "lengyue")
+        self.assertTrue(a.state.pending_meetup["promised"])
+        self.assertEqual(a.state.pending_meetup["minute"], (NOW // DAY_MIN + 1) * DAY_MIN + 15 * 60)
+        self.assertEqual(b.state.pending_meetup["partner"], "jiji")
+
+    def test_a_one_sided_proposal_is_not_a_promise(self):
+        world, _, _, _, settled, _ = self._talk([
+            line("Coffee tomorrow?", plan={"place": "cafe", "day": "tomorrow", "hour": 15}),
+            line("We'll see.", end=True)])
+        self.assertEqual(settled[5], [])
+        self.assertIsNone(world.agents["jiji"].state.pending_meetup)
+
+    def test_storming_off_ends_it_and_sours_both(self):
+        world, engine = make_world()
+        a0 = world.agents["jiji"].rel("lengyue").friendship
+        world, engine, plan, res, settled, calls = self._talk([
+            line("Why would you say that?", conflict_signal=0.8, sentiment=0.1),
+            line("I'm done here.", storm_off=True, conflict_signal=0.9, sentiment=0.0),
+            line("never reached")])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([b["verb"] for b in settled[5]], ["stormed_off"])
+        self.assertEqual(settled[5][0]["actor"], "lengyue")
+        self.assertLess(world.agents["jiji"].rel("lengyue").friendship, a0)
+
+    def test_each_side_feels_its_own_signals(self):
+        world, *_ = self._talk([line("Lovely to see you!", sentiment=1.0),
+                                line("Hm.", sentiment=0.0, end=True)])
+        ja, lj = world.agents["jiji"].rel("lengyue"), world.agents["lengyue"].rel("jiji")
+        w0, _ = make_world()
+        self.assertGreater(ja.friendship, w0.agents["jiji"].rel("lengyue").friendship)
+        self.assertLess(lj.friendship, w0.agents["lengyue"].rel("jiji").friendship)
+
+
+class PromisesKeptAndMissed(unittest.TestCase):
+    def test_missed_promise_is_remembered_by_both_and_raised_once(self):
+        world, engine = make_world()
+        a, b = world.agents["jiji"], world.agents["lengyue"]
+        appt = {"location": "cafe", "minute": NOW, "promised": True}
+        a.state.pending_meetup = {**appt, "partner": "lengyue"}
+        b.state.pending_meetup = {**appt, "partner": "jiji"}
+        late = NOW + 24 * 60
+        engine.decisions._resume_meetup(a, world, late)
+        engine.decisions._resume_meetup(b, world, late)
+        out = engine.decisions.drain_outbox()
+        self.assertEqual([o["verb"] for o in out], ["promise_missed"])
+        for x, other in ((a, "lengyue"), (b, "jiji")):
+            self.assertIsNone(x.state.pending_meetup)
+            self.assertIn(texts.T("promise_missed", other=other, loc="cafe"), [m.text for m in x.memory.items])
+
+    def test_an_ordinary_lapsed_meetup_stays_quiet(self):
+        world, engine = make_world()
+        a = world.agents["jiji"]
+        a.state.pending_meetup = {"location": "cafe", "minute": NOW, "partner": "lengyue"}
+        engine.decisions._resume_meetup(a, world, NOW + 24 * 60)
+        self.assertEqual(engine.decisions.drain_outbox(), [])
+
+
+class AgedLandmark(unittest.TestCase):
+    def test_a_finished_thing_stops_being_news(self):
+        world, engine = make_world()
+        lm = world.locations["park"].landmarks[0]
+        lm["state"], lm["progress"] = "completed", 1.0
+        name = texts.landmark_name(lm)
+        lm["completed_minute"] = NOW
+        d = engine.decisions._nearby_landmark
+        self.assertEqual(d(world, "park", NOW + 60), texts.T("aged_today", name=name))
+        self.assertEqual(d(world, "park", NOW + 3 * DAY_MIN), texts.T("aged_fresh", name=name))
+        self.assertEqual(d(world, "park", NOW + pacing.FRESH_DAYS * DAY_MIN), name)
+        del lm["completed_minute"]                                       # an old snapshot: reads as old
+        self.assertEqual(d(world, "park", NOW), name)
+        self.assertNotIn("now complete", d(world, "park", NOW))
+
+
+if __name__ == "__main__":
+    unittest.main()

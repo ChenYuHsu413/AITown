@@ -46,6 +46,7 @@ NOTABLE = frozenset({
     "milestone", "romance_partners",
     "confide", "leak",
     "transition", "landmark_done",
+    "stormed_off", "promise_made", "promise_missed",
 })
 TALK_FIRST = "talk_start"           # notable only on a pair's first conversation of the run
 
@@ -83,6 +84,9 @@ _PHRASES: dict[str, tuple[str, str]] = {
                         "{a}默默努力的事又卡住了"),
     "transition": ("{a} made a big change in their life", "{a}做了人生中的重大改變"),
     "landmark_done": ("{a} finished their work at {loc}", "{a}完成了{loc}的作品"),
+    "stormed_off": ("{a} walked away from {b} mid-conversation", "{a}和{b}不歡而散"),
+    "promise_made": ("{a} and {b} promised to meet", "{a}和{b}約好了要見面"),
+    "promise_missed": ("{a} and {b} had promised to meet, but it never happened", "{a}和{b}說好的見面落空了"),
 }
 _QUIET = (
     ("A quiet day; the town went about its usual rhythm.", "平靜的一天,小鎮照著平常的步調過。"),

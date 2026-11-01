@@ -127,6 +127,9 @@ export function evText(ev) {
     case 'meetup_arranged': return `${a} 和 ${tg} 約好在 ${l} 見面`;
     case 'meetup_declined': return `${a} 邀 ${tg} 見面,但對方婉拒了`;
     case 'met_up': return `${a} 和 ${tg} 如約在 ${l} 碰了面`;
+    case 'promise_made': return `${a} 和 ${tg} 說好要在 ${l} 見面`;
+    case 'promise_missed': return `${a} 和 ${tg} 說好在 ${l} 見面,結果沒見成`;
+    case 'stormed_off': return `${a} 和 ${tg} 不歡而散`;
     case 'chapter_closed': return sp ? `${a} 翻過了人生的一頁——${resolve(sp)}` : `${a} 的人生翻過了一頁`;
     case 'chapter_started': return (!sp || sp === PRIVATE_CHAPTER) ? `${a} 開始了新的篇章` : `${a} 展開了新章節:${resolve(chapterTitle(sp))}`;
     case 'wish_born': case 'wish_seeded': return `${a} 心裡悄悄有了一個新的願望`;

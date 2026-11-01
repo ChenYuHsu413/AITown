@@ -170,6 +170,7 @@ class World:
         if lm["progress"] < 1.0:
             return None
         lm["state"] = "completed"
+        lm["completed_minute"] = now     # its age drives how a scene describes it
         # Memory text uses {agent:id}/{loc:id}/{landmark:id} placeholders (internal
         # English); the display and prompt layers resolve them (see the resolvers).
         agent.memory.add(MemoryItem(

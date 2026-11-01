@@ -117,6 +117,24 @@ _CATALOGUE: dict[str, tuple[str, str]] = {
                           "{{loc:{loc}}}的{{landmark:{lid}}}比我上次看到時又有進展了。"),
     "talked_with": ("Talked with {{agent:{other}}} at {{loc:{loc}}}.",
                     "在{{loc:{loc}}}和{{agent:{other}}}聊了聊。"),
+    # a thing in the world, described by its age (see aged_name)
+    "aged_today": ("{name}, finished just today", "今天剛完成的{name}"),
+    "aged_fresh": ("the newly finished {name}", "新落成的{name}"),
+    "aged_progress": ("{name}, {pct}% complete", "{name},完成了{pct}%"),
+    # turn-by-turn dialogue consequences
+    "told_me": ("{{agent:{teller}}} told me: {text}", "{{agent:{teller}}}跟我說:{text}"),
+    "stormed_off_self": ("Things went sour with {{agent:{other}}} at {{loc:{loc}}} and I walked away.",
+                         "在{{loc:{loc}}}和{{agent:{other}}}話不投機,我轉身走了。"),
+    "stormed_off_other": ("{{agent:{other}}} walked away from me mid-conversation at {{loc:{loc}}}.",
+                          "在{{loc:{loc}}},{{agent:{other}}}話沒說完就轉身走了,不歡而散。"),
+    "when_today": ("today", "今天"),
+    "when_tomorrow": ("tomorrow", "明天"),
+    "promise_made": ("{{agent:{other}}} and I agreed to meet at {{loc:{loc}}} {when} around {hour}:00.",
+                     "我和{{agent:{other}}}說好{when}{hour}點左右在{{loc:{loc}}}見。"),
+    "promise_kept": ("{{agent:{other}}} kept our word and met me at {{loc:{loc}}}.",
+                     "{{agent:{other}}}守約,真的來{{loc:{loc}}}見我了。"),
+    "promise_missed": ("{{agent:{other}}} and I had agreed to meet at {{loc:{loc}}}, but it never happened.",
+                       "我和{{agent:{other}}}說好在{{loc:{loc}}}見面,結果沒見成。"),
     # rumors & secrets
     "rumor_about_me": ("{{agent:{teller}}} told me people are saying: {text}",
                        "{{agent:{teller}}}跟我說,大家都在傳:{text}"),
@@ -278,6 +296,16 @@ def goal_clause(goal: str) -> str:
 def T(key: str, **kw) -> str:
     en, zh = _CATALOGUE[key]
     return (zh if zh_native() else en).format(**kw)
+
+
+def aged_name(name: str, age_days: int | None, fresh_days: int) -> str:
+    """How a finished thing reads in a scene, by its age: "finished just today" on
+    its first day, "newly finished" for ``fresh_days``, then simply its name -- an
+    old thing is part of the scenery, not news. ``None`` (age unknown: a snapshot
+    from before ages were stamped) reads as old."""
+    if age_days is None or age_days >= fresh_days:
+        return name
+    return T("aged_today" if age_days < 1 else "aged_fresh", name=name)
 
 
 def residue_narrative(residue: str, english: dict[str, str]) -> str:

@@ -18,6 +18,7 @@ Every decision also returns a DecisionTrace so nothing is a black box.
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
 import os
@@ -596,21 +597,45 @@ class DecisionTrace:
 class ConvPlan:
     """A conversation captured at initiation. Every pre-dialogue effect (rumor
     shares, leaks, confides -- each a memory/relationship mutation) is already
-    applied and the prompt is fully built, so the slow dialogue generation can run
-    in a background task without the world's state drifting under the prompt.
-    ``settle_conversation`` consumes the generated result to apply the aftermath."""
+    applied and each speaker's private context is snapshotted, so the slow
+    turn-by-turn generation can run in a background task without the world's state
+    drifting under it. ``settle_conversation`` consumes the result.
+
+    Turn by turn: one LLM call per line, each written from inside ONE speaker with
+    only that speaker's context (``ctx[speaker_id]``) plus the shared transcript.
+    ``turns`` accumulates as lines land, so a retry round resumes where the last
+    one stopped instead of starting the conversation over."""
     a: Agent
     b: Agent
     location: str
     init_minute: int
-    messages: list
-    validate: object                 # Callable[[result], bool] -- the dialogue quality gate
-    max_tokens: int
+    ctx: dict                        # agent_id -> that speaker's private context (see _speaker_ctx)
+    order: tuple                     # (first speaker, second speaker)
+    task: str                        # dialogue_turn | dialogue_turn_tense (smart tier)
+    min_turns: int
+    max_turns: int
+    max_tokens: int                  # per line
     is_confront: bool
     confront_rumor_id: str
     shared_rumors: list              # fwd/rev/leak descriptors -> engine publishes at initiation
     confided: list                   # confide descriptors -> engine publishes at initiation
     confession: dict | None
+    turns: list = field(default_factory=list)       # lines generated so far
+    providers: list = field(default_factory=list)   # "provider/model" per line
+
+    def preview(self, agent_id: str) -> str:
+        """The user-side prompt this speaker would see for an opening line -- what
+        the model can know about the scene from their seat (tests, diagnostics)."""
+        msgs = builders.dialogue_turn_prompt(self.ctx[agent_id], [], 1, self.max_turns, self.min_turns)
+        return msgs[-1]["content"]
+
+
+@dataclass
+class DialogueResult:
+    """The assembled exchange: the router-result shape the engine already handles."""
+    parsed: dict
+    provider: str
+    model: str
 
 
 @dataclass
@@ -635,6 +660,13 @@ class DecisionEngine:
     # Embedding provider for the wish novelty gate. Defaults to the free mock; the
     # host swaps in the persistence one when a DB is attached.
     embedder: object = None
+    # Beats the decision layer raises outside a conversation (a promise that came to
+    # nothing) -- the engine drains and publishes them after each decision.
+    outbox: list = field(default_factory=list)
+
+    def drain_outbox(self) -> list:
+        out, self.outbox = self.outbox, []
+        return out
 
     def __post_init__(self) -> None:
         if self.embedder is None:
@@ -1198,6 +1230,23 @@ class DecisionEngine:
         return {"verb": "meetup_arranged", "a": agent.id, "b": b.id,
                 "minute": minute_abs, "location": loc}
 
+    def _promise_missed(self, agent: Agent, m: dict, partner_pm: dict | None, now: int) -> None:
+        """A meeting promised in conversation lapsed: each side remembers it (no
+        blame -- the rules don't know whose fault it was), and the town hears of it
+        once. The first side to give up raises the event and flags the partner's
+        mirror so the second doesn't raise it again (the flag rides the snapshot)."""
+        if not m.get("promised"):
+            return
+        agent.memory.add(MemoryItem(
+            minute=now, importance=4, kind="conversation",
+            text=texts.T("promise_missed", other=m["partner"], loc=m["location"])))
+        if m.get("missed_reported"):
+            return
+        if partner_pm and partner_pm.get("partner") == agent.id and partner_pm.get("minute") == m.get("minute"):
+            partner_pm["missed_reported"] = True
+        self.outbox.append({"verb": "promise_missed", "actor": agent.id, "target": m["partner"],
+                            "location": m["location"]})
+
     def _resume_meetup(self, agent: Agent, world: "World", now: int) -> Decision | None:
         """Drive a kept appointment: once the appointed time arrives, head to the venue
         and, when both are there and free, start the (cap-exempt) conversation. Returns a
@@ -1207,13 +1256,15 @@ class DecisionEngine:
             return None
         if now < m["minute"]:
             return None                                  # not yet -- live the normal routine
-        if now > m["minute"] + MEETUP_WINDOW_MIN:
-            agent.state.pending_meetup = None            # missed the window
-            return None
         partner = world.agents.get(m["partner"])
         pm = partner.state.pending_meetup if partner else None
+        if now > m["minute"] + MEETUP_WINDOW_MIN:
+            agent.state.pending_meetup = None            # missed the window
+            self._promise_missed(agent, m, pm, now)
+            return None
         if partner is None or not pm or pm.get("partner") != agent.id:
             agent.state.pending_meetup = None            # partner isn't coming any more
+            self._promise_missed(agent, m, pm, now)
             return None
         loc = m["location"]
         if agent.state.location != loc:
@@ -1710,83 +1761,240 @@ class DecisionEngine:
         # the model naturally carries the weight of the relationship's history.
         a_imp = self._impression_of(a, b.id)
         b_imp = self._impression_of(b, a.id)
-        # Confide/confront are the emotionally weighty beats: a 1-line version is a
-        # failure, so gate them at >=3 turns. A short result then triggers the
-        # router's same-provider retry and, failing that, the fallback chain (the
-        # mock floor always emits >=4 for these) -- better a model swap than a
-        # one-line heart-to-heart. Ordinary chat keeps the base structural gate.
         intimate = is_confront or bool(confide_fwd or confide_rev) or confession is not None
-        def _validate(r: object) -> bool:
-            if not _dialogue_ok(r):
-                return False
-            if not _referential_ok(getattr(r, "parsed", None), a, b):
-                if _GATE_DIAG:
-                    prov = f"{getattr(r, 'provider', '?')}/{getattr(r, 'model', '?')}"
-                    print(f"[ref-reject] {prov} {a.id}<->{b.id}", flush=True)
-                return False
-            if not intimate:
-                return True
-            turns = r.parsed.get("turns") if isinstance(r.parsed, dict) else None
-            return isinstance(turns, list) and len(turns) >= 3
-        messages = builders.dialogue_prompt(
-            a, b, _resolve_mems(a_mem, world), _resolve_mems(b_mem, world),
-            a_wants_to_mention=confront_text or (fwd or leak_fwd or {}).get("text"),
-            b_wants_to_mention=(rev or leak_rev or {}).get("text"),
-            is_confrontation=is_confront,
-            time_hint=builders.time_of_day(now),
-            a_impression=a_imp, b_impression=b_imp,
-            a_confide=confide_fwd["text"] if confide_fwd else None,
-            b_confide=confide_rev["text"] if confide_rev else None,
-            nearby_landmark=self._nearby_landmark(world, a.state.location),
-            confession=confession,
-        )
+        place = world.locations.get(a.state.location)
+        place_name = (((place.name_zh or place.name) if texts.zh_native() else place.name)
+                      if place else a.state.location)
+        scene = {"time": builders.time_of_day(now), "place": place_name,
+                 "nearby": self._nearby_landmark(world, a.state.location, now)}
+        a_intents: list[str] = []
+        b_intents: list[str] = []
+        a_role = b_role = ""
+        a_mention = (fwd or leak_fwd or {}).get("text")
+        b_mention = (rev or leak_rev or {}).get("text")
+        if is_confront:
+            a_role, b_role = "confronter", "accused"
+            a_intents.append(
+                f"You came to ask {b.name} to their face whether this came from them -- in your own "
+                f"words, as a direct question (do not read it out verbatim): {confront_text}")
+            b_intents.append(f"{a.name} sought you out and seems to have something serious to ask you.")
+        elif a_mention:
+            a_intents.append(f"Something you want to bring up: {a_mention}")
+        if b_mention:
+            b_intents.append(f"Something you want to bring up: {b_mention}")
+        for cf, intents, partner in ((confide_fwd, a_intents, b), (confide_rev, b_intents, a)):
+            if cf:
+                intents.append(
+                    f"You have decided to open up to {partner.name} about a private worry. Background "
+                    f"(say it in the first person, in your own words, never quoted): {cf['text']}")
+        first, second = a, b
+        if confession:
+            fr = a if confession["from"] == a.id else b
+            to = b if fr is a else a
+            (a_intents if fr is a else b_intents).append(
+                f"You have decided this is the moment to tell {to.name} you have romantic feelings "
+                f"for them -- sincere, a little nervous.")
+            (a_intents if to is a else b_intents).append(
+                (f"If {fr.name} opens up about romantic feelings: you feel the same way, and you say "
+                 f"yes, warmly.") if confession["accepted"] else
+                (f"If {fr.name} opens up about romantic feelings: you don't feel the same, and you "
+                 f"turn them down gently and kindly, never cruelly."))
+            first, second = fr, to
+        elif confide_rev and not confide_fwd and not is_confront:
+            first, second = b, a                       # the one opening up speaks first
+        ctx = {
+            a.id: self._speaker_ctx(a, b, world, now, _resolve_mems(a_mem, world), a_imp, a_intents,
+                                    a_role, scene, (confide_fwd or {}).get("secret_id", "")),
+            b.id: self._speaker_ctx(b, a, world, now, _resolve_mems(b_mem, world), b_imp, b_intents,
+                                    b_role, scene, (confide_rev or {}).get("secret_id", "")),
+        }
+        tense = intimate or self._tense_pair(a, b)
+        min_turns = pacing.DIALOGUE_INTIMATE_MIN_TURNS if intimate else 2
         # Count the conversation against the daily budget at initiation (serialized
-        # in the tick), so the cap stays honest even though generation is now async.
+        # in the tick), so the cap stays honest even though generation is async.
         # A kept meetup is exempt: it's a deliberate social beat, not routine chatter.
         self._roll_day(now)
         if count_against_cap:
             self._dialogues_today += 1
         return ConvPlan(
             a=a, b=b, location=a.state.location, init_minute=now,
-            messages=messages, validate=_validate,
-            # Chinese runs ~2-3x the tokens/char of English; 4 turns + JSON needs
-            # more headroom or the last turn truncates.
-            max_tokens=600 if builders.lang_is_zh() else 400,
+            ctx=ctx, order=(first, second),
+            task="dialogue_turn_tense" if tense else "dialogue_turn",
+            min_turns=min_turns, max_turns=max(min_turns, pacing.DIALOGUE_MAX_TURNS),
+            # one line + its JSON fields; Chinese runs ~2-3x the tokens per character
+            max_tokens=320 if builders.lang_is_zh() else 220,
             is_confront=is_confront, confront_rumor_id=confront_rumor_id,
             shared_rumors=shared_rumors, confided=confided, confession=confession,
         )
 
+    _ROMANCE_PHRASE = {"crushing": "you have a crush on them", "dating": "you two are dating",
+                       "partners": "you two are partners"}
+
+    def _speaker_ctx(self, me: Agent, other: Agent, world: World, now: int, mems: list,
+                     impression: str | None, intents: list, role: str, scene: dict,
+                     confiding_secret: str = "") -> dict:
+        """Everything ONE speaker brings into the conversation -- and nothing of the
+        other's inner life. Their memories of the partner (retrieved), what has been
+        on their mind lately (their own recent weighty memories), their own active
+        wishes in full (minor ones included), their private matters, mood, and how
+        they see the partner."""
+        day = now // (24 * 60) + 1
+        seen = set(mems)
+        recent: list[str] = []
+        for m in reversed(me.memory.items[-80:]):
+            if len(recent) >= 3:
+                break
+            # a closed chapter's memories (weight < 1) stay out, as they do from retrieval
+            if (m.minute < now - 2 * 24 * 60 or m.importance < 4 or m.kind == "biography"
+                    or m.weight < 1.0):
+                continue
+            t = _resolve_placeholders(m.text, world)
+            if t not in seen:
+                seen.add(t)
+                recent.append(t)
+        recent.reverse()
+        wishes: list[str] = []
+        for w in wishes_mod.active_wishes(me):
+            line = f"[{w.scale}] {w.title}: {w.statement}" if w.title else w.statement
+            if w.expires_on:
+                line += f" ({max(0, w.expires_on - day)} days left)"
+            wishes.append(_resolve_placeholders(line, world))
+        private = [_resolve_placeholders(x.text, world) for x in self.secrets.active_secrets_of(me.id)
+                   if x.id != confiding_secret][:2]
+        rel = me.rel(other.id)
+        return {
+            "name": me.name, "partner": other.name,
+            "card": builders.character_card(me, speech=True), "mood": me.state.mood,
+            "time": scene["time"], "place": scene["place"], "nearby": scene["nearby"],
+            "bond": transitions_mod.rel_stage(rel.friendship),
+            "romance": self._ROMANCE_PHRASE.get(getattr(rel, "romance_stage", "") or "", ""),
+            "impression": impression, "memories": list(mems), "recent": recent,
+            "wishes": wishes, "private": private, "intents": list(intents), "role": role,
+        }
+
+    def _tense_pair(self, a: Agent, b: Agent) -> bool:
+        """Hard rules for the smart tier beyond confide/confront/confession: a secret
+        whose confide bar is within reach, or a talk that bears on a wish or pursuit
+        (one side's active wish or pursuit is about the other)."""
+        margin = pacing.DIALOGUE_TENSE_TRUST_MARGIN
+        for x, y in ((a, b), (b, a)):
+            trust = x.rel(y.id).trust
+            for sec in self.secrets.active_secrets_of(x.id):
+                if (not self.secrets.knows(sec.id, y.id)
+                        and abs(trust - (CONFIDE_TRUST_BASE + sec.sensitivity * 30)) <= margin):
+                    return True
+            for w in wishes_mod.active_wishes(x):
+                if any(getattr(r, "target", "") == y.id for r in w.requirements):
+                    return True
+            ch = x.chapter
+            if ch is not None and ch.chapter_type == "pursuit" and texts.mentions(ch.narrative or "", y.id):
+                return True
+        return False
+
     async def generate_conversation(self, plan: ConvPlan) -> object:
-        """The slow half of a conversation: one LLM call produces the whole
-        exchange. Run inside a background task so the town doesn't wait on it. Each
-        provider is bounded by ``DIALOGUE_PROVIDER_TIMEOUT_S`` so a slow model hands
-        off to the fallback (recorded) rather than starving the call. ``no_floor``
-        means a whole-chain failure raises ``ProvidersExhausted`` instead of returning
-        the canned mock -- the engine catches it, brews a pause, and retries."""
-        return await self.router.generate(
-            task="dialogue", messages=plan.messages, agent_id=plan.a.id,
-            sim_minute=plan.init_minute, schema={"type": "object"},
-            max_tokens=plan.max_tokens, validate=plan.validate,
-            per_call_timeout=DIALOGUE_PROVIDER_TIMEOUT_S,
-            # Never serve a canned mock line: a total chain failure raises
-            # ProvidersExhausted so the engine can brew a pause and re-run the chain.
-            no_floor=True,
-        )
+        """The slow half of a conversation, run in a background task: one LLM call
+        per line. Each provider is bounded by ``DIALOGUE_PROVIDER_TIMEOUT_S``;
+        ``no_floor`` makes a whole-chain failure on any line raise
+        ``ProvidersExhausted`` (never a canned line) -- the engine brews and retries,
+        and the retry resumes from the lines already spoken."""
+        async def call(sp: Agent, messages: list, validate) -> object:
+            return await self.router.generate(
+                task=plan.task, messages=messages, agent_id=sp.id,
+                sim_minute=plan.init_minute, schema={"type": "object"},
+                max_tokens=plan.max_tokens, validate=validate,
+                per_call_timeout=DIALOGUE_PROVIDER_TIMEOUT_S, no_floor=True)
+        return await self._run_turns(plan, call)
 
     async def mock_dialogue(self, plan: ConvPlan) -> object:
-        """Deterministic floor exchange -- used only when even the router's own chain
-        is abandoned (the outer backstop timeout), so the two participants always
-        unlock with a valid scene rather than hanging. Records the call to usage (it
-        bypasses ``router.generate``) so this floor is visible in /api/usage and
-        llm_calls, not silently invisible."""
+        """Deterministic floor -- used only once every retry round is spent, so the
+        two participants always unlock with a valid scene. It finishes the
+        conversation from wherever the live lines stopped. Records each call to
+        usage (it bypasses ``router.generate``) so the floor is visible."""
         mock = self.router.tiers["normal"][-1]   # the mock floor is always the chain's last tier
-        res = await mock.generate(plan.messages, schema={"type": "object"}, max_tokens=plan.max_tokens)
-        self.router.usage.record(LLMCall(
-            sim_minute=plan.init_minute, agent_id=plan.a.id, task_type="dialogue",
-            provider=res.provider, model=res.model,
-            input_tokens=res.input_tokens, output_tokens=res.output_tokens,
-            latency_ms=res.latency_ms, estimated_cost=0.0))
-        return res
+
+        async def call(sp: Agent, messages: list, validate) -> object:
+            res = await mock.generate(messages, schema={"type": "object"}, max_tokens=plan.max_tokens)
+            self.router.usage.record(LLMCall(
+                sim_minute=plan.init_minute, agent_id=sp.id, task_type=plan.task,
+                provider=res.provider, model=res.model,
+                input_tokens=res.input_tokens, output_tokens=res.output_tokens,
+                latency_ms=res.latency_ms, estimated_cost=0.0))
+            return res
+        return await self._run_turns(plan, call)
+
+    async def _run_turns(self, plan: ConvPlan, call) -> DialogueResult:
+        first, second = plan.order
+        while len(plan.turns) < plan.max_turns:
+            n = len(plan.turns)
+            sp = first if n % 2 == 0 else second
+            messages = builders.dialogue_turn_prompt(plan.ctx[sp.id], plan.turns, n + 1,
+                                                     plan.max_turns, plan.min_turns)
+            res = await call(sp, messages, lambda r, sp=sp: self._turn_ok(r, sp, plan))
+            turn = self._clean_turn(res.parsed, sp, plan.ctx[sp.id].get("role") == "accused")
+            plan.turns.append(turn)
+            plan.providers.append(f"{res.provider}/{res.model}")
+            if turn["storm_off"] or (turn["end"] and len(plan.turns) >= plan.min_turns):
+                break
+        top = collections.Counter(plan.providers).most_common(1)
+        provider, _, model = (top[0][0] if top else "mock/mock-1").partition("/")
+        return DialogueResult(parsed=self._aggregate(plan), provider=provider, model=model)
+
+    @staticmethod
+    def _turn_ok(r: object, sp: Agent, plan: ConvPlan) -> bool:
+        """Per-line quality gate: the same structural/zh gate and referential anchor
+        the one-shot dialogue had, applied to this single line."""
+        p = getattr(r, "parsed", None)
+        if not isinstance(p, dict) or not str(p.get("text") or "").strip():
+            return False
+        shaped = DialogueResult(parsed={"turns": [{"speaker": sp.name, "text": str(p["text"]).strip()}]},
+                                provider=getattr(r, "provider", "?"), model=getattr(r, "model", "?"))
+        if not _dialogue_ok(shaped):
+            return False
+        if not _referential_ok(shaped.parsed, plan.a, plan.b):
+            if _GATE_DIAG:
+                print(f"[ref-reject] {shaped.provider}/{shaped.model} {plan.a.id}<->{plan.b.id}", flush=True)
+            return False
+        return True
+
+    @staticmethod
+    def _clean_turn(parsed: object, sp: Agent, accused: bool) -> dict:
+        p = parsed if isinstance(parsed, dict) else {}
+
+        def unit(key: str, default: float) -> float:
+            try:
+                return max(0.0, min(1.0, float(p.get(key, default))))
+            except (TypeError, ValueError):
+                return default
+        text = str(p.get("text") or "").strip()
+        for form in (sp.name, sp.id.capitalize()):     # a model sometimes labels its own line
+            for sep in (":", "\uff1a"):
+                if form and text.startswith(form + sep):
+                    text = text[len(form) + 1:].strip()
+        plan = p.get("plan")
+        if not (isinstance(plan, dict) and str(plan.get("place") or "").strip()):
+            plan = None
+        admitted = p.get("admitted")
+        return {"speaker": sp.name, "speaker_id": sp.id, "text": text,
+                "end": p.get("end") is True, "storm_off": p.get("storm_off") is True,
+                "sentiment": unit("sentiment", 0.5), "trust_signal": unit("trust_signal", 0.0),
+                "conflict_signal": unit("conflict_signal", 0.0),
+                "tells": str(p.get("tells") or "").strip(), "plan": plan,
+                "admitted": admitted if accused and isinstance(admitted, bool) else None}
+
+    @staticmethod
+    def _aggregate(plan: ConvPlan) -> dict:
+        """Fold the lines into the exchange: overall signals, each side's OWN
+        signals (how it felt to them), and the accused's last explicit verdict."""
+        keys = (("sentiment", 0.5), ("trust_signal", 0.0), ("conflict_signal", 0.0))
+
+        def mean(ts: list) -> dict:
+            return {k: (round(sum(t[k] for t in ts) / len(ts), 3) if ts else d) for k, d in keys}
+        turns = plan.turns
+        per_side = {ag.id: mean([t for t in turns if t["speaker_id"] == ag.id] or turns)
+                    for ag in (plan.a, plan.b)}
+        verdicts = [t["admitted"] for t in turns if t["admitted"] is not None]
+        return {"turns": turns, **mean(turns), "per_side": per_side,
+                "admitted": verdicts[-1] if verdicts else False}
 
     @staticmethod
     def _warn_stale_world_terms(a: Agent, b: Agent, turns: object, now: int) -> None:
@@ -1806,12 +2014,13 @@ class DecisionEngine:
 
     def settle_conversation(
         self, plan: ConvPlan, world: World, res: object
-    ) -> tuple[list[dict], dict, dict | None, dict | None, list[dict]]:
+    ) -> tuple[list[dict], dict, dict | None, dict | None, list[dict], list[dict]]:
         """Settlement (synchronous, runs when the background generation returns):
-        parse the exchange, write both sides' conversation memory, apply the
-        relationship signals, and resolve milestone / romance / confrontation.
-        Returns ``(turns, signals, confrontation, milestone, romance_events)`` for
-        the engine to publish (stamped at the conversation's initiation minute)."""
+        parse the exchange, write both sides' conversation memory, apply each side's
+        own relationship signals, and resolve milestone / romance / confrontation and
+        the consequences read off the lines (news passed on, a promise, a walk-out).
+        Returns ``(turns, signals, confrontation, milestone, romance_events, beats)``
+        for the engine to publish (stamped at the conversation's initiation minute)."""
         a, b, now = plan.a, plan.b, plan.init_minute
         parsed = res.parsed if isinstance(res.parsed, dict) else {}
         turns = parsed.get("turns", [])
@@ -1831,8 +2040,9 @@ class DecisionEngine:
             minute=now, text=texts.T("talked_with", other=a.id, loc=plan.location),
             importance=3, kind="conversation"))
         f_before = a.rel(b.id).friendship                     # for the relationship-milestone check
-        a.apply_conversation_signals(b.id, **signals)
-        b.apply_conversation_signals(a.id, **signals)
+        per_side = parsed.get("per_side") or {}
+        a.apply_conversation_signals(b.id, **(per_side.get(a.id) or signals))
+        b.apply_conversation_signals(a.id, **(per_side.get(b.id) or signals))
         a.state.last_talk_minute[b.id] = now
         b.state.last_talk_minute[a.id] = now
         milestone = self._detect_milestone(a, b, f_before, now)
@@ -1848,7 +2058,96 @@ class DecisionEngine:
         confrontation = None
         if plan.is_confront:
             confrontation = self._settle_confrontation(a, b, world, plan.confront_rumor_id, parsed, now)
-        return turns, signals, confrontation, milestone, romance_events
+        beats = self._settle_turn_consequences(plan, world, turns, now)
+        return turns, signals, confrontation, milestone, romance_events, beats
+
+    def _settle_turn_consequences(self, plan: ConvPlan, world: World, turns: list, now: int) -> list[dict]:
+        """Rules read structured signals off the lines -- the model never applies a
+        consequence itself. News one side handed over becomes the listener's memory;
+        a meeting both sides voiced becomes a real appointment; a walk-out sours the
+        pair and is a beat the town sees."""
+        a, b = plan.a, plan.b
+        beats: list[dict] = []
+        told = 0
+        for t in turns:
+            if told >= pacing.DIALOGUE_TELLS_MAX:
+                break
+            tell = t.get("tells") or ""
+            if not tell or len(tell) > 120 or not _knowledge_lang_ok(tell):
+                continue
+            listener = b if t.get("speaker_id") == a.id else a
+            listener.memory.add(MemoryItem(
+                minute=now, importance=4, kind="conversation",
+                text=texts.T("told_me", teller=t.get("speaker_id", ""), text=tell)))
+            told += 1
+        promise = self._promise_from(plan, world, turns, now)
+        if promise is not None:
+            beats.append(promise)
+        storm = next((t for t in turns if t.get("storm_off")), None)
+        if storm is not None:
+            x = a if storm.get("speaker_id") == a.id else b
+            y = b if x is a else a
+            x.memory.add(MemoryItem(minute=now, importance=5, kind="conversation",
+                                    text=texts.T("stormed_off_self", other=y.id, loc=plan.location)))
+            y.memory.add(MemoryItem(minute=now, importance=5, kind="conversation",
+                                    text=texts.T("stormed_off_other", other=x.id, loc=plan.location)))
+            for p_, q_ in ((x, y), (y, x)):
+                r = p_.rel(q_.id)
+                r.friendship -= pacing.DIALOGUE_STORM_OFF_FRIENDSHIP
+                r.trust -= pacing.DIALOGUE_STORM_OFF_TRUST
+                r.clamp()
+            beats.append({"verb": "stormed_off", "actor": x.id, "target": y.id, "location": plan.location})
+        return beats
+
+    @staticmethod
+    def _place_id(world: World, raw: object) -> str:
+        """A place named in a line -> its location id ("" when it names nowhere we know)."""
+        name = str(raw or "").strip().lower()
+        if not name:
+            return ""
+        for lid, loc in world.locations.items():
+            if name in {lid.lower(), (loc.name or "").lower(), (loc.name_zh or "").lower()}:
+                return lid
+        for lid, loc in world.locations.items():   # "the cafe" / a shortened zh name
+            for full in ((loc.name or "").lower(), (loc.name_zh or "").lower()):
+                if len(name) >= 2 and full and (name in full or full in name):
+                    return lid
+        return ""
+
+    def _promise_from(self, plan: ConvPlan, world: World, turns: list, now: int) -> dict | None:
+        """A promise needs both voices: one side proposes a concrete meeting and the
+        other names the same place later. The last voiced day/hour wins. It becomes
+        a real appointment on the existing meetup machinery, flagged ``promised`` so
+        keeping or missing it is remembered."""
+        voiced = [t for t in turns if t.get("plan")]
+        if len({t.get("speaker_id") for t in voiced}) < 2:
+            return None
+        last = voiced[-1]
+        earlier = next((t for t in voiced if t.get("speaker_id") != last.get("speaker_id")), None)
+        loc = self._place_id(world, last["plan"].get("place"))
+        if not loc or earlier is None or self._place_id(world, earlier["plan"].get("place")) != loc:
+            return None
+        try:
+            hour = max(8, min(21, int(last["plan"].get("hour", 18))))
+        except (TypeError, ValueError):
+            hour = 18
+        when = "tomorrow" if str(last["plan"].get("day", "")).strip().lower() == "tomorrow" else "today"
+        day0 = (now // (24 * 60)) * (24 * 60)
+        minute = day0 + (24 * 60 if when == "tomorrow" else 0) + hour * 60
+        a, b = plan.a, plan.b
+        if minute < now + 60 or a.state.pending_meetup or b.state.pending_meetup:
+            return None
+        appt = {"location": loc, "minute": minute, "promised": True}
+        a.state.pending_meetup = {**appt, "partner": b.id}
+        b.state.pending_meetup = {**appt, "partner": a.id}
+        day = now // (24 * 60)
+        a.state.meetup_with_day[b.id] = day
+        b.state.meetup_with_day[a.id] = day
+        for x, y in ((a, b), (b, a)):
+            x.memory.add(MemoryItem(
+                minute=now, importance=5, kind="conversation",
+                text=texts.T("promise_made", other=y.id, loc=loc, when=texts.T("when_" + when), hour=hour)))
+        return {"verb": "promise_made", "actor": a.id, "target": b.id, "location": loc, "at": minute}
 
     # ---- romance (an independent track; see romance.py) --------------
 
@@ -2021,18 +2320,21 @@ class DecisionEngine:
     # ---- semantic memory (beliefs) -----------------------------------
 
     @staticmethod
-    def _nearby_landmark(world: World, location_id: str) -> str | None:
+    def _nearby_landmark(world: World, location_id: str, now: int) -> str | None:
         """A one-line environment note for a conversation happening where a landmark
         stands (e.g. ``"the mural, 70% complete"``) -- real models weave the setting
-        into the talk on their own."""
+        into the talk on their own. A finished one is described by its age (see
+        texts.aged_name): "now complete" forever read as news weeks later."""
         loc = world.locations.get(location_id)
         if loc is None or not loc.landmarks:
             return None
         lm = loc.landmarks[0]
         name = texts.landmark_name(lm)
         if lm.get("state") == "completed":
-            return f"{name}, now complete"
-        return f"{name}, {int(lm['progress'] * 100)}% complete"
+            done = lm.get("completed_minute")
+            age = (now - done) // (24 * 60) if isinstance(done, int) else None
+            return texts.aged_name(name, age, pacing.FRESH_DAYS)
+        return texts.T("aged_progress", name=name, pct=int(lm["progress"] * 100))
 
     @staticmethod
     def _impression_of(agent: Agent, other_id: str) -> str | None:

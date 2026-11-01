@@ -60,6 +60,10 @@ _CONCERNS_ZH = [
 
 _CLOSER_ZH = "如果你想聊聊，我隨時都在。"
 
+# Extra lines for a turn-by-turn exchange that runs past the canned four.
+_FILLERS = ["Mm, I know what you mean.", "Thanks for hearing me out.", "Let's talk again soon."]
+_FILLERS_ZH = ["嗯，我懂你的意思。", "謝謝你願意聽我說。", "改天再好好聊。"]
+
 
 class MockProvider(LLMProvider):
     name = "mock"
@@ -155,6 +159,8 @@ class MockProvider(LLMProvider):
             })[outcome]
             refs = re.findall(r"\[([0-9a-f]{8})\]", raw)[:2]
             parsed = {"biography_line": line, "emotional_residue": residue, "memory_refs": refs}
+        elif "task: dialogue_turn" in prompt:
+            parsed = self._dialogue_turn(" ".join(m.get("content", "") for m in messages), rng, zh)
         elif "appraise" in prompt:
             negative = any(w in prompt for w in ("closing", "quit", "trouble", "bad"))
             parsed = {"sentiment": -0.6 if negative else 0.2}
@@ -298,6 +304,57 @@ class MockProvider(LLMProvider):
             output_tokens=len(text) // 4,
             latency_ms=rng.randint(5, 20),
         )
+
+    @staticmethod
+    def _dialogue_turn(raw: str, rng: random.Random, zh: bool) -> dict:
+        """One line of a turn-by-turn conversation. The exchange's shape (length,
+        canned pair, a confrontation's verdict) is fixed per PAIR of speakers, so
+        the lines across separate calls fit together; only signals vary per line."""
+        m = re.search(r"You voice ONE character, (.+?), in a face-to-face conversation with (.+?) in a life", raw)
+        me, other = m.groups() if m else ("A", "B")
+        ln = re.search(r"This is line (\d+) of at most (\d+)\.", raw)
+        n, mx = (int(ln.group(1)), int(ln.group(2))) if ln else (1, 4)
+        mn = re.search(r"don't end before line (\d+)", raw)
+        min_turns = int(mn.group(1)) if mn else 2
+        h = int(hashlib.sha256("|".join(sorted((me, other))).encode()).hexdigest()[:8], 16)
+        pair_rng = random.Random(h)
+        length = min(mx, max(min_turns, 2 + h % 3))
+        small_talk, concerns, closer, fillers = (
+            (_SMALL_TALK_ZH, _CONCERNS_ZH, _CLOSER_ZH, _FILLERS_ZH) if zh
+            else (_SMALL_TALK, _CONCERNS, "I'm here if you want to talk about it.", _FILLERS))
+        opener, reply = pair_rng.choice(small_talk)
+        concern = pair_rng.choice(concerns)
+        admit = pair_rng.random() < 0.6
+        accused = '"admitted": true|false' in raw
+        out: dict = {}
+        if accused or "You came to ask" in raw:
+            if zh:
+                seq = ["我聽說有人在背後傳我的閒話，我得當面問你——這話是不是你說出去的？",
+                       "你怎麼會這樣想？這種話你是從哪裡聽來的？",
+                       "我不想拐彎抹角，我只想聽你親口說清楚。",
+                       "…對，那句話是我說的，對不起。" if admit else "那不是我，我發誓。"]
+            else:
+                seq = ["I've heard people repeating something about me, and I need to ask you to your face — did it come from you?",
+                       "Whoa. Where is this even coming from?",
+                       "I'm not trying to corner you. I just need to hear it straight.",
+                       "...Yes, I did say that. I'm sorry." if admit else "That wasn't me, I swear."]
+            if accused:
+                out["admitted"] = admit
+            conflict = round(rng.uniform(0.3, 0.7), 2)
+        elif "You have decided to open up" in raw:
+            # Only the confider's own lines (1, 3) carry the marker; the listener's
+            # (2, 4) are the same in both sequences, so the exchange stays coherent.
+            seq = [concern, reply, opener, closer]
+            conflict = 0.0
+        else:
+            seq = [opener, reply, concern, closer]
+            conflict = 0.0
+        text = seq[n - 1] if n <= len(seq) else fillers[(n - len(seq) - 1) % len(fillers)]
+        out.update({"text": text, "end": n >= length,
+                    "sentiment": round(rng.uniform(0.2, 0.9), 2) if not conflict else round(rng.uniform(0.1, 0.4), 2),
+                    "trust_signal": round(rng.uniform(0.0, 0.3), 2) if not conflict else 0.0,
+                    "conflict_signal": conflict, "tells": "", "plan": None, "storm_off": False})
+        return out
 
     @staticmethod
     def _extract_names(prompt: str) -> tuple[str, str]:

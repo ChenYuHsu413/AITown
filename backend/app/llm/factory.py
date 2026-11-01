@@ -212,6 +212,12 @@ def build_router(live: bool | None = None) -> LLMRouter:
         print(f"[live] paid-first: dialogue/reflection -> deepseek-v4-flash -> {zh2_slug} | "
               f"translate -> {tr_slug} -> {zh2_slug} | cheap tasks free-first (deepseek tail)", flush=True)
 
+    # Turn-by-turn lines ride the dialogue fallback chain; the Claude head below then
+    # picks Haiku or Sonnet by each task's tier.
+    for t in ("dialogue_turn", "dialogue_turn_tense"):
+        if "dialogue" in task_chains:
+            task_chains[t] = list(task_chains["dialogue"])
+
     # ---- Claude first (ANTHROPIC_API_KEY) -----------------------------
     # Claude heads every chain: Haiku for cheap/normal work, Sonnet for the smart
     # tier. Everything built above -- DeepSeek, Kimi, the free layer, the mock

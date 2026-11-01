@@ -369,11 +369,17 @@ class Privacy(unittest.TestCase):
         owner, aisi = self.world.agents["oula"], self.world.agents["aisi"]
         card = builders.character_card(aisi, speech=True)
         self.assertNotIn(self.secretly, card)
-        prompt = builders.dialogue_prompt(aisi, owner, ["a memory"], ["another memory"])
-        blob = " ".join(m["content"] for m in prompt)
+        scene = {"time": "", "place": "park", "nearby": None}
+        ctx = self.engine.decisions._speaker_ctx(aisi, owner, self.world, 600, ["a memory"], None, [], "", scene)
+        blob = " ".join(m["content"] for m in builders.dialogue_turn_prompt(ctx, [], 1, 8, 2))
         self.assertNotIn(self.secretly, blob)
         self.assertNotIn("Learning to bake", blob)
         self.assertNotIn("Because the bakery smells like home.", blob)
+        # ...while the owner's OWN seat carries it in full (they know what they want).
+        own = self.engine.decisions._speaker_ctx(owner, aisi, self.world, 600, [], None, [], "", scene)
+        own_blob = " ".join(m["content"] for m in builders.dialogue_turn_prompt(own, [], 1, 8, 2))
+        self.assertIn(self.secretly, own_blob)
+        self.assertNotIn("Because the bakery smells like home.", own_blob)   # motivation stays out
 
     def test_the_owners_own_card_shows_only_the_chapter_narrative(self):
         card = builders.character_card(self.world.agents["oula"])

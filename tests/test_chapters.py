@@ -302,7 +302,7 @@ class PromptAndSignals(unittest.TestCase):
         aisi, jiji = world.agents["aisi"], world.agents["jiji"]
         self.assertIn("building an interactive light installation", builders.character_card(aisi))
         self.assertNotIn("Top goal", builders.character_card(aisi))
-        self.assertIn("Standing aim: Make the cafe popular", builders.character_card(jiji))   # ordinary keeps its aim
+        self.assertNotIn("Standing aim", builders.character_card(jiji))   # no seed aim on ordinary days
         chapters_mod.apply_closure(aisi, world, "completed", "I finished the installation at last.", "restless", [], DAY)
         card = builders.character_card(aisi)
         self.assertNotIn("installation", card)

@@ -231,17 +231,15 @@ def dialogue_locale_directive() -> str:
 def character_card(agent: "Agent", name: str | None = None, speech: bool = False) -> str:
     """Self-description = the fixed personality (traits, never changes) + the current
     life chapter's narrative ("where I am right now"). A pursuit's goal lives on the
-    chapter, so a finished matter drops out of the card the moment it closes. Standing
-    aims (profile.goals) only show during ordinary days -- an interlude or a pursuit
-    is what the character is about right then."""
+    chapter, so a finished matter drops out of the card the moment it closes. The
+    seed's standing aims (profile.goals) are never shown: an ordinary chapter carrying
+    the same seed goal into every prompt for weeks was a seed anchor (Day-31 diagnosis)."""
     from ...agents import chapters as chapters_mod
     p = agent.profile
     from ...agents import texts as texts_mod
     traits = ", ".join(texts_mod.trait_text(t) for t in p.traits)
     card = (f"{name or p.name}, {p.age}, {texts_mod.occupation_text(p.occupation)}. "
             f"Traits: {traits}. {chapters_mod.narrative(agent)}")
-    if chapters_mod.chapter_type(agent) == "ordinary" and p.goals:
-        card += f" Standing aim: {p.goals[0]['goal']}."
     # Speech style is only worth its tokens where the reader hears the voice --
     # i.e. dialogue; should_talk/decision/reflection leave it off.
     if speech and p.speech_style:
@@ -279,116 +277,85 @@ def should_talk_prompt(agent: "Agent", other_name: str, memories: list[str]) -> 
     ]
 
 
-def dialogue_prompt(
-    a: "Agent", b: "Agent", a_mem: list[str], b_mem: list[str], max_turns: int = 4,
-    a_wants_to_mention: str | None = None, b_wants_to_mention: str | None = None,
-    is_confrontation: bool = False, time_hint: str = "",
-    a_impression: str | None = None, b_impression: str | None = None,
-    a_confide: str | None = None, b_confide: str | None = None,
-    nearby_landmark: str | None = None,
-    confession: dict | None = None,
-) -> list[dict]:
-    scene = f"Scene: {time_hint + ' ' if time_hint else ''}at {a.state.location}.\n"
-    if nearby_landmark:
-        scene += f"Nearby: {nearby_landmark}.\n"
-    user = (
-        f"Simulate a conversation between {a.profile.name} and {b.profile.name}. "
-        f"Maximum {max_turns} turns.\n{scene}"
-        f"A: {character_card(a, speech=True)} {state_line(a)}\n{memories_block(a_mem)}\n"
-        f"B: {character_card(b, speech=True)} {state_line(b)}\n{memories_block(b_mem)}"
-    )
-    # Lasting impressions colour how they treat each other, beyond today's memories.
-    if a_impression:
-        user += f"\n{a.profile.name}'s lasting impression of {b.profile.name}: \"{a_impression}\""
-    if b_impression:
-        user += f"\n{b.profile.name}'s lasting impression of {a.profile.name}: \"{b_impression}\""
-    if a_wants_to_mention:
-        # A confrontation opener is a private worry raised to someone's face, not a
-        # line to recite: ask for it in the confronter's own words.
-        if is_confrontation:
-            user += (f"\n{a.profile.name} wants to raise this with {b.profile.name} to their face, "
-                     f"in their own words as a direct question/accusation (do NOT read it out "
-                     f"verbatim): {a_wants_to_mention}")
-        else:
-            user += f"\n{a.profile.name} wants to bring up: {a_wants_to_mention}"
-    if b_wants_to_mention:
-        user += f"\n{b.profile.name} wants to bring up: {b_wants_to_mention}"
-    # Confiding is private and vulnerable, not gossip. Feed the secret only as
-    # BACKGROUND: the character must voice it themselves, in the first person and
-    # addressing the listener directly -- never quote the third-person description.
-    if a_confide:
-        user += (f"\n{a.profile.name} has decided to open up to {b.profile.name} about a private "
-                 f"worry. The secret (background, do NOT quote verbatim): {a_confide}. "
-                 f"{a.profile.name} should express this in the first person, in their own words, "
-                 f"naturally addressing {b.profile.name} directly.")
-    if b_confide:
-        user += (f"\n{b.profile.name} has decided to open up to {a.profile.name} about a private "
-                 f"worry. The secret (background, do NOT quote verbatim): {b_confide}. "
-                 f"{b.profile.name} should express this in the first person, in their own words, "
-                 f"naturally addressing {a.profile.name} directly.")
-    # A confession scene: the outcome is already decided by the rules; the model just
-    # plays it. First-person, sincere, and it lands the way it's going to land.
-    if confession:
-        fn, tn = confession["from_name"], confession["to_name"]
-        if confession.get("accepted"):
-            user += (f"\n{fn} has decided this is the moment to confess romantic feelings to {tn}. "
-                     f"{fn} opens up in the first person -- sincere, a little nervous. {tn} feels the same "
-                     f"way and, across the exchange, happily says yes. Let it land warmly.")
-        else:
-            user += (f"\n{fn} has decided this is the moment to confess romantic feelings to {tn}. "
-                     f"{fn} opens up in the first person -- sincere and nervous. But {tn} does not feel the "
-                     f"same and gently, awkwardly turns {fn} down. Keep it kind, never cruel.")
-    # Referential anchor -- the two speakers are face-to-face, so each addresses the
-    # OTHER as "you", and "you" and that person's name are the SAME individual. The two
-    # failure modes we've seen (juxtaposing the listener as if a third party -- "you and
-    # {them}" -- and a speaker naming THEMSELVES in the third person) are called out by
-    # name so the model can't slide into them.
-    a_n, b_n = a.profile.name, b.profile.name
-    coherence = (
-        f" Referential anchor (critical): this is a face-to-face exchange between exactly "
-        f"two people, {a_n} and {b_n}. When {a_n} speaks they address {b_n} directly as "
-        f"\"you\" (你/妳) or by name -- but \"you\" and \"{b_n}\" are THE SAME person, so "
-        f"never place them side by side as if two people (never \"你和{b_n}\" / \"妳和{b_n}\" "
-        f"/ \"you and {b_n}\"); and {a_n} never refers to themselves in the third person by "
-        f"name (never \"{a_n}覺得…\" / \"是{a_n}\" / \"it's {a_n}\" when {a_n} is the speaker). "
-        f"The same rules hold for {b_n}. Do not invent concrete facts that aren't in the "
-        f"context (deadlines, sums of money, named events); keep background grounded in "
-        f"what you're given."
-    )
-    # Confide / confront are emotionally significant beats: a one-line version reads
-    # as broken, so ask for real back-and-forth.
-    intimate = bool(a_confide or b_confide or is_confrontation or confession)
-    depth = (" This is an emotionally significant exchange: write at least 4 turns so it "
-             "builds naturally and never lands as a single line.") if intimate else ""
+_BOND_PHRASE = {"stranger": "someone you barely know", "acquaintance": "an acquaintance",
+                "friend": "a friend", "close": "one of your closest people"}
+
+
+def dialogue_turn_prompt(ctx: dict, history: list[dict], turn_no: int, max_turns: int,
+                         min_turns: int) -> list[dict]:
+    """ONE line of a turn-by-turn conversation, written from inside ONE speaker.
+
+    ``ctx`` is that speaker's private context, assembled at initiation
+    (decision._speaker_ctx): only what THEY know -- their own memories, wishes,
+    private matters, mood and view of the partner. The partner's inner state never
+    appears; all they know of it is what has been said aloud (``history``). That is
+    the information asymmetry: two people, two prompts, one shared transcript."""
+    me, other = ctx["name"], ctx["partner"]
+    accused = ctx.get("role") == "accused"
+    fields = ('{"text": "...", "end": true|false, "sentiment": 0..1, "trust_signal": 0..1, '
+              '"conflict_signal": 0..1, "tells": "", "plan": null, "storm_off": false'
+              + (', "admitted": true|false' if accused else "") + "}")
     system = (
-        "You write short, natural conversations for a life simulation. "
-        "Ground it in the time of day, the place, each character's current mood and "
-        "their recent memories; vary the opening and don't fall back on generic "
-        "small talk when they already know each other. "
-        "Respond ONLY with JSON: "
-        '{"turns": [{"speaker": "...", "text": "..."}], '
-        '"sentiment": 0..1, "trust_signal": 0..1, "conflict_signal": 0..1}.'
+        f"You voice ONE character, {me}, in a face-to-face conversation with {other} in a life "
+        f"simulation, and write only {me}'s next spoken line. You know only what {me} knows: "
+        f"their own memories, feelings, plans and private matters (given below), plus whatever "
+        f"{other} has said aloud. You cannot see into {other}'s head, and you never decide what "
+        f"{other} feels, does or agrees to. Ground the line in the conversation so far and in "
+        f"{me}'s own life; when something real is on {me}'s mind, don't fall back on generic "
+        f"small talk. Respond ONLY with JSON: {fields}\n"
+        f"- text: what {me} says now, aloud, 1-3 short sentences.\n"
+        f"- end: true when this line closes the conversation (a goodbye, or nothing left to say).\n"
+        f"- sentiment / trust_signal / conflict_signal: how the exchange feels to {me} right now "
+        f"(warmth, growing trust, friction; each 0..1).\n"
+        f"- tells: when this line gives {other} a concrete piece of news they didn't have "
+        f"(something that happened, a plan, a worry {me} chose to share), restate it as one short "
+        f"third-person sentence; otherwise \"\".\n"
+        f"- plan: only when {me} proposes, or agrees to, a concrete meeting with {other}: "
+        f'{{"place": "<place name>", "day": "today"|"tomorrow", "hour": 8-21}}; otherwise null.\n'
+        f"- storm_off: true only if {me} is upset enough to walk away mid-conversation; it ends the talk."
+        + (f"\n- admitted: whether {me} owns up to it. By the end {me} must clearly admit or deny."
+           if accused else "")
+        + f"\nReferential anchor (critical): {me} speaks to {other} directly as \"you\" (你/妳) or "
+          f"by name -- \"you\" and \"{other}\" are the SAME person, so never put them side by side "
+          f"(never \"你和{other}\" / \"you and {other}\"); and {me} never refers to themselves in "
+          f"the third person by name. Do not invent concrete facts that aren't in the context "
+          f"(deadlines, sums of money, named events)."
+        + roster_directive() + roster_gender_directive() + _lang_directive()
+        + dialogue_locale_directive() + " Task: dialogue_turn."
     )
-    if is_confrontation:
-        # This is a confrontation: B is being asked to their face whether they
-        # started the rumor. B must clearly own up or deny, and the verdict is
-        # reported as an extra boolean so the sim can settle the rumor.
-        system = (
-            f"You write a short, tense confrontation for a life simulation. "
-            f"{b.profile.name} is being confronted to their face about whether they "
-            f"spread a rumor. In the conversation {b.profile.name} must clearly either "
-            f"admit or deny it. Respond ONLY with JSON: "
-            '{"turns": [{"speaker": "...", "text": "..."}], '
-            '"sentiment": 0..1, "trust_signal": 0..1, "conflict_signal": 0..1, '
-            '"admitted": true|false} where "admitted" is whether '
-            f"{b.profile.name} admitted to it."
-        )
-    return [
-        {"role": "system",
-         "content": (system + coherence + roster_directive() + roster_gender_directive()
-                     + depth + _lang_directive() + dialogue_locale_directive())},
-        {"role": "user", "content": user},
-    ]
+    lines = [f"Scene: {ctx['time'] + ' ' if ctx.get('time') else ''}at {ctx['place']}."]
+    if ctx.get("nearby"):
+        lines.append(f"Nearby: {ctx['nearby']}.")
+    lines.append(f"You are {ctx['card']} Your mood: {ctx['mood']}.")
+    bond = f"To you, {other} is {_BOND_PHRASE.get(ctx.get('bond', ''), 'someone you know')}"
+    if ctx.get("romance"):
+        bond += f" ({ctx['romance']})"
+    lines.append(bond + ".")
+    if ctx.get("impression"):
+        lines.append(f"Your lasting impression of {other}: \"{ctx['impression']}\"")
+    if ctx.get("memories"):
+        lines.append(f"What you remember about {other}:\n" + "\n".join(f"- {m}" for m in ctx["memories"]))
+    if ctx.get("recent"):
+        lines.append("Lately on your mind:\n" + "\n".join(f"- {m}" for m in ctx["recent"]))
+    if ctx.get("wishes"):
+        lines.append("What you want right now (your own; nobody else knows unless you say it):\n"
+                     + "\n".join(f"- {w}" for w in ctx["wishes"]))
+    if ctx.get("private"):
+        lines.append("Private matters (yours alone -- share only if it truly fits the moment):\n"
+                     + "\n".join(f"- {x}" for x in ctx["private"]))
+    lines.extend(ctx.get("intents") or [])
+    if history:
+        lines.append("Conversation so far:\n" + "\n".join(f"{t['speaker']}: {t['text']}" for t in history))
+    else:
+        lines.append("Nobody has spoken yet -- you open.")
+    pace = f"This is line {turn_no} of at most {max_turns}."
+    if turn_no < min_turns:
+        pace += (f" This matters too much to cut short: don't end before line {min_turns}."
+                 if min_turns > 2 else f" Don't end on this line; let {other} answer.")
+    elif turn_no >= max_turns:
+        pace += " It is the last line: let it close the conversation."
+    lines.append(pace)
+    return [{"role": "system", "content": system}, {"role": "user", "content": "\n".join(lines)}]
 
 
 def appraise_prompt(text: str) -> list[dict]:
