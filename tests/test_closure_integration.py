@@ -91,7 +91,10 @@ class ClosureFlow(unittest.TestCase):
         closed = [v for v in verbs if v[1] == "chapter_closed" and v[2] == "aisi"]
         started = [v for v in verbs if v[1] == "chapter_started" and v[2] == "aisi"]
         self.assertEqual(len(closed), 1, verbs)
-        self.assertEqual(len(started), 1, verbs)
+        # The interlude ends and a chapter opens after the close. With the zh-native
+        # era's tempo (2-4 day interludes, a 3-day ordinary cadence) a grown wish can
+        # open a second one inside this window -- that is phase 2b's business.
+        self.assertGreaterEqual(len(started), 1, verbs)
         self.assertLess(closed[0][0], started[0][0])
         # The interlude is over. WHICH chapter follows is phase 2b's business: if a
         # wish grew out of her material she is in a fresh pursuit, otherwise plain
