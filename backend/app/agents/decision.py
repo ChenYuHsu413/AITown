@@ -1442,8 +1442,13 @@ class DecisionEngine:
         try:
             res = await self.router.generate(
                 task="chapter_closure",
+                # The model reads the memories with names, not {agent:id} placeholders
+                # (the gate below still checks ids and numbers against the originals).
                 messages=builders.chapter_closure_prompt(
-                    agent, material, outcome, chapters_mod.relationship_summary_lines(material, world)),
+                    agent, {**material, **{k: [{**m, "text": _resolve_placeholders(m["text"], world)}
+                                               for m in material.get(k) or []]
+                                           for k in ("memories", "aftermath")}},
+                    outcome, chapters_mod.relationship_summary_lines(material, world)),
                 agent_id=agent.id, sim_minute=material["window"]["end_minute"],
                 schema={"type": "object"}, max_tokens=200,
                 validate=lambda r: (chapters_mod.validate_closure_output(r.parsed, material) is not None
