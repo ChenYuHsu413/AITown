@@ -136,6 +136,44 @@ class Asymmetry(unittest.TestCase):
         self.assertNotIn("I want to really know", plan2.preview("lengyue"))
 
 
+class Attribution(unittest.TestCase):
+    """Era-3 report: a line seemed to come from a bystander. Each published line must
+    name its real speaker and partner and the place the talk happened."""
+
+    def test_every_line_carries_its_speaker_partner_and_place(self):
+        world, engine = make_world()
+        for i in ("lengyue", "xixi", "jiji"):                      # jiji: a bystander at the same place
+            world.agents[i].state.location = "cafe"
+            world.agents[i].state.busy_until = 0
+            world.agents[i].state.current_action = "idle"
+        engine.decisions.secrets.secrets.clear()
+        lengyue, xixi = world.agents["lengyue"], world.agents["xixi"]
+        texts_by_seat = {"lengyue": ["冷月一", "冷月二", "冷月三"], "xixi": ["希希一", "希希二", "希希三"]}
+        n = {"lengyue": 0, "xixi": 0}
+
+        async def gen(**kw):
+            who = kw["agent_id"]
+            t = texts_by_seat[who][n[who]]; n[who] += 1
+            res = LLMResult(text="", parsed=line(t, end=(n["xixi"] == 3)), provider="fake", model="f")
+            return res
+
+        async def go():
+            engine.now = NOW
+            with unittest.mock.patch.object(engine.decisions.router, "generate", gen):
+                await engine._initiate_conversation(lengyue, "xixi")
+                lengyue.state.location = "park"                    # a stale/drifted position at settlement
+                await asyncio.gather(*list(engine._tasks))
+        asyncio.run(go())
+        says = [e for e in engine.bus.events if e.verb == "say"]
+        self.assertEqual([e.actor for e in says], ["lengyue", "xixi"] * 3)
+        self.assertEqual([e.target for e in says], ["xixi", "lengyue"] * 3)
+        self.assertEqual({e.location for e in says}, {"cafe"})
+        for e in says:                                             # each line is that speaker's own words
+            self.assertTrue(e.text.startswith({"lengyue": "冷月", "xixi": "希希"}[e.actor]), e.text)
+        self.assertNotIn("jiji", {e.actor for e in says} | {e.target for e in says})
+        self.assertEqual([e.minute for e in says], list(range(NOW, NOW + 6)))
+
+
 class Consequences(unittest.TestCase):
     def _talk(self, lines):
         world, engine = make_world()

@@ -325,7 +325,9 @@ def dialogue_turn_prompt(ctx: dict, history: list[dict], turn_no: int, max_turns
         + roster_directive() + roster_gender_directive() + _lang_directive()
         + dialogue_locale_directive() + " Task: dialogue_turn."
     )
-    lines = [f"Scene: {ctx['time'] + ' ' if ctx.get('time') else ''}at {ctx['place']}."]
+    lines = [f"Scene: {ctx['time'] + ' ' if ctx.get('time') else ''}at {ctx['place']}. "
+             f"You and {other} are both here, at {ctx['place']}, right now -- don't place the "
+             f"two of you anywhere else."]
     if ctx.get("nearby"):
         lines.append(f"Nearby: {ctx['nearby']}.")
     if ctx.get("objects"):

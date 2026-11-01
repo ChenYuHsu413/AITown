@@ -1061,7 +1061,9 @@ class SimulationEngine:
                 self._publish(
                     "dialogue", "say", actor=speaker,
                     target=b if speaker is a else a,
-                    location_id=speaker.state.location,
+                    # where the exchange happened (both were there, locked) -- never a
+                    # position read at settlement, after generation
+                    location_id=plan.location,
                     text=str(turn.get("text", "")), minute=init + i,  # stagger, stamped at initiation
                 )
             if confrontation is not None:  # the rumor's endpoint: publish the verdict

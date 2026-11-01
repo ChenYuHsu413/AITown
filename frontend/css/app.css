@@ -440,6 +440,9 @@ h1,h2,h3{font-weight:400}
 .t3-place.warn .st{color:var(--down)} .t3-place.closed .st{color:#ffcf7a}
 .t3-bubble{max-width:220px;padding:6px 11px;border-radius:14px;background:rgba(14,18,26,.8);border:1px solid color-mix(in oklab,var(--rc) 60%,transparent);
   box-shadow:inset 3px 0 0 var(--rc),0 8px 24px rgba(0,0,0,.35);color:#eef2f7;font:13px/1.5 var(--f-body);backdrop-filter:blur(8px);animation:t3pop .25s var(--ease) both;transition:opacity .2s}
+.t3-bubble .who{display:block;font-size:11px;font-weight:600;color:var(--rc);margin-bottom:1px;letter-spacing:.02em}
+.t3-tail{position:absolute;left:0;top:0;height:1.5px;transform-origin:0 50%;pointer-events:none;
+  background:linear-gradient(90deg,color-mix(in oklab,var(--rc) 70%,transparent),color-mix(in oklab,var(--rc) 25%,transparent));transition:opacity .2s}
 @keyframes t3pop{from{opacity:0;filter:blur(4px)}to{opacity:1;filter:none}}
 .t3-mark{display:flex;flex-direction:column;align-items:center;color:var(--gold);text-shadow:0 0 10px var(--gold-glow);animation:t3pop .4s var(--ease) both}
 .t3-mark span{font-size:22px;line-height:1;animation:breathe 2.4s ease-in-out infinite}

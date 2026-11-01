@@ -279,13 +279,19 @@ export class TownMap {
     }
     const r = this.res[actor]; if (!r || r.asleep) return;
     this.bubbles.filter(b => b.actor === actor).forEach(b => this.removeBubble(b));
-    const el = document.createElement('div'); el.className = 't3-bubble'; el.style.setProperty('--rc', `var(--r-${actor})`); el.textContent = text;
-    this.ov.appendChild(el);
-    const b = {el, actor, loc, until: performance.now() + Math.min(9000, 3200 + text.length * 120)};
+    // The speaker is named in the bubble, and a tail points at their own head: with
+    // several people at one place the name tags stack upward, and a bubble that
+    // followed the stacked tag could sit over someone else's head.
+    const el = document.createElement('div'); el.className = 't3-bubble'; el.style.setProperty('--rc', `var(--r-${actor})`);
+    const who = document.createElement('b'); who.className = 'who'; who.textContent = agentName(actor);
+    el.append(who, document.createTextNode(text));
+    const tail = document.createElement('i'); tail.className = 't3-tail'; tail.style.setProperty('--rc', `var(--r-${actor})`);
+    this.ov.append(el, tail);
+    const b = {el, tail, actor, loc, until: performance.now() + Math.min(9000, 3200 + text.length * 120)};
     this.bubbles.push(b);
     const here = this.bubbles.filter(x => x.loc === loc); while (here.length > 3) this.removeBubble(here.shift());
   }
-  removeBubble(b) { if (b.gone) return; b.gone = true; b.el.remove(); const i = this.bubbles.indexOf(b); if (i >= 0) this.bubbles.splice(i, 1); }
+  removeBubble(b) { if (b.gone) return; b.gone = true; b.el.remove(); if (b.tail) b.tail.remove(); const i = this.bubbles.indexOf(b); if (i >= 0) this.bubbles.splice(i, 1); }
   clearBubbles() { this.bubbles.slice().forEach(b => this.removeBubble(b)); }
   setFocus(ids) {
     this.focus = ids && ids.length ? new Set(ids) : null;
@@ -328,11 +334,20 @@ export class TownMap {
     const placed = [];
     for (const b of this.bubbles.slice()) {
       if (now > b.until) { this.removeBubble(b); continue; }
-      const r = this.res[b.actor]; if (!r || !r.visible || !r.screen) { b.el.style.opacity = 0; continue; }
-      const w = b.el.offsetWidth, h = b.el.offsetHeight; let x = r.screen.x, y = (r.tagY ?? r.screen.y) - 22 - h / 2;
+      const r = this.res[b.actor]; if (!r || !r.visible || !r.screen) { b.el.style.opacity = 0; if (b.tail) b.tail.style.opacity = 0; continue; }
+      // anchored to the speaker's own head (not their possibly stacked name tag)
+      const tagH = r.tag.offsetHeight || 20;
+      const w = b.el.offsetWidth, h = b.el.offsetHeight; let x = r.screen.x, y = r.screen.y - tagH - 22 - h / 2;
       for (let k = 0; k < 4; k++) { const hit = placed.find(q => Math.abs(q.x - x) < (q.w + w) / 2 && Math.abs(q.y - y) < (q.h + h) / 2); if (!hit) break; y = hit.y - (hit.h + h) / 2 - 6; }
       x = Math.max(w / 2 + 6, Math.min(W - w / 2 - 6, x)); placed.push({x, y, w, h});
       b.el.style.transform = `translate(${x}px,${y}px) translate(-50%,-50%)`; b.el.style.opacity = r.screen.visible ? 1 : 0;
+      if (b.tail) {   // from the bubble's bottom edge down to the speaker's head
+        const x0 = x, y0 = y + h / 2, x1 = r.screen.x, y1 = r.screen.y - 4;
+        const len = Math.max(0, Math.hypot(x1 - x0, y1 - y0)), ang = Math.atan2(y1 - y0, x1 - x0);
+        b.tail.style.width = `${len}px`;
+        b.tail.style.transform = `translate(${x0}px,${y0}px) rotate(${ang}rad)`;
+        b.tail.style.opacity = r.screen.visible ? 1 : 0;
+      }
     }
     for (const m of this.marks.slice()) {
       const r = this.res[m.id];
