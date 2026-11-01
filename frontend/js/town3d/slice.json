@@ -1,0 +1,46 @@
+{
+  "_doc": "3-D validation slice: one café, a corner of the plaza, two residents. Units are metres; x east, z south, y up. Every mesh is generated from this description (stacked rounded boxes, roofs, windows, doors, awnings) -- no model files, no textures.",
+  "island": {"w": 30, "d": 24, "h": 0.9, "grass": "#b9dc8e", "stone": "#e6d6b6", "radius": 1.2},
+  "water": {"color": "#6cc4d8", "deep": "#4aa6c4", "size": 140},
+  "plaza": {"center": [4, 5], "radius": 9, "slab": 1.0, "colors": ["#ece2cf", "#e2d5bd", "#d8c9ae", "#f2ead9"]},
+  "buildings": [
+    {
+      "id": "cafe", "pos": [-5, 0, -4],
+      "parts": [
+        {"size": [8, 3.4, 5.6], "at": [0, 0, 0], "color": "#f7c3a5"},
+        {"size": [5.2, 2.6, 4.4], "at": [-1.1, 3.4, -0.3], "color": "#bfe6cf"},
+        {"size": [2.4, 1.6, 2.4], "at": [2.6, 3.4, -0.8], "color": "#f9e3a8"}
+      ],
+      "roofs": [
+        {"part": 1, "kind": "gable", "color": "#e8645a", "height": 1.7, "overhang": 0.35},
+        {"part": 2, "kind": "gable", "color": "#5f8fd0", "height": 1.0, "overhang": 0.25},
+        {"part": 0, "kind": "ledge", "color": "#d98f74"}
+      ],
+      "windows": [
+        {"part": 0, "face": "front", "x": -2.6, "y": 1.7, "w": 2.2, "h": 1.5},
+        {"part": 0, "face": "front", "x": 3.2, "y": 1.9, "w": 0.9, "h": 1.1},
+        {"part": 1, "face": "front", "x": -2.4, "y": 1.3, "w": 0.9, "h": 1.1},
+        {"part": 1, "face": "front", "x": -0.6, "y": 1.3, "w": 0.9, "h": 1.1},
+        {"part": 1, "face": "front", "x": 1.2, "y": 1.3, "w": 0.9, "h": 1.1},
+        {"part": 0, "face": "east", "x": 0.4, "y": 1.8, "w": 1.2, "h": 1.2},
+        {"part": 1, "face": "east", "x": 0, "y": 1.3, "w": 0.9, "h": 1.0},
+        {"part": 2, "face": "front", "x": 0, "y": 0.8, "w": 0.7, "h": 0.8}
+      ],
+      "door": {"part": 0, "face": "front", "x": 0.8, "w": 1.3, "h": 2.3, "color": "#7a4a3a"},
+      "awning": {"part": 0, "face": "front", "x": -0.6, "w": 6.4, "y": 2.85, "depth": 1.3, "colors": ["#e8645a", "#fff4ea"]},
+      "sign": {"part": 0, "face": "front", "x": -0.6, "y": 3.15, "w": 2.6, "h": 0.5, "color": "#5a3a32", "glow": "#ffd896"}
+    }
+  ],
+  "props": {
+    "trees": [[-12, -6, 1.1], [-11, 3, 0.9], [10, -7, 1.2], [12.5, -3, 0.8], [-12.5, 8.5, 1.0], [11, 9.5, 0.9]],
+    "lamps": [[-1, 1.6], [7, 1.2], [10, 9]],
+    "benches": [[6, -0.8, 0], [12, 4.5, 1.57]],
+    "tables": [[-9.4, -0.4], [-11.4, 1.4]],
+    "fountain": [10, 9]
+  },
+  "spots": {
+    "door": [-4.2, -0.4], "counter": [-6.4, 0.2], "terrace": [-9.4, 0.6], "terrace2": [-11.0, 2.4],
+    "plaza": [4, 3], "plaza2": [7.5, 6.5], "bench": [6, 0.2], "fountain": [8.6, 7.6]
+  },
+  "camera": {"target": [3, 1, -2.5], "distance": 60, "azimuth": 45, "elevation": 40, "fov": 30, "min": 14, "max": 75}
+}

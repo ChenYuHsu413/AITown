@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>高柏小鎮 · 3D 預覽</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Inter and Noto Sans TC: both SIL OFL 1.1 (google/fonts ofl/*/METADATA.pb) -->
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+<!-- tokens.css only for the residents' identity colours (--r-*); the look is glass.css -->
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/glass.css">
+<script type="importmap">
+{ "imports": {
+  "vue": "https://unpkg.com/vue@3.5.13/dist/vue.esm-browser.prod.js",
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app"><p class="boot">載入 3D 預覽…</p></div>
+<script type="module" src="/static/js/town3d/main.js"></script>
+</body>
+</html>
