@@ -1,6 +1,6 @@
 """Database models (SQLAlchemy 2.0, async).
 
-Ten tables:
+Twelve tables:
 
     simulation_runs   one row per server boot / script run
     events            structured events (Event Contract v1, verbatim)
@@ -12,6 +12,8 @@ Ten tables:
     chapters          life-chapter ledger: one row per chapter per agent (started/closed)
     wishes            wish ledger: one row per wish (seeded/grown, and how it ended)
     wish_attempts     generation ledger: one row per attempt, however it turned out
+    daily_digests     one sentence per closed sim day (narrative layer)
+    relationship_deltas  per day, each directed pair whose friendship/trust/conflict moved
 
 The events table mirrors the Event Contract exactly -- that was the point
 of the structured-events refactor.
@@ -60,6 +62,10 @@ class EventRow(Base):
     target: Mapped[str] = mapped_column(String(32), default="")
     location: Mapped[str] = mapped_column(String(32), default="")
     speech: Mapped[str] = mapped_column(Text, default="")
+    # Narrative layer (from the zh-native era on): major | notable | ambient, and the
+    # chronicle's richer context. NULL on rows written before it -- never backfilled.
+    tier: Mapped[str | None] = mapped_column(String(8), nullable=True, default=None)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
 
     __table_args__ = (Index("ix_events_run_minute", "run_id", "minute"),)
 
@@ -221,6 +227,41 @@ class WishAttemptRow(Base):
     wish_id: Mapped[str] = mapped_column(String(32), default="")   # born only
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)    # this attempt's own spend
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class DailyDigest(Base):
+    """One sentence per closed sim day, from that day's major/notable beats
+    (simulation/narrative.py). ``refs`` lists the beats it was written from."""
+
+    __tablename__ = "daily_digests"
+
+    run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    day: Mapped[int] = mapped_column(Integer, primary_key=True)
+    text: Mapped[str] = mapped_column(Text, default="")
+    refs: Mapped[list] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class RelationshipDelta(Base):
+    """A directed pair whose friendship / trust / conflict moved during a sim day:
+    where each axis stands at the day's close, and by how much it moved."""
+
+    __tablename__ = "relationship_deltas"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(32), default="")
+    day: Mapped[int] = mapped_column(Integer, default=0)
+    a: Mapped[str] = mapped_column(String(32), default="")
+    b: Mapped[str] = mapped_column(String(32), default="")
+    friendship: Mapped[float] = mapped_column(Float, default=0.0)
+    trust: Mapped[float] = mapped_column(Float, default=0.0)
+    conflict: Mapped[float] = mapped_column(Float, default=0.0)
+    d_friendship: Mapped[float] = mapped_column(Float, default=0.0)
+    d_trust: Mapped[float] = mapped_column(Float, default=0.0)
+    d_conflict: Mapped[float] = mapped_column(Float, default=0.0)
+
+    __table_args__ = (Index("ix_reldelta_run_day", "run_id", "day"),
+                      Index("ix_reldelta_run_pair", "run_id", "a", "b"))
 
 
 class SnapshotArchive(Base):

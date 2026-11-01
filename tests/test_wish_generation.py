@@ -411,7 +411,7 @@ class SnapshotCompat(unittest.TestCase):
             title="t", statement="s", born="grown", embedding=[0.1, 0.2, 0.3],
             requirements=[wishes_mod.Requirement(kind="location_visits", target="park", threshold=2)]))
         payload = snapshot_mod.capture(engine, world, engine.decisions)
-        self.assertEqual(payload["schema_version"], 13)
+        self.assertGreaterEqual(payload["schema_version"], 13)   # v13 fields, in whatever schema is current
 
         world2, engine2 = make_engine()
         snapshot_mod.restore(payload, engine2, world2, engine2.decisions)

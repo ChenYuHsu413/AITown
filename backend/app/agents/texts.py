@@ -145,6 +145,11 @@ _CATALOGUE: dict[str, tuple[str, str]] = {
                                   "{{agent:{other}}}當面質問我那個由我起頭的傳言。"),
     "confronted_rumor_denied": ("{{agent:{other}}} confronted me about the rumor I was accused of starting.",
                                 "{{agent:{other}}}當面質問我,說那個傳言是我起的頭。"),
+    "confronted_detail": ('About the rumor "{rumor}" -> {{agent:{who}}} {outcome}',
+                          "關於傳言「{rumor}」:{{agent:{who}}}{outcome}"),
+    "confronted_detail_bare": ("{{agent:{who}}} {outcome}", "{{agent:{who}}}{outcome}"),
+    "outcome_admitted": ("admitted it", "承認了"),
+    "outcome_denied": ("denied it", "否認了"),
     # romance
     "confessed_yes": ("I confessed to {{agent:{other}}} -- and we're together now.",
                       "我向{{agent:{other}}}告白了,我們現在在一起了。"),

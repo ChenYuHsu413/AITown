@@ -57,7 +57,11 @@ if TYPE_CHECKING:
 #             `wish_last_attempt_day` cadence. Absent on a v12 snapshot: no embedding
 #             means that wish simply never blocks a new one on novelty, and day 0
 #             means the resident is due an attempt, which is the safe default.
-SCHEMA_VERSION = 13
+#   v13 -> v14: the narrative layer -- the day's tiered beats, the pairs that have
+#             talked, the relationship baseline deltas are measured from, and recent
+#             digests. Absent on a v13 snapshot: deltas measure from the restored
+#             relationships and every pair's next talk counts as its first.
+SCHEMA_VERSION = 14
 
 
 # ---- capture -------------------------------------------------------------
@@ -84,6 +88,7 @@ def capture(engine: "SimulationEngine", world: "World", decisions: "DecisionEngi
         "active_effects": [dict(e) for e in world.active_effects],
         "dialogue": {"day": decisions._dialogue_day, "count": decisions._dialogues_today},
         "chronicle": [dict(c) for c in engine.chronicle[-200:]],
+        "narrative": engine.narrative.capture(),
     }
 
 
@@ -169,6 +174,13 @@ def restore(payload: dict, engine: "SimulationEngine", world: "World",
 
     if "chronicle" in payload:  # v6+; older snapshots keep the empty history
         engine.chronicle = [dict(c) for c in (payload.get("chronicle") or []) if isinstance(c, dict)]
+
+    # v14: the narrative layer. A snapshot without it measures from where things stand.
+    narrative = payload.get("narrative")
+    if isinstance(narrative, dict):
+        engine.narrative.restore(narrative)
+    else:
+        engine.narrative.rebaseline()
 
     return minute
 

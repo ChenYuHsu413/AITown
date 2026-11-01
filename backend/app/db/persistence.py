@@ -29,8 +29,8 @@ from ..llm.embeddings import EmbeddingProvider, MockEmbedding
 from ..llm.usage import LLMCall
 from ..simulation.engine import Event
 from .models import (
-    Base, ChapterRow, EventRow, LLMCallRow, MemoryRow, SimulationRun, SnapshotArchive,
-    TranslationCacheRow, WishAttemptRow, WishRow, WorldSnapshot,
+    Base, ChapterRow, DailyDigest, EventRow, LLMCallRow, MemoryRow, RelationshipDelta, SimulationRun,
+    SnapshotArchive, TranslationCacheRow, WishAttemptRow, WishRow, WorldSnapshot,
 )
 
 
@@ -68,6 +68,16 @@ class _WishWrite:
 @dataclass
 class _AttemptWrite:
     row: dict          # WishAttemptRow columns -- append-only, never upserted
+
+
+@dataclass
+class _DigestWrite:
+    row: dict          # DailyDigest columns -- upserted on (run_id, day)
+
+
+@dataclass
+class _DeltaWrite:
+    rows: list         # RelationshipDelta rows for one day -- append-only
 
 
 class Persistence:
@@ -112,6 +122,9 @@ class Persistence:
                 "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS superseded BOOLEAN NOT NULL DEFAULT FALSE"))
             await conn.execute(sql_text(
                 "ALTER TABLE simulation_runs ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE"))
+            # Narrative layer: nullable, so rows written before it stay untiered.
+            await conn.execute(sql_text("ALTER TABLE events ADD COLUMN IF NOT EXISTS tier VARCHAR(8)"))
+            await conn.execute(sql_text("ALTER TABLE events ADD COLUMN IF NOT EXISTS detail TEXT"))
             await self._migrate_wishes(conn)
 
         resumed = False
@@ -223,6 +236,15 @@ class Persistence:
         """Queue a wish-ledger upsert (seeded / ended). Non-blocking."""
         self._queue.put_nowait(_WishWrite(dict(row)))
 
+    def on_digest(self, row: dict) -> None:
+        """Queue one day's digest (upserted on run + day). Non-blocking."""
+        self._queue.put_nowait(_DigestWrite(dict(row)))
+
+    def on_rel_deltas(self, rows: list) -> None:
+        """Queue one day's relationship deltas. Non-blocking; an empty day is a no-op."""
+        if rows:
+            self._queue.put_nowait(_DeltaWrite([dict(r) for r in rows]))
+
     def on_wish_attempt(self, row: dict) -> None:
         """Queue one generation-attempt row. Append-only: a declined or gate-rejected
         attempt is exactly the row worth keeping. Non-blocking."""
@@ -249,6 +271,7 @@ class Persistence:
                         run_id=self.run_id, minute=item.minute, kind=item.kind,
                         verb=item.verb, actor=item.actor, target=item.target,
                         location=item.location, speech=item.text,
+                        tier=item.tier, detail=item.detail,
                     ))
                 elif isinstance(item, LLMCall):
                     s.add(LLMCallRow(
@@ -292,6 +315,18 @@ class Persistence:
                            if k in WishAttemptRow.__table__.columns and k != "id"}
                     row.setdefault("run_id", self.run_id)
                     s.add(WishAttemptRow(**row))
+                elif isinstance(item, _DigestWrite):
+                    row = {"run_id": self.run_id, "day": int(item.row["day"]),
+                           "text": item.row.get("text", ""), "refs": item.row.get("refs", [])}
+                    stmt = pg_insert(DailyDigest).values(**row).on_conflict_do_update(
+                        index_elements=[DailyDigest.run_id, DailyDigest.day],
+                        set_={"text": row["text"], "refs": row["refs"], "created_at": datetime.utcnow()})
+                    await s.execute(stmt)
+                elif isinstance(item, _DeltaWrite):
+                    for r in item.rows:
+                        s.add(RelationshipDelta(run_id=self.run_id, **{
+                            k: r[k] for k in ("day", "a", "b", "friendship", "trust", "conflict",
+                                              "d_friendship", "d_trust", "d_conflict")}))
                 elif isinstance(item, _SnapWrite):
                     # One row per run: upsert so only the newest snapshot survives.
                     stmt = pg_insert(WorldSnapshot).values(
@@ -531,9 +566,34 @@ class Persistence:
                     "minute": r.minute, "kind": r.kind, "verb": r.verb,
                     "actor": r.actor, "target": r.target,
                     "location": r.location, "speech": r.speech,
+                    "tier": r.tier, "detail": r.detail,
                 }
                 for (r,) in rows
             ]
+
+    async def digests(self, run_id: str | None = None, day_from: int = 1,
+                      day_to: int = 10 ** 6) -> list[dict]:
+        rid = run_id or self.run_id
+        async with self.session() as s:
+            rows = (await s.execute(
+                select(DailyDigest).where(DailyDigest.run_id == rid, DailyDigest.day >= day_from,
+                                          DailyDigest.day <= day_to)
+                .order_by(DailyDigest.day))).scalars().all()
+            return [{"day": r.day, "text": r.text, "refs": r.refs or []} for r in rows]
+
+    async def relationship_history(self, a: str, b: str, run_id: str | None = None) -> list[dict]:
+        """Both directions of one pair, day by day (only the days something moved)."""
+        rid = run_id or self.run_id
+        async with self.session() as s:
+            rows = (await s.execute(
+                select(RelationshipDelta).where(
+                    RelationshipDelta.run_id == rid,
+                    ((RelationshipDelta.a == a) & (RelationshipDelta.b == b))
+                    | ((RelationshipDelta.a == b) & (RelationshipDelta.b == a)))
+                .order_by(RelationshipDelta.day, RelationshipDelta.id))).scalars().all()
+            return [{"day": r.day, "a": r.a, "b": r.b, "friendship": r.friendship, "trust": r.trust,
+                     "conflict": r.conflict, "d_friendship": r.d_friendship, "d_trust": r.d_trust,
+                     "d_conflict": r.d_conflict} for r in rows]
 
     async def list_runs(self) -> list[dict]:
         """Every run with its event count and minute span, newest first --

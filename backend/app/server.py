@@ -465,6 +465,8 @@ class Sim:
         self.engine.on_chapter_record = p.on_chapter    # chapter ledger (started / closed rows)
         self.engine.on_wish_record = p.on_wish          # wish ledger (seeded / ended rows)
         self.engine.on_wish_attempt = p.on_wish_attempt  # generation ledger (every attempt)
+        self.engine.narrative.on_digest = p.on_digest      # one sentence per closed day
+        self.engine.narrative.on_rel_deltas = p.on_rel_deltas   # the day's relationship moves
         self.engine.set_run_seed(p.run_id)              # stable wish-drive dice for this run
         self._snap_wall = time.monotonic()
         self._snap_minute = self.engine.now
@@ -919,6 +921,8 @@ class Sim:
             "location_name": e.location_name,
             "speech": e.text,        # generated free text only (dialogue line / insight)
             "text": e.text_en,       # DEPRECATED: prerendered English sentence (old-frontend compat)
+            "tier": e.tier,          # major | notable | ambient (narrative layer)
+            "detail": e.detail,
         }
 
     async def _broadcast_tick(self) -> None:
@@ -1792,6 +1796,67 @@ async def chronicle(limit: int = 200) -> JSONResponse:
     limit = max(1, min(limit, 200))
     items = [{**c, "clock": fmt_time(c["minute"])} for c in sim.engine.chronicle[-limit:]]
     return JSONResponse({"chronicle": items})
+
+
+@app.get("/api/digests")
+async def digests(run_id: str = "", day_from: int = 1, day_to: int = 10 ** 6) -> JSONResponse:
+    """The chronicle's spine: one sentence per closed sim day (narrative layer),
+    oldest first. From the DB when persistence is on (any run), else the live run's
+    in-memory record."""
+    assert sim is not None
+    if sim.persistence is not None:
+        rows = await sim.persistence.digests(run_id or None, day_from, day_to)
+        rid = run_id or sim.persistence.run_id
+    else:
+        rows = [d for d in sim.engine.narrative.digests if day_from <= d["day"] <= day_to]
+        rid = ""
+    return JSONResponse({"run_id": rid, "digests": rows, "today": sim.engine.now // DAY_MIN + 1})
+
+
+@app.get("/api/day/{day}")
+async def day_detail(day: int, run_id: str = "") -> JSONResponse:
+    """Everything a chronicle node expands into, for one sim day: its digest, its
+    major/notable beats (with detail), every dialogue line said that day, and the
+    relationship moves it closed with. Requires persistence; 501 otherwise."""
+    assert sim is not None
+    if sim.persistence is None:
+        return JSONResponse({"error": "persistence not enabled"}, status_code=501)
+    p = sim.persistence
+    lo, hi = (day - 1) * DAY_MIN, day * DAY_MIN - 1
+    events = await p.events_between(lo, hi, limit=20000, run_id=run_id or None)
+    for e in events:
+        e["clock"] = fmt_time(e["minute"])
+    digest = await p.digests(run_id or None, day, day)
+    from sqlalchemy import select
+    from .db.models import RelationshipDelta
+    async with p.session() as s:
+        rows = (await s.execute(select(RelationshipDelta).where(
+            RelationshipDelta.run_id == (run_id or p.run_id), RelationshipDelta.day == day))).scalars().all()
+    deltas = [{k: getattr(r, k) for k in ("a", "b", "friendship", "trust", "conflict",
+                                         "d_friendship", "d_trust", "d_conflict")} for r in rows]
+    return JSONResponse({
+        "day": day, "digest": digest[0] if digest else None,
+        "beats": [e for e in events if e.get("tier") in ("major", "notable")],
+        "dialogue": [e for e in events if e["verb"] == "say"],
+        "events": events, "deltas": deltas,
+    })
+
+
+@app.get("/api/relationship_history")
+async def relationship_history(a: str, b: str, run_id: str = "") -> JSONResponse:
+    """Both directions of one pair's friendship / trust / conflict, day by day, plus
+    the days their major/notable beats happened on -- the relationship curve's data.
+    Requires persistence; 501 otherwise."""
+    assert sim is not None
+    if sim.persistence is None:
+        return JSONResponse({"error": "persistence not enabled"}, status_code=501)
+    hist = await sim.persistence.relationship_history(a, b, run_id or None)
+    marks = []
+    for d in await sim.persistence.digests(run_id or None):
+        for r in d["refs"]:
+            if {r.get("actor"), r.get("target")} == {a, b}:
+                marks.append({"day": d["day"], **r})
+    return JSONResponse({"a": a, "b": b, "history": hist, "beats": marks})
 
 
 @app.post("/api/translate")

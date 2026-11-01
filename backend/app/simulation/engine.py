@@ -29,6 +29,7 @@ from ..agents.decision import ConvPlan, DecisionEngine
 from ..llm.prompts import builders
 from ..llm.router import ProvidersExhausted
 from ..world.world import World
+from . import narrative as narrative_mod
 
 DAY_MIN = 24 * 60
 
@@ -128,6 +129,7 @@ class Event:
     text: str = ""            # generated free text ONLY (dialogue line / insight)
     text_en: str = ""         # deprecated: prerendered English sentence
     detail: str = ""          # optional richer context for the chronicle (secret text, rumor wording, ...)
+    tier: str = "ambient"     # major | notable | ambient (see simulation/narrative.py)
 
     def render(self) -> str:
         return f"[{fmt_time(self.minute)}] {self.text_en}"
@@ -273,6 +275,8 @@ class SimulationEngine:
         # the bus. Persisted in the snapshot; served at /api/chronicle.
         self.chronicle: list[dict] = []
         self.bus.subscribers.append(self._chronicle_add)
+        # The narrative data layer: event tiers, daily digests, relationship deltas.
+        self.narrative = narrative_mod.Narrative(self)
         self.now = 0
         self._last_decision_at: dict[str, int] = {}
         self._last_day = 0
@@ -394,7 +398,9 @@ class SimulationEngine:
         ev.text_en = render_en(
             verb, ev.actor_name, ev.target_name, ev.location_name, text
         )
+        ev.tier = self.narrative.tier_for(ev)
         self.bus.publish(ev)
+        self.narrative.observe(ev)
 
     # Conversation-borne beats (confide/confront) carry a time window so the UI can
     # pull the actual dialogue lines said around them from /api/history.
@@ -413,7 +419,7 @@ class SimulationEngine:
             "actor": ev.actor, "actor_name": ev.actor_name,
             "target": ev.target, "target_name": ev.target_name,
             "location": ev.location, "location_name": ev.location_name,
-            "speech": ev.text, "detail": ev.detail,
+            "speech": ev.text, "detail": ev.detail, "tier": ev.tier,
         }
         if ev.verb in self._CONV_VERBS:  # the surrounding exchange spans a few sim-minutes
             entry["conversation_minutes"] = [ev.minute, ev.minute + 20]
@@ -487,6 +493,8 @@ class SimulationEngine:
         """Close each shop's books (record + reset today's revenue, nudge the
         owner's mood/memory) and pay everyone their daily wage. When the day that
         just closed was a Sunday, also run the weekly books."""
+        # The day's story first, before the settlement itself writes tomorrow's beats.
+        self.narrative.settle(self._last_day)
         closed_dow = (self._last_day - 1) % 7        # dow of the day just closed (Day 1 = Mon)
         week_close = closed_dow == 6                  # Sunday -> weekly settlement too
         week_rev: dict[str, float] = {}              # shop id -> weekly takings (captured before reset)
@@ -962,8 +970,11 @@ class SimulationEngine:
                 self._publish(
                     "action", "confronted", actor=a, target=b,
                     location_id=a.state.location, text=outcome, minute=init,
-                    detail=(f'About the rumor "{rumor_text}" -> {b.id.capitalize()} {outcome}'
-                            if rumor_text else f"{b.id.capitalize()} {outcome}"),
+                    detail=(texts.T("confronted_detail", rumor=rumor_text, who=b.id,
+                                    outcome=texts.T("outcome_" + confrontation["outcome"]))
+                            if rumor_text else
+                            texts.T("confronted_detail_bare", who=b.id,
+                                    outcome=texts.T("outcome_" + confrontation["outcome"]))),
                 )
             if milestone is not None:  # a friendship crossed a stage boundary -> a visible beat
                 self._publish_milestone(a, b, milestone, minute=init)
