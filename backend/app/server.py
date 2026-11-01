@@ -489,6 +489,9 @@ class Sim:
                   f"(run {p.run_id})")
         else:
             print("[resume] fresh start")
+            # Write the new run's first snapshot now: until one exists, a restart would
+            # find only an archived era's snapshot and open yet another fresh run.
+            self._take_snapshot()
         print(f"[persistence] enabled, run_id={p.run_id}")
 
     def _take_snapshot(self) -> None:
