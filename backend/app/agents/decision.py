@@ -386,7 +386,7 @@ def gender_ok(text: str) -> bool:
         return True
     named = _named_residents(text)
     if len(named) > 1:
-        return _nearest_name_ok(text)
+        return _earlier_name_ok(text)
     if len(named) != 1:
         return True
     gender = builders.gender_of(next(iter(named)))
@@ -412,25 +412,21 @@ _SENTENCE_RE = re.compile(r"[。!?！？;；…]+|\.(?=\s)")
 _ZH_PRONOUN_RE = re.compile(r"(?<!其)(他|她)(?!人|們)")
 
 
-def _nearest_name_ok(text: str) -> bool:
-    """Several residents named: each 他/她 is read against the nearest resident named
-    before it in the same sentence, the way a reader takes it (developer ruling,
-    Era 3). On 1,587 real lines it refused 12 multi-name lines, 10 of them truly
-    wrong; a false refusal costs one retry. A pronoun with no name before it in its
-    sentence is left alone; quoted speech is someone else's words and is skipped."""
+def _earlier_name_ok(text: str) -> bool:
+    """Several residents named: a 他/她 is wrong only when NO resident named before it
+    in the same sentence has that gender (developer ruling, Era 3, decided by replay).
+    The earlier "nearest name" reading refused "歐拉告訴冷月,他明天..." and
+    "希希想請艾斯教他寫程式" -- 12 good live lines in era 3; this reading frees all 12
+    and still refuses all 8 true errors on 209 multi-name lines of history. (Counting
+    names from the previous two lines as well caught only 4 of the 8.) A pronoun with
+    no name before it in its sentence is left alone; quoted speech is skipped."""
     body = _REF_QUOTE_RE.sub(" ", text)
     forms = [(f, g) for en, zh, g in builders.roster_genders() for f in (zh, en) if f]
     for sent in _SENTENCE_RE.split(body):
         for m in _ZH_PRONOUN_RE.finditer(sent):
             before = sent[:m.start()]
-            best, pos = "", -1
-            for f, g in forms:
-                i = before.rfind(f)
-                if i > pos:
-                    best, pos = g, i
-            if not best:
-                continue
-            if (m.group(1) == "他") != (best == "male"):
+            seen = {g for f, g in forms if f in before}
+            if seen and ("male" if m.group(1) == "他" else "female") not in seen:
                 return False
     return True
 

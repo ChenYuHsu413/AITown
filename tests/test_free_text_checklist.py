@@ -101,9 +101,9 @@ class DialogueTurn(unittest.TestCase):
                 self.gate()
 
 
-class MultiNameNearest(unittest.TestCase):
-    """Developer ruling: in a line naming several residents, each 他/她 is read against
-    the nearest name before it in its sentence. Cases from the 1,587-line trial."""
+class MultiNameEarlier(unittest.TestCase):
+    """Developer ruling (decided by replay): in a line naming several residents, a
+    他/她 is wrong only when no resident named before it in its sentence fits."""
 
     def setUp(self):
         make_world()
@@ -121,6 +121,22 @@ class MultiNameNearest(unittest.TestCase):
                   "安哥說冷月今天很忙,她在診所待了一整天。",
                   "冷月跟我說「他不會來了」,我才想到瓏。"]:                # quoted: someone else's words
             self.assertTrue(gender_ok(t), t)
+
+    def test_the_live_false_refusals_now_pass(self):
+        """Era-3 lines the nearest-name reading refused: the pronoun points back past
+        the nearest name to the subject."""
+        from backend.app.agents.decision import gender_ok
+        for t in ["歐拉告訴冷月,他明天傍晚和艾斯約了去螢火公園看光影裝置。",
+                  "希希想請艾斯教他寫程式,但每次走近她就僵住開不了口。",
+                  "冷月向歐拉表示,她心裡有一件別人私下託付的事,讓她放不下。",
+                  "阿總跟我講了件新鮮事:蒯政和希希在研究紅外線感測器,說之後會把結果告訴她。"]:
+            self.assertTrue(gender_ok(t), t)
+
+    def test_a_named_man_still_cannot_be_she(self):
+        from backend.app.agents.decision import gender_ok
+        for t in ["我今天其實跑了好幾趟,可心裡一直掛著瓏,她守了約。",
+                  "倒是你，碰到希希的時候他有沒有又在攤子前忙得團團轉？你要是不急著走，就陪我坐一會兒，等瓏來了她也認得你。"]:
+            self.assertFalse(gender_ok(t), t)
 
 
 class LocalHint(unittest.TestCase):
@@ -189,6 +205,63 @@ class RumorPaths(unittest.TestCase):
             out = asyncio.run(d._maybe_leak(b, c, world, NOW))
         self.assertIsNotNone(out)
         self.assertNotIn(wrong, out["text"])
+
+
+class GateRetrySticks(unittest.TestCase):
+    """Developer ruling: a quality-gate refusal is retried on the same provider and
+    never handed down the fallback chain to a weaker model."""
+
+    def _router(self, *names):
+        from backend.app.llm.providers.base import LLMProvider
+        from backend.app.llm.router import LLMRouter
+        calls = []
+
+        class P(LLMProvider):
+            def __init__(self, name):
+                self.name = name
+
+            async def generate(self, messages, **kw):
+                calls.append(self.name)
+                return LLMResult(text="bad" if self.name == "claude" else "good", provider=self.name)
+
+        chain = [P(n) for n in names]
+        return LLMRouter(tiers={"cheap": chain, "normal": chain, "smart": chain}), calls
+
+    def test_a_refused_line_waits_instead_of_descending(self):
+        from backend.app.llm.router import GATE_RETRIES, ProvidersExhausted
+        router, calls = self._router("claude", "kimi", "mock")
+        with self.assertRaises(ProvidersExhausted):
+            asyncio.run(router.generate(task="dialogue_turn", messages=[], no_floor=True,
+                                        validate=lambda r: r.text == "good"))
+        self.assertEqual(calls, ["claude"] * (1 + GATE_RETRIES))
+
+    def test_only_the_floor_remains_for_a_caller_that_keeps_it(self):
+        router, calls = self._router("claude", "kimi", "mock")
+        out = asyncio.run(router.generate(task="dialogue_turn", messages=[],
+                                          validate=lambda r: r.text == "good"))
+        self.assertEqual(out.provider, "mock")
+        self.assertNotIn("kimi", calls)
+
+    def test_a_hard_error_still_falls_through(self):
+        from backend.app.llm.providers.base import LLMProvider
+        from backend.app.llm.router import LLMRouter
+
+        class Down(LLMProvider):
+            name = "claude"
+
+            async def generate(self, messages, **kw):
+                raise TimeoutError()
+
+        class Up(LLMProvider):
+            name = "kimi"
+
+            async def generate(self, messages, **kw):
+                return LLMResult(text="good", provider="kimi")
+
+        chain = [Down(), Up()]
+        router = LLMRouter(tiers={"cheap": chain, "normal": chain, "smart": chain})
+        out = asyncio.run(router.generate(task="dialogue_turn", messages=[]))
+        self.assertEqual(out.provider, "kimi")
 
 
 if __name__ == "__main__":

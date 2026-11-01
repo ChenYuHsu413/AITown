@@ -24,6 +24,8 @@ from .providers.base import LLMProvider, LLMResult
 from .usage import LLMCall, UsageTracker
 
 SOFT_RETRIES = 1  # extra attempts on the same provider after an empty/garbled result
+GATE_RETRIES = 2  # extra attempts on the same provider after a quality-gate (validate) refusal
+_GATE_REASON = "failed sanity check"
 
 
 class ProvidersExhausted(RuntimeError):
@@ -254,16 +256,25 @@ class LLMRouter:
 
         last_err: Exception | None = None
         floor: tuple[LLMProvider, LLMResult] | None = None  # best-effort output if all gates fail
+        gated = False   # a real provider answered but the quality gate refused it
         for provider in chain:
             if self._cooling(provider):
                 continue  # 429'd recently -> skip until its cooldown lapses
+            if gated and provider.name != "mock":
+                # A quality-gate refusal never hands the line to a weaker model down the
+                # chain -- that would push gated output to whoever is least likely to
+                # pass it (Era 3: four refused lines landed with kimi). Only the floor
+                # remains, and a no_floor caller has withheld that and waits instead.
+                continue
             result: LLMResult | None = None
             reason: str | None = None
             # Soft failures (empty/garbled/truncated JSON) are often intermittent
             # -- e.g. Groq's 70b returns valid-but-empty "text" ~10% of the time --
             # so retry the SAME provider once before moving on. Hard errors (429,
             # timeout) won't fix on retry, so those break to the next provider.
-            for _ in range(1 + SOFT_RETRIES):
+            attempt = 0
+            while True:
+                attempt += 1
                 if self.on_call_start is not None:
                     self.on_call_start(provider.name, task)
                 try:
@@ -284,6 +295,9 @@ class LLMRouter:
                 reason = self._reject_reason(result, schema, validate, task)
                 if reason is None:
                     break  # good output
+                # a gate refusal is retried on the SAME provider a little longer
+                if attempt > (GATE_RETRIES if reason == _GATE_REASON else SOFT_RETRIES):
+                    break
 
             if result is not None and reason is None:
                 self._record(provider, result, task=task, agent_id=agent_id, sim_minute=sim_minute)
@@ -294,6 +308,8 @@ class LLMRouter:
                 last_err = RuntimeError(f"{provider.name}/{result.model}: {reason}")
                 if floor is None:
                     floor = (provider, result)
+                if reason == _GATE_REASON and provider.name != "mock":
+                    gated = True
 
         # Nothing cleared the gates. A no_floor caller wants to wait and retry the
         # whole chain rather than serve canned filler, so signal exhaustion instead
@@ -327,7 +343,7 @@ class LLMRouter:
         if garbage is not None:
             return garbage
         if validate is not None and not validate(result):
-            return "failed sanity check"
+            return _GATE_REASON
         return None
 
     def _record(self, provider: LLMProvider, result: LLMResult, *,
