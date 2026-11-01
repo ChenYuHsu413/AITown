@@ -88,7 +88,8 @@ export class TownMap {
     this.sc.setTime(minute); this.phase = phaseOf(minute);
     const dow = ((Math.floor(minute / 1440) % 7) + 7) % 7;
     for (const [id, p] of Object.entries(this.places)) {
-      const l = this.locs[id]; const closed = !!(l && l.owner && (l.closed_days || []).includes(dow));
+      const day = Math.floor(minute / 1440) + 1;   // closed_on: the owner chose not to open today
+      const l = this.locs[id]; const closed = !!(l && l.owner && ((l.closed_days || []).includes(dow) || l.closed_on === day));
       if (closed !== p.b.closed) { p.b.closed = closed; if (p.b.closedSign) p.b.closedSign.visible = closed; this.placeStatus(id); }
     }
     this.updateWindows();
