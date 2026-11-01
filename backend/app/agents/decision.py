@@ -1366,6 +1366,7 @@ class DecisionEngine:
             item["text"] = _resolve_placeholders(item["text"], world)
         rejection = ""
         log = attempts if attempts is not None else []
+        last_hit = ""                    # the old wish the previous attempt ran into, if any
         for attempt in range(1 + wishes_mod.GENERATION_RETRIES):
             spent_before = len(self.router.usage.calls)
             try:
@@ -1410,7 +1411,7 @@ class DecisionEngine:
                     gate = "wish_deviation"
                     builders.note_gate_reject(gate)
                     rejection = why
-                elif not (struct := wishes_mod.structural_novelty_ok(
+                elif not (struct := wishes_mod.structural_collision(
                         agent, clean["requirements"], day))[0]:  # gate 3a: the same doings again?
                     gate = "wish_novelty_struct"
                     builders.note_gate_reject(gate)
@@ -1433,6 +1434,14 @@ class DecisionEngine:
                                          "gate_rejected", gate, rejection))
             print(f"[wish] {agent.id} proposal rejected (attempt {attempt + 1}): "
                   f"{rejection[:120]}", flush=True)
+            # Twice in a row into the same old wish: the feedback is not turning this
+            # life another way, and a third call would only pay for the same answer.
+            hit = struct[2] if gate == "wish_novelty_struct" else ""
+            if hit and hit == last_hit:
+                print(f"[wish] {agent.id} keeps returning to the same wish -- no further try today",
+                      flush=True)
+                break
+            last_hit = hit
         return None, "gates"
 
     # ---- chapter closure: the one LLM call (smart tier, rare) ----------------

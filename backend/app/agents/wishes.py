@@ -1019,7 +1019,12 @@ def recent_wishes(agent: "Agent", day: int) -> list:
 
 
 def structural_novelty_ok(agent: "Agent", reqs, day: int) -> tuple:
-    """Same person, same doings. Returns (ok, reason):
+    """(ok, reason) -- see structural_collision, which also names the wish it hit."""
+    return structural_collision(agent, reqs, day)[:2]
+
+
+def structural_collision(agent: "Agent", reqs, day: int) -> tuple:
+    """Same person, same doings. Returns (ok, reason, the id of the wish it repeats):
       - overlapping an ACTIVE wish -> refused: the same thing cannot be held twice;
       - overlapping a recently ABANDONED / FAILED one inside the cooldown -> refused:
         letting go needs time, or the abandonment friction means nothing;
@@ -1035,17 +1040,17 @@ def structural_novelty_ok(agent: "Agent", reqs, day: int) -> tuple:
         if w.status == "active":
             return False, (f"repeats a wish they are already pursuing (\"{w.title}\", "
                            f"{share:.0%} the same requirements) -- the same thing cannot be "
-                           f"held twice; want something else")
+                           f"held twice; want something else"), w.id
         if w.status in ("abandoned", "failed") and day - w.ended_on < STRUCT_COOLDOWN_DAYS:
             return False, (f"repeats \"{w.title}\", which they let go only {day - w.ended_on} "
                            f"day(s) ago ({share:.0%} the same requirements) -- something just "
-                           f"put down needs time; want something else")
+                           f"put down needs time; want something else"), w.id
         if (w.status == "completed" and _req_keys(reqs) == _req_keys(w.requirements)
                 and day - w.ended_on < STRUCT_SEQUEL_MIN_DAYS):
             return False, (f"is exactly \"{w.title}\" again, which they completed only "
                            f"{day - w.ended_on} day(s) ago -- having just done the same thing, "
-                           f"they need a new direction; a sequel adds or changes something")
-    return True, ""
+                           f"they need a new direction; a sequel adds or changes something"), w.id
+    return True, "", ""
 
 
 # ---- material -----------------------------------------------------------------

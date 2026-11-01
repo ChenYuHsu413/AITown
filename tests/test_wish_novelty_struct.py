@@ -155,7 +155,10 @@ class InTheGenerationLoop(unittest.TestCase):
             got, outcome = asyncio.run(d.grow_wish(a, world, 5, "", attempts=rows))
         self.assertIsNone(got)
         self.assertEqual(outcome, "gates")
-        self.assertEqual(builders.GATE_REJECTS["wish_novelty_struct"] - before, 1 + wishes_mod.GENERATION_RETRIES)
+        # Two refusals into the same old wish and the loop stops: a third call would
+        # only pay for the same answer (2026-11 developer rule).
+        self.assertEqual(builders.GATE_REJECTS["wish_novelty_struct"] - before, 2)
+        self.assertEqual(len(rows), 2)
         self.assertTrue(all(r.get("gate") == "wish_novelty_struct" for r in rows if r["outcome"] == "gate_rejected"))
         self.assertIn("already pursuing", prompts[1])      # the retry is told why
 
