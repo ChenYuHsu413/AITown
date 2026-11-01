@@ -127,6 +127,30 @@ docker run -d --name aitown-pg --restart unless-stopped \
 在繁中模式下,對話、反思等自由文本任務會改走中文可靠的鏈(Gemini → Gemini 2.0 → Groq 70b → OpenRouter 中文模型 → mock),Claude 一樣在最前面。
 設了 `AI_TOWN_PAID=1` 加 `OPENROUTER_API_KEY` 時,對話、反思、章節收束、願望生成這幾條鏈會在 Claude 之後、免費層之前插入 DeepSeek v4 flash 和第二付費模型;便宜的結構化任務只把 DeepSeek 接在鏈尾。
 
+### 4. 常駐運行(Windows):`start.bat` / `stop.bat`
+
+正式小鎮的開關用這兩個腳本(雙擊或從命令列執行皆可):
+
+```bat
+scripts\start.bat     :: 啟動
+scripts\stop.bat      :: 標準關機
+```
+
+- **`start.bat`**:
+  - 確認 Docker 的 `aitown-pg` 容器在跑,沒跑就啟動並等到 DB 就緒;
+  - 8010 已經有 server 時,只提示「已在運行」就退出,不會開第二份;
+  - 以獨立行程啟動 uvicorn,關掉命令視窗也不會跟著停;
+  - log 寫在 `%LOCALAPPDATA%\AITown\logs\server.log`(repo 外);
+  - 等到 `/healthz` 回應,印出世界從哪一刻恢復(例:`resumed at Day 11 · 週四 20:07`);失敗時印出 log 路徑。
+- **`stop.bat`**(標準關機程序):
+  1. pause,凍結時鐘;
+  2. 等背景工作歸零(`inflight` 0)、快照定稿(`drained`);
+  3. 確認 DB 裡的快照和凍結的時鐘一致;
+  4. 停掉 server。
+  - 任何一步沒過,就讓 server 保持 pause 狀態繼續開著,不硬關。再跑一次即可。
+- 兩個腳本都會先設好 `PYTHONIOENCODING=utf-8`,並帶上 `AI_TOWN_GATE_DIAG=1`、`AI_TOWN_BUDGET_USD=30` 這兩個預設值(環境裡已經設定的值優先)。金鑰和 DB 連線仍由 server 自己讀 `.env`。
+- 從命令列執行時加任意參數(例:`scripts\start.bat q`),結束時就不會停下來等按鍵。實際邏輯在 `scripts/server_ctl.py`(只用標準庫)。
+
 ### 環境變數
 
 全部選用;什麼都不設就是 mock + 記憶體模式。`.env` 放在 repo 根目錄(真正的環境變數優先)。
