@@ -22,6 +22,7 @@ from typing import Callable
 
 from ..agents import chapters as chapters_mod
 from .. import pacing
+from ..agents import dayplan as dayplan_mod
 from ..agents import mood as mood_mod
 from ..agents import texts
 from ..agents import wishes as wishes_mod
@@ -1092,6 +1093,12 @@ class SimulationEngine:
         # if that window is already in the past, they decide again immediately.
         a.state.busy_until = init + duration
         b.state.busy_until = init + duration
+        # Generation latency froze both for longer than the talk itself lasted; a doing
+        # planned in that frozen stretch is deferred, not failed (agents/dayplan.py).
+        if self.now > init + duration:
+            for x in (a, b):
+                self.action_stats["deferred"] = (self.action_stats.get("deferred", 0)
+                                                 + dayplan_mod.defer_actions(x, init + duration, self.now))
         self.scheduler.schedule(a.id, max(self.now, a.state.busy_until))
         self.scheduler.schedule(b.id, max(self.now, b.state.busy_until))
 

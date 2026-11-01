@@ -322,6 +322,30 @@ def action_at(agent: "Agent", start: int) -> dict | None:
     return None
 
 
+def defer_actions(agent: "Agent", lost_from: int, now: int) -> int:
+    """Time a resident spent frozen while a conversation was still generating is not
+    their own lateness: a planned doing whose hour fell in [lost_from, now) moves to
+    start now (same day, before 22:00), as its own stretch at its place. Returns how
+    many were moved."""
+    plan = agent.state.day_plan
+    if not plan or plan.get("day") != now // DAY + 1 or now <= lost_from:
+        return 0
+    lo, mod = lost_from % DAY, now % DAY
+    if lost_from // DAY != now // DAY:
+        lo = 0
+    moved = 0
+    for i, a in enumerate(plan.get("actions") or []):
+        if a.get("state") != "planned" or not (a["from"] < mod and a["to"] > lo):
+            continue
+        if mod + 60 > 22 * 60:
+            continue                      # too late today -- the lapse rule will settle it
+        plan["slots"] = [s for s in plan.get("slots") or [] if s.get("act") != i]
+        a["from"], a["to"], a["within"] = mod, mod + 60, False
+        plan["slots"].append({"from": mod, "to": mod + 60, "location": a["location"], "action": "free", "act": i})
+        moved += 1
+    return moved
+
+
 def action_due(agent: "Agent", now: int) -> dict | None:
     """A planned doing that rides inside a same-place stretch and whose hour is now."""
     plan = agent.state.day_plan

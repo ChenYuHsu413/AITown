@@ -207,6 +207,27 @@ class Execution(unittest.TestCase):
         self.assertEqual(self.kz.state.day_plan["actions"][0]["state"], "failed")
 
 
+class FrozenTime(unittest.TestCase):
+    def test_a_doing_lost_to_a_generating_conversation_is_deferred_not_failed(self):
+        world, engine = make_world()
+        kz = world.agents["kuaizheng"]
+        kz.state.day_plan = plan_for(kz, world, act(hour=15))
+        moved = dayplan_mod.defer_actions(kz, DAY0 + 14 * 60 + 50, DAY0 + 16 * 60 + 5)
+        self.assertEqual(moved, 1)
+        a = kz.state.day_plan["actions"][0]
+        self.assertEqual((a["from"], a["to"], a["state"]), (16 * 60 + 5, 17 * 60 + 5, "planned"))
+        self.assertEqual([s["from"] for s in kz.state.day_plan["slots"] if s.get("act") == 0], [16 * 60 + 5])
+        kz.state.location, kz.state.current_action = "park", "rest"
+        decide(engine, world, kz, DAY0 + 16 * 60 + 10)
+        self.assertEqual(a["state"], "done")
+
+    def test_nothing_moves_when_the_hour_was_not_lost(self):
+        world, engine = make_world()
+        kz = world.agents["kuaizheng"]
+        kz.state.day_plan = plan_for(kz, world, act(hour=18))
+        self.assertEqual(dayplan_mod.defer_actions(kz, DAY0 + 14 * 60, DAY0 + 16 * 60), 0)
+
+
 class Objects(unittest.TestCase):
     def test_passers_by_take_it_in_once_and_scenes_show_it(self):
         world, engine = make_world()
