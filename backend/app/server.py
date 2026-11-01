@@ -897,7 +897,7 @@ class Sim:
             "user_speed": self._user_speed,
             "live": self.live, "paid": self.paid,   # frontend gates the 20x button on these
             "locations": [
-                {"id": l.id, "name": l.name, "kind": l.kind, "x": l.x, "y": l.y,
+                {"id": l.id, "name": l.name, "name_zh": l.name_zh, "kind": l.kind, "x": l.x, "y": l.y,
                  "owner": l.owner, "landmarks": l.landmarks, "closed_days": l.closed_days,
                  "broken": l.broken}
                 for l in self.world.locations.values()
