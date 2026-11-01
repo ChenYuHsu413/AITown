@@ -137,6 +137,12 @@ MINOR_CLOSE_TEXT = {
 }
 
 
+def minor_close_text(status: str) -> str:
+    """The closing memory of a minor wish, in the town's language."""
+    from . import texts
+    return texts.T({"failed": "minor_failed", "abandoned": "minor_abandoned"}.get(status, "minor_completed"))
+
+
 # ---- model ------------------------------------------------------------------
 
 
@@ -409,6 +415,11 @@ def canonical_target(kind: str, raw_target: str, agent: "Agent", world: "World")
         if zh and t == zh:
             return key
     return t                           # unresolved -> feasibility will refuse it by name
+
+
+def _frustration_text() -> str:
+    from . import texts
+    return texts.T("wish_frustration")
 
 
 def validate_seed(raw: object, agent: "Agent", world: "World", day: int) -> tuple[dict | None, list]:
@@ -770,7 +781,7 @@ def note_blocked(agent: "Agent", wish: "Wish", now: int) -> bool:
     if st["last_frustration_day"] >= 0 and day - st["last_frustration_day"] < FRUSTRATION_COOLDOWN_DAYS:
         return False
     agent.memory.add(MemoryItem(minute=now, importance=4, kind="reflection",
-                                text=FRUSTRATION_TEXT, tags=[f"goal:{wish.id}"]))
+                                text=_frustration_text(), tags=[f"goal:{wish.id}"]))
     st["last_frustration_day"] = day
     wish.frustration_count += 1
     return True
@@ -1020,7 +1031,8 @@ def generation_material(agent: "Agent", world: "World", day: int, residue: str =
         "routine": routine,
         "unvisited_locations": unvisited,
         "no_regular_overlap_with": strangers,
-        "active_wishes": [{"title": w.title, "statement": w.statement} for w in active_wishes(agent)],
+        "active_wishes": [{"title": w.title, "statement": w.statement, "scale": w.scale}
+                          for w in active_wishes(agent)],
         "personality": dict(agent.profile.personality),
         "capacity": {s: capacity_left(agent, s) for s in SCALES},
         "in_pursuit": agent.chapter is not None and agent.chapter.chapter_type == "pursuit",

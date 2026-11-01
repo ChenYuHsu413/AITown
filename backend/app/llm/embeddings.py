@@ -37,7 +37,13 @@ class MockEmbedding(EmbeddingProvider):
         return [x / n for x in v]
 
     async def embed(self, text: str) -> list[float]:
-        words = [w for w in text.lower().split() if len(w) >= 2]
+        from ..agents import texts
+        if texts.has_cjk(text):
+            # Chinese has no spaces: a whitespace split would make the whole sentence
+            # one "word" and every pair of texts unrelated. Bigrams + names instead.
+            words = sorted(texts.tokens(text))
+        else:
+            words = [w for w in text.lower().split() if len(w) >= 2]
         if not words:
             words = ["empty"]
         acc = [0.0] * self.dim

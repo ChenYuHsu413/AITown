@@ -76,6 +76,10 @@ class MockProvider(LLMProvider):
     ) -> LLMResult:
         rng = random.Random(_seed_from(messages))
         prompt = " ".join(m.get("content", "") for m in messages).lower()
+        # A zh-native town gets Chinese knowledge from its floor too. Same branches,
+        # same dice -- only the words change -- so a mock run makes the same calls in
+        # both languages.
+        zh = os.environ.get("AI_TOWN_LANG", "en").strip().lower().startswith("zh")
 
         parsed: object
         if "task: wish_generation" in prompt:
@@ -98,20 +102,30 @@ class MockProvider(LLMProvider):
                 parsed = {"no_wish": True, "reason": "no material to build on"}
             elif rng.random() < 0.5 and unvisited:
                 place = unvisited[0]
-                parsed = {"title": f"Somewhere I never go", "scale": scales,
-                          "statement": f"I want to start spending real time at {place}, "
-                                       f"somewhere my days never take me.",
-                          "motivation": "The same rooms every week have started to feel small.",
-                          "narrative": "I am quietly trying to put myself somewhere new.",
+                text = ({"title": "一個我從不去的地方",
+                         "statement": f"我想開始真正花時間待在{{loc:{place}}},那是我的日子從來不會帶我去的地方。",
+                         "motivation": "每週都是同樣幾個地方,開始讓我覺得日子變窄了。",
+                         "narrative": "我正悄悄試著讓自己去一個新的地方。"} if zh else
+                        {"title": f"Somewhere I never go",
+                         "statement": f"I want to start spending real time at {place}, "
+                                      f"somewhere my days never take me.",
+                         "motivation": "The same rooms every week have started to feel small.",
+                         "narrative": "I am quietly trying to put myself somewhere new."})
+                parsed = {**text, "scale": scales,
                           "expires_in_days": 21, "provenance": ids[:2],
                           "requirements": [{"kind": "location_visits", "target": place, "threshold": 3}]}
             elif strangers:
                 who = strangers[0].lower()
-                parsed = {"title": "Someone I barely know", "scale": scales,
-                          "statement": f"I want to actually know {who.capitalize()}, "
-                                       f"who I have somehow never really spoken to.",
-                          "motivation": "It bothers me that we have shared a town this long.",
-                          "narrative": "I am quietly trying to get to know someone I never talk to.",
+                text = ({"title": "一個我幾乎不認識的人",
+                         "statement": f"我想真正認識{{agent:{who}}},我們不知怎麼的從來沒好好說過話。",
+                         "motivation": "我們在同一個小鎮住了這麼久,這件事讓我耿耿於懷。",
+                         "narrative": "我正悄悄試著去認識一個我從不交談的人。"} if zh else
+                        {"title": "Someone I barely know",
+                         "statement": f"I want to actually know {who.capitalize()}, "
+                                      f"who I have somehow never really spoken to.",
+                         "motivation": "It bothers me that we have shared a town this long.",
+                         "narrative": "I am quietly trying to get to know someone I never talk to."})
+                parsed = {**text, "scale": scales,
                           "expires_in_days": 21, "provenance": ids[:2],
                           "requirements": [{"kind": "talk_count", "target": who, "threshold": 3}]}
             else:
@@ -129,11 +143,15 @@ class MockProvider(LLMProvider):
                     break
             goal = raw.split("-- goal: ", 1)[1].split(". Outcome", 1)[0].strip() if "-- goal: " in raw else "that chapter"
             g = (goal[:1].lower() + goal[1:]) if goal else goal
-            line, residue = {
+            line, residue = ({
+                "completed": (f"我曾下定決心要{goal.rstrip('。')},這麼多天過去,我真的做到了。", "fulfilled"),
+                "failed": (f"我試著{goal.rstrip('。')},卻還是從指縫間溜走了;我仍在學著接受。", "unmoored"),
+                "abandoned": (f"我原本想{goal.rstrip('。')},但我選擇放下,我不後悔。", "relieved"),
+            } if zh else {
                 "completed": (f"I set out to {g}, and after all those days I actually did it.", "fulfilled"),
                 "failed": (f"I tried to {g} and it slipped through my fingers; I'm still learning to carry that.", "unmoored"),
                 "abandoned": (f"I meant to {g}, but I chose to let it go, and I stand by that.", "relieved"),
-            }[outcome]
+            })[outcome]
             refs = re.findall(r"\[([0-9a-f]{8})\]", raw)[:2]
             parsed = {"biography_line": line, "emotional_residue": residue, "memory_refs": refs}
         elif "appraise" in prompt:
@@ -144,13 +162,18 @@ class MockProvider(LLMProvider):
             src = (raw.split("Retell this:", 1)[-1].strip() if "Retell this:" in raw else "Something happened")
             head = (src[:1].lower() + src[1:]) if src else src
             transforms = [
+                lambda s: s.rstrip("。") + ",聽說是這樣。",   # tacked-on hedge
+                lambda s: "我聽說" + s,                        # secondhand framing
+                lambda s: "大家都說," + s,                     # rumor framing
+            ] if zh else [
                 lambda s: s.rstrip(".") + ", apparently.",   # tacked-on hedge
                 lambda s: "I heard that " + head,             # secondhand framing
                 lambda s: "Word is, " + head,                 # rumor framing
             ]
             parsed = {"text": rng.choice(transforms)(src)}
         elif "task: leak" in prompt:
-            parsed = {"text": "someone has been quietly keeping something from everyone", "sentiment": -0.4}
+            parsed = {"text": "有人一直悄悄瞞著大家一件事" if zh
+                      else "someone has been quietly keeping something from everyone", "sentiment": -0.4}
         elif "should_talk" in prompt:
             parsed = {"talk": rng.random() < 0.6, "reason": "mock heuristic"}
         elif "importance" in prompt:
@@ -170,7 +193,6 @@ class MockProvider(LLMProvider):
             # English rumor/confront text would fail the gate and let an English
             # provider-`floor` surface instead. In zh we therefore keep the canned
             # Chinese lines and drop the English mention.
-            zh = os.environ.get("AI_TOWN_LANG", "en").strip().lower().startswith("zh")
             is_confront = ("did this come from you" in prompt) or ("confrontation" in prompt)
             is_confide = "open up to" in prompt          # the confide injection's tell
             small_talk, concerns, closer = (
@@ -236,6 +258,9 @@ class MockProvider(LLMProvider):
         elif "reflection" in prompt:
             parsed = {
                 "insights": [
+                    "今天照著平常的步調過,有幾段有意義的對話。",
+                    "我應該多留意朋友們過得好不好。",
+                ] if zh else [
                     "Today followed the usual rhythm, with a few meaningful conversations.",
                     "I should pay more attention to how my friends are doing.",
                 ]
@@ -254,7 +279,7 @@ class MockProvider(LLMProvider):
             if resolved:
                 parsed["resolved_secret_ids"] = resolved
         elif "decision" in prompt:
-            if "people are saying" in prompt:
+            if "people are saying" in prompt or "大家在傳" in prompt or "大家都在傳" in prompt:
                 parsed = {"action": "seek_out", "reason": "wants to find out who is spreading this"}
             else:
                 parsed = {"action": "continue", "reason": "nothing unusual observed"}

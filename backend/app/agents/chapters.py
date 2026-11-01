@@ -77,12 +77,16 @@ def theme_keywords(*texts: str) -> list[str]:
     """Distinctive lower-case words (len > 3, minus stop words) across ``texts`` --
     the theme a chapter is 'about'. Placeholders like {landmark:installation}
     contribute their id (so 'installation' matches later mentions)."""
+    from . import texts as texts_mod
     out: list[str] = []
     for t in texts:
         for w in (t or "").replace("{", " ").replace("}", " ").replace(":", " ").split():
             c = w.strip(".,;:!?'\"()-").lower()
             if len(c) > 3 and c not in _STOP and c not in out:
                 out.append(c)
+        for bg in sorted(texts_mod.cjk_bigrams(t)):   # a zh goal's topic words
+            if bg not in out:
+                out.append(bg)
     return out
 
 
@@ -177,11 +181,11 @@ def make_pursuit(goal: str, title: str, narrative: str, day: int,
 
 
 def make_ordinary(agent: "Agent", day: int) -> Chapter:
-    occ = agent.profile.occupation
+    from . import texts as texts_mod
+    occ = texts_mod.occupation_text(agent.profile.occupation)
     return Chapter(
-        id=uuid.uuid4().hex[:8], chapter_type="ordinary", title="Ordinary days",
-        narrative=(f"Living an ordinary stretch of days as a {occ.lower()}; nothing in "
-                   f"particular is pulling at me right now."),
+        id=uuid.uuid4().hex[:8], chapter_type="ordinary", title=texts_mod.T("ordinary_title"),
+        narrative=texts_mod.T("ordinary_narrative", occupation=occ if texts_mod.zh_native() else occ.lower()),
         started_on=day,
     )
 
@@ -203,9 +207,10 @@ _RESIDUE_NARRATIVE = {
 
 
 def make_interlude(residue: str, day: int, until_day: int) -> Chapter:
+    from . import texts as texts_mod
     return Chapter(
-        id=uuid.uuid4().hex[:8], chapter_type="interlude", title="Between chapters",
-        narrative=_RESIDUE_NARRATIVE.get(residue, _RESIDUE_NARRATIVE["fulfilled"]),
+        id=uuid.uuid4().hex[:8], chapter_type="interlude", title=texts_mod.T("interlude_title"),
+        narrative=texts_mod.residue_narrative(residue, _RESIDUE_NARRATIVE),
         started_on=day, emotional_residue=residue, until_day=until_day,
     )
 
@@ -254,12 +259,14 @@ def is_related_memory(item: MemoryItem, chapter: Chapter) -> bool:
         return True
     if chapter.related_landmark_id and f"{{landmark:{chapter.related_landmark_id}}}" in item.text:
         return True
-    words = {w.strip(".,;:!?'\"()-").lower() for w in item.text.split()}
+    from . import texts as texts_mod
+    words = texts_mod.word_set(item.text, strip=".,;:!?'\"()-")
     return len(words & set(chapter.theme)) >= BIOGRAPHY_TOPIC_MIN
 
 
 def is_related_belief(belief, chapter: Chapter) -> bool:
-    words = {w.strip(".,;:!?'\"()-").lower() for w in belief.text.split()}
+    from . import texts as texts_mod
+    words = texts_mod.word_set(belief.text, strip=".,;:!?'\"()-")
     return len(words & set(chapter.theme)) >= BIOGRAPHY_TOPIC_MIN
 
 
@@ -336,11 +343,11 @@ def closure_material(agent: "Agent", world: "World", chapter: Chapter, now: int,
 
     # Who they interacted with most during the chapter (conversation memories in
     # the window), who helped (trusted + talked to), who rubbed them wrong (conflict).
+    from . import texts as texts_mod
     talks: dict[str, int] = {}
     for m in agent.memory.items:
-        if (m.kind == "conversation" and start_min <= m.minute < end_excl
-                and "Talked with {agent:" in m.text):
-            oid = m.text.split("{agent:", 1)[1].split("}", 1)[0]
+        oid = texts_mod.talked_with_partner(m.text) if m.kind == "conversation" else None
+        if oid and start_min <= m.minute < end_excl:
             talks[oid] = talks.get(oid, 0) + 1
     most = sorted(talks.items(), key=lambda kv: -kv[1])[:3]
     helpers = [oid for oid, _ in most if agent.rel(oid).trust >= 60]
@@ -383,15 +390,16 @@ def relationship_summary_lines(material: dict, world: "World") -> list[str]:
 
 
 def template_biography(agent: "Agent", chapter: Chapter, outcome: str) -> str:
-    """Rule-layer stand-in for the closure reflection's line (first person, English,
-    toned by outcome). Used when the model fails; never blocks closure."""
+    """Rule-layer stand-in for the closure reflection's line (first person, in the
+    town's language, toned by outcome). Used when the model fails; never blocks closure."""
+    from . import texts as texts_mod
     what = chapter.goal or chapter.title
-    what = what[:1].lower() + what[1:] if what else "that chapter"
-    if outcome == "completed":
-        return f"I set out to {what} -- and I did it. That part of my life is finished now."
-    if outcome == "failed":
-        return f"I tried to {what}, and it didn't work out. I'm learning to carry that."
-    return f"I meant to {what}, but I chose to let it go. That was my call, and I stand by it."
+    if texts_mod.zh_native():
+        what = what.rstrip("。") if what else texts_mod.T("that_chapter")
+    else:
+        what = what[:1].lower() + what[1:] if what else texts_mod.T("that_chapter")
+    key = {"completed": "bio_completed", "failed": "bio_failed"}.get(outcome, "bio_abandoned")
+    return texts_mod.T(key, what=what)
 
 
 def validate_closure_output(parsed: object, material: dict) -> dict | None:
@@ -399,15 +407,24 @@ def validate_closure_output(parsed: object, material: dict) -> dict | None:
     {biography_line, emotional_residue, memory_refs} or None (-> template)."""
     if not isinstance(parsed, dict):
         return None
+    from . import texts as texts_mod
     line = str(parsed.get("biography_line") or "").strip()
-    words = line.split()
-    if len(line) < 20 or len(words) < 5 or len(line) > 400:
-        return None
-    if any(ord(ch) > 0x2E7F for ch in line):          # CJK / gibberish -> internal English only
-        return None
-    low = line.lower()
-    if not any(t in low for t in ("i ", "i'", "my ", "me ", "myself")):   # must be first person
-        return None
+    if texts_mod.zh_native():
+        # zh-native: one real Chinese sentence, in the first person (我).
+        from .decision import zh_quality_reason
+        if len(line) < 10 or len(line) > 200 or zh_quality_reason(line) is not None:
+            return None
+        if "我" not in line:
+            return None
+    else:
+        words = line.split()
+        if len(line) < 20 or len(words) < 5 or len(line) > 400:
+            return None
+        if any(ord(ch) > 0x2E7F for ch in line):          # CJK / gibberish -> internal English only
+            return None
+        low = line.lower()
+        if not any(t in low for t in ("i ", "i'", "my ", "me ", "myself")):   # must be first person
+            return None
     # No invented figures: a biography is a near-permanent memory, so every number
     # in it must come from the material -- a listed memory or the true day span.
     # (The prompt also forbids it; this is the cheap mechanical backstop.)
@@ -422,7 +439,10 @@ def validate_closure_output(parsed: object, material: dict) -> dict | None:
         return None
     # Forbidden meanings for this closure (e.g. "asked" on a question never asked).
     for term in material.get("forbid_terms", []):
-        if _re.search(rf"\b{_re.escape(term)}\b", line, _re.I):
+        if texts_mod.has_cjk(term):
+            if term in line:
+                return None
+        elif _re.search(rf"\b{_re.escape(term)}\b", line, _re.I):
             return None
     residue = str(parsed.get("emotional_residue") or "").strip().lower()
     if residue not in RESIDUES:

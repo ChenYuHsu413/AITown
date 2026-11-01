@@ -49,6 +49,38 @@ def _lang_directive() -> str:
     )
 
 
+# ---- zh-native knowledge text ---------------------------------------------
+# A zh-native town writes its knowledge (reflections, rumors, biographies, wishes)
+# in Chinese at the source -- nothing is translated afterwards. These pick, per
+# prompt, between the English-canonical wording each prompt always had and its
+# zh-native counterpart; JSON keys, ids and enum values stay English in both.
+ZH_KNOWLEDGE = (" Write every human-readable text value in natural Traditional Chinese (zh-TW) "
+                "-- this is the town's own language, not a translation -- and name people by "
+                "their Chinese names. Keep all JSON keys, ids and enum values in English.")
+
+
+def knowledge_lang(english: str) -> str:
+    """The "which language do I write in" sentence of a knowledge prompt."""
+    return ZH_KNOWLEDGE if lang_is_zh() else english
+
+
+def knowledge_roster() -> str:
+    """The cast lists for a knowledge prompt: English (pinyin) forms for the
+    English-canonical town, Chinese forms for a zh-native one."""
+    if lang_is_zh():
+        return roster_directive() + roster_gender_directive()
+    return roster_directive(english_only=True) + roster_gender_directive(english_only=True)
+
+
+def card_name(agent: "Agent") -> str:
+    """How a knowledge prompt names the resident it is about: the pinyin (== id)
+    in English, so beliefs come back with names the sim resolves; the zh name
+    with its id in a zh-native town."""
+    if lang_is_zh():
+        return f"{agent.profile.name} ({agent.id.capitalize()})"
+    return agent.id.capitalize()
+
+
 def time_of_day(minute: int) -> str:
     h = (minute % 1440) // 60
     return ("late night" if h < 6 else "morning" if h < 11 else "midday" if h < 14
@@ -137,6 +169,8 @@ GATE_REJECTS: dict[str, int] = {
     "translate_person": 0, "translate_gender": 0, "generation_gender": 0, "roster_missing": 0,
     # The three gates a grown wish must survive (phase 2b, see agents/wishes.py).
     "wish_feasibility": 0, "wish_deviation": 0, "wish_novelty": 0,
+    # zh-native knowledge that came back in English / soup / empty (decision.reflection_zh_ok).
+    "zh_quality": 0,
 }
 
 
@@ -201,7 +235,9 @@ def character_card(agent: "Agent", name: str | None = None, speech: bool = False
     from ...agents import chapters as chapters_mod
     p = agent.profile
     traits = ", ".join(p.traits)
-    card = f"{name or p.name}, {p.age}, {p.occupation}. Traits: {traits}. {chapters_mod.narrative(agent)}"
+    from ...agents import texts as texts_mod
+    card = (f"{name or p.name}, {p.age}, {texts_mod.occupation_text(p.occupation)}. "
+            f"Traits: {traits}. {chapters_mod.narrative(agent)}")
     if chapters_mod.chapter_type(agent) == "ordinary" and p.goals:
         card += f" Standing aim: {p.goals[0]['goal']}."
     # Speech style is only worth its tokens where the reader hears the voice --
@@ -376,10 +412,10 @@ def distort_prompt(text: str) -> list[dict]:
             "content": (
                 "You retell a piece of gossip in a life simulation, passing it along to "
                 "someone new. Rewrite it in your own words, allowing slight memory drift -- "
-                "one sentence, same gist. Write in English (this is internal knowledge, not "
-                "spoken lines). Respond ONLY with JSON: {\"text\": \"...\"}. Task: distort."
-                + roster_directive(english_only=True)
-                + roster_gender_directive(english_only=True)
+                "one sentence, same gist."
+                + knowledge_lang(" Write in English (this is internal knowledge, not spoken lines).")
+                + " Respond ONLY with JSON: {\"text\": \"...\"}. Task: distort."
+                + knowledge_roster()
             ),
         },
         {"role": "user", "content": f"Retell this: {text}"},
@@ -393,11 +429,11 @@ def leak_prompt(owner_name: str, secret_text: str) -> list[dict]:
             "content": (
                 "You turn someone's private secret into a piece of third-person gossip about them, as it "
                 "would first be whispered to another person. One sentence, same substance, named in the third "
-                "person. Write in English (this is internal knowledge, not spoken lines). "
-                'Respond ONLY with JSON: {"text": "...", "sentiment": -1..1} where sentiment is how '
+                "person."
+                + knowledge_lang(" Write in English (this is internal knowledge, not spoken lines).")
+                + ' Respond ONLY with JSON: {"text": "...", "sentiment": -1..1} where sentiment is how '
                 "damaging/negative it is for that person. Task: leak."
-                + roster_directive(english_only=True)
-                + roster_gender_directive(english_only=True)
+                + knowledge_roster()
             ),
         },
         {"role": "user", "content": f"{owner_name}'s secret: {secret_text}"},
@@ -460,9 +496,14 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
                 '"beliefs" are 0-2 LASTING impressions about a specific person or place -- formed ONLY when '
                 "today's experience repeats or confirms something you already sensed; a single event is NOT "
                 "enough, so prefer an empty list (be sparing). \"subject\" is the exact name of an agent or "
-                'place; "text" is one COMPLETE descriptive English sentence; "sentiment" is how '
-                "positive(+1)/negative(-1) the impression is. "
-                'GOOD text: "Xue seems increasingly determined to leave her job". BAD text: "ok". '
+                + ('place (the English form or id); "text" is one COMPLETE descriptive sentence in '
+                   'Traditional Chinese; "sentiment" is how positive(+1)/negative(-1) the impression is. '
+                   'GOOD text: "雪似乎越來越下定決心要離開她的工作". BAD text: "還好". '
+                   if lang_is_zh() else
+                   'place; "text" is one COMPLETE descriptive English sentence; "sentiment" is how '
+                   "positive(+1)/negative(-1) the impression is. "
+                   'GOOD text: "Xue seems increasingly determined to leave her job". BAD text: "ok". ')
+                +
                 "Return an empty list rather than a vague or filler impression. "
                 '"new_secret" is a private matter this character is quietly keeping from others -- return one '
                 "ONLY if today surfaced a clear unspoken worry or hidden truth of their own; otherwise null "
@@ -476,10 +517,10 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
                    "resolve built over many days, not a single bad afternoon). This is rare: the vast "
                    "majority of reflections MUST return null. When you do choose, give the id and a reason "
                    "grounded in the accumulated evidence. " if transitions else "")
-                + "Write all text in English (this is internal knowledge, translated for display separately). "
-                "Task: reflection."
-                + roster_directive(english_only=True)
-                + roster_gender_directive(english_only=True)
+                + knowledge_lang("Write all text in English (this is internal knowledge, translated for "
+                                 "display separately).")
+                + " Task: reflection."
+                + knowledge_roster()
             ),
         },
         {
@@ -487,7 +528,7 @@ def reflection_prompt(agent: "Agent", day_events: list[str], open_secrets: list 
             "content": (
                 # Present the reflecting agent by their English name too, so beliefs
                 # come back with roster names the sim can resolve.
-                f"{character_card(agent, name=agent.id.capitalize())}\n"
+                f"{character_card(agent, name=card_name(agent))}\n"
                 "Events today:\n" + "\n".join(f"- {e}" for e in day_events[-15:])
                 + secrets_block + transitions_block
             ),
@@ -531,8 +572,10 @@ def chapter_closure_prompt(agent: "Agent", material: dict, outcome: str,
                 "You write the closing line of a chapter in a life-sim character's life. "
                 'Respond ONLY with JSON: {"biography_line": "...", "emotional_residue": "<word>", '
                 '"memory_refs": ["<id>", ...]}. '
-                '"biography_line" is ONE sentence (max ~35 words), FIRST PERSON, in English, that '
-                f"sums up what this chapter was and how it ended -- tone: {tone}. It must be "
+                + ('"biography_line" is ONE sentence (at most ~60 characters), FIRST PERSON (我), in '
+                   'Traditional Chinese, that ' if lang_is_zh() else
+                   '"biography_line" is ONE sentence (max ~35 words), FIRST PERSON, in English, that ')
+                + f"sums up what this chapter was and how it ended -- tone: {tone}. It must be "
                 "specific to the memories given (no invented facts). Any duration, count or "
                 "specific number may ONLY come from the listed memories or the day span given "
                 "below; if the material doesn't say, leave it out entirely. "
@@ -540,14 +583,14 @@ def chapter_closure_prompt(agent: "Agent", material: dict, outcome: str,
                 'few days. "memory_refs" lists the ids of the listed memories the line draws on. '
                 + forbid +
                 " Task: chapter_closure."
-                + roster_directive(english_only=True)
-                + roster_gender_directive(english_only=True)
+                + knowledge_roster()
+                + (ZH_KNOWLEDGE if lang_is_zh() else "")
             ),
         },
         {
             "role": "user",
             "content": (
-                f"{character_card(agent, name=agent.id.capitalize())}\n"
+                f"{character_card(agent, name=card_name(agent))}\n"
                 f"Chapter now closing: \"{ch.get('title', '')}\" -- goal: {ch.get('goal') or ch.get('title', '')}. "
                 f"Outcome: {outcome}. It ran from Day {material['window']['start_day']} to "
                 f"Day {material['window']['end_day']} (about {material['window']['days']} days).\n"
@@ -586,7 +629,10 @@ def wish_generation_prompt(agent: "Agent", material: dict, rejection: str = "") 
     # target is the lower-case id.
     strangers = ", ".join(material["no_regular_overlap_with"]) or "(nobody)"
     people_ids = ", ".join(sorted(x[0].lower() for x in roster_genders())) or "-"
-    holding = lines(material["active_wishes"], lambda w: f"  \"{w['title']}\": {w['statement']}",
+    # Each held wish carries its true scale: a model shown bare titles once called a
+    # minor wish "major" in its own decline reason.
+    holding = lines(material["active_wishes"],
+                    lambda w: f"  [{w.get('scale', '?')}] \"{w['title']}\": {w['statement']}",
                     "  (nothing)")
     residue = (f"\nHow the last chapter left them feeling: {material['residue']}."
                if material.get("residue") else "")
@@ -643,13 +689,13 @@ def wish_generation_prompt(agent: "Agent", material: dict, rejection: str = "") 
         "right now. Want something that is actually theirs and actually next.\n\n"
         "Prefer the small and specific over the grand and vague. A wish that reaches toward "
         "one person or one place beats one that gestures at a whole life."
-        + roster_directive(english_only=True)
-        + roster_gender_directive(english_only=True)
-        + " Write all text in English (this is internal knowledge, translated for display "
-          "separately). Task: wish_generation."
+        + knowledge_roster()
+        + knowledge_lang(" Write all text in English (this is internal knowledge, translated for display "
+                         "separately).")
+        + " Task: wish_generation."
     )
     user = (
-        f"{character_card(agent, name=agent.id.capitalize())}\n"
+        f"{character_card(agent, name=card_name(agent))}\n"
         f"Personality: {traits}.{residue}\n\n"
         f"The chapters of their life so far (their own words, at each closing):\n{bio}\n\n"
         f"What is on their mind lately:\n{mems}\n\n"
@@ -657,7 +703,7 @@ def wish_generation_prompt(agent: "Agent", material: dict, rejection: str = "") 
         f"Their week, as it already stands:\n{routine}\n"
         f"Places their routine never takes them: {unvisited}\n"
         f"People they never regularly cross paths with: {strangers}\n\n"
-        f"Already holding:\n{holding}\n"
+        f"Already holding (scale in brackets):\n{holding}\n"
         f"They may propose a wish of scale: {', '.join(allowed_scales) or '(none -- decline)'}."
         f"{feedback}"
     )

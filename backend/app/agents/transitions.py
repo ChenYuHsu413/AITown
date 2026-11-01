@@ -101,6 +101,16 @@ class TransitionTemplate:
     effects: Callable[["Agent", "World"], None]  # mutate profile/state/routine only
     clears_goal: tuple[str, ...] = ()            # drop existing goals matching these substrings
     resolves_secret_kw: tuple[str, ...] = ()     # resolve owner's secrets whose text matches (engine-side)
+    label_zh: str = ""                           # the same, written for a zh-native town
+    goal_zh: str = ""
+
+    def label_text(self) -> str:
+        from . import texts
+        return self.label_zh if texts.zh_native() and self.label_zh else self.label
+
+    def goal_text(self) -> str:
+        from . import texts
+        return self.goal_zh if texts.zh_native() and self.goal_zh else self.goal
 
 
 REGISTRY: dict[str, TransitionTemplate] = {}
@@ -142,8 +152,9 @@ _register(TransitionTemplate(
     id="quit_job", label="quit your current job to look for something that fits better",
     goal="Find a job that feels right", occupation="job seeker",
     precondition=_pre_quit, effects=_eff_quit,
-    clears_goal=("job", "quit", "resign"),
-    resolves_secret_kw=("interview", "resign", "quit", "job"),
+    clears_goal=("job", "quit", "resign", "工作", "辭職", "辭掉"),
+    resolves_secret_kw=("interview", "resign", "quit", "job", "面試", "辭職", "辭掉", "工作"),
+    label_zh="辭掉現在的工作,去找更適合自己的", goal_zh="找到一份感覺對的工作",
 ))
 
 
@@ -177,14 +188,16 @@ _register(TransitionTemplate(
     id="take_job_cafe", label="take a job working at the cafe",
     goal="Make a real go of working at the cafe", occupation="cafe staff",
     precondition=_shop_precondition("cafe"), effects=_shop_effects("cafe", "cafe staff"),
-    clears_goal=("job", "quit", "resign"),
+    clears_goal=("job", "quit", "resign", "工作", "辭職", "辭掉"),
+    label_zh="去咖啡館工作", goal_zh="在咖啡館好好做出一番成績",
 ))
 
 _register(TransitionTemplate(
     id="take_job_bakery", label="take a job working at the bakery",
     goal="Make a real go of working at the bakery", occupation="bakery staff",
     precondition=_shop_precondition("bakery"), effects=_shop_effects("bakery", "bakery staff"),
-    clears_goal=("job", "quit", "resign"),
+    clears_goal=("job", "quit", "resign", "工作", "辭職", "辭掉"),
+    label_zh="去麵包店工作", goal_zh="在麵包店好好做出一番成績",
 ))
 
 
@@ -205,5 +218,6 @@ _register(TransitionTemplate(
     id="freelance_from_home", label="strike out on your own, freelancing from home",
     goal="Build a freelance living on my own terms", occupation="freelancer",
     precondition=_pre_freelance, effects=_eff_freelance,
-    clears_goal=("job", "quit", "resign"),
+    clears_goal=("job", "quit", "resign", "工作", "辭職", "辭掉"),
+    label_zh="自立門戶,在家接案", goal_zh="照自己的方式,靠接案過生活",
 ))

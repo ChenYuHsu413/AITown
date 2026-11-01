@@ -14,7 +14,7 @@ falls through the chain. The mock provider is always last -> the sim never dies
 and the budget guard always has a free floor to collapse to.
 
 Env: AI_TOWN_LIVE, GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY,
-     AI_TOWN_BUDGET_USD (default 1.0; <=0 disables the cap).
+     ANTHROPIC_API_KEY, AI_TOWN_BUDGET_USD (default 10.0; <=0 disables the cap).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from .env import load_env
 from .prompts import builders
 from .providers.base import LLMProvider
 from .providers.mock import MockProvider
-from .router import LLMRouter
+from .router import TASK_TIERS, LLMRouter
 
 
 def _make_console_safe() -> None:
@@ -44,11 +44,11 @@ def _make_console_safe() -> None:
 
 
 def _budget_from_env() -> float | None:
-    raw = os.environ.get("AI_TOWN_BUDGET_USD", "5.0").strip()
+    raw = os.environ.get("AI_TOWN_BUDGET_USD", "10.0").strip()
     try:
         value = float(raw)
     except ValueError:
-        return 5.0
+        return 10.0
     return None if value <= 0 else value
 
 
@@ -108,9 +108,20 @@ def build_router(live: bool | None = None) -> LLMRouter:
         if zh_model:
             openrouter_zh = OpenRouterProvider(model=zh_model)
 
-    if not any((small, gem, nano, openrouter)):
+    claude_fast = claude_smart = None
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        from .providers.anthropic_provider import AnthropicProvider
+        # One instance per model: Anthropic rate-limits per model, so a 429 should
+        # cool every chain that model heads, and nothing else.
+        claude_fast = AnthropicProvider(model="claude-haiku-5-5",
+                                        input_price_per_m=0.10, output_price_per_m=0.50)
+        claude_smart = AnthropicProvider(model="claude-sonnet-5-5",
+                                         input_price_per_m=2.00, output_price_per_m=10.00)
+
+    if not any((small, gem, nano, openrouter, claude_fast)):
         print("[llm] AI_TOWN_LIVE=1 but no provider key found "
-              "(GROQ_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY) -- staying on mock")
+              "(ANTHROPIC_API_KEY / GROQ_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY / "
+              "OPENROUTER_API_KEY) -- staying on mock")
 
     def chain(*providers: LLMProvider | None, or_tail: bool = True) -> list[LLMProvider]:
         out = [p for p in providers if p is not None]
@@ -140,11 +151,14 @@ def build_router(live: bool | None = None) -> LLMRouter:
         # Chinese-capable openrouter_zh goes on the tail (before mock) instead, and a
         # gibberish gate (see decision._zh_text_ok) rejects any character-soup it emits.
         zh_reliable = chain(gem, gem_lite, large, openrouter_zh, or_tail=False)  # mock floor last
-        # dialogue = live zh performance; translate = English knowledge -> zh for display.
-        # (reflection/distort/leak are now English-canonical, so they use the normal
-        # English chains -- no zh routing.)
+        # dialogue = live zh performance; translate = the formal era's English knowledge
+        # -> zh (retired for the zh-native era, kept for its cache).
         task_chains["dialogue"] = zh_reliable
         task_chains["translate"] = zh_reliable
+        # zh-native knowledge: every free-text task now writes Chinese, so none of
+        # them may fall back onto a model that garbles it.
+        for t in ("reflection", "distort", "leak", "summary", "chapter_closure", "wish_generation"):
+            task_chains[t] = zh_reliable
 
     # ---- paid-first config (AI_TOWN_PAID=1) ---------------------------
     # Put a cheap-but-strong paid model at the FRONT of the reader-facing free-text
@@ -198,9 +212,25 @@ def build_router(live: bool | None = None) -> LLMRouter:
         print(f"[live] paid-first: dialogue/reflection -> deepseek-v4-flash -> {zh2_slug} | "
               f"translate -> {tr_slug} -> {zh2_slug} | cheap tasks free-first (deepseek tail)", flush=True)
 
+    # ---- Claude first (ANTHROPIC_API_KEY) -----------------------------
+    # Claude heads every chain: Haiku for cheap/normal work, Sonnet for the smart
+    # tier. Everything built above -- DeepSeek, Kimi, the free layer, the mock
+    # floor -- stays behind it unchanged as the fallback, so a Claude 429 / outage /
+    # refusal degrades exactly as the old chains did.
+    if claude_fast is not None:
+        def claude_for(tier: str) -> LLMProvider:
+            return claude_smart if tier == "smart" else claude_fast
+        for tier in tiers:
+            tiers[tier] = [claude_for(tier)] + tiers[tier]
+        for task in task_chains:   # tasks without an override already use the tiers
+            task_chains[task] = [claude_for(TASK_TIERS.get(task, "normal"))] + task_chains[task]
+        print("[live] claude-first: cheap/normal -> claude-haiku-5-5 | smart -> claude-sonnet-5-5 "
+              "| previous chains kept as fallback", flush=True)
+
     # Startup live-status summary: make "am I actually on real models?" a one-line,
     # unmissable fact (a server restarted without .env in scope would show mock-only).
     tags = []
+    if claude_fast: tags.append("anthropic [ok]")
     if small: tags.append("groq [ok]")
     if gem: tags.append("gemini [ok]")
     if nano: tags.append("openai [ok]")
@@ -214,7 +244,9 @@ def build_router(live: bool | None = None) -> LLMRouter:
     # Loud, unmissable mode banner: the #1 confusion is "is paid actually on?".
     # AI_TOWN_PAID=1 only takes effect with an OpenRouter key -- if it's set but the
     # key is missing, say so here rather than silently running the free config.
-    if paid and openrouter is not None:
+    if claude_fast is not None:
+        mode = "CLAUDE-FIRST  (Haiku / Sonnet; previous chains as fallback)"
+    elif paid and openrouter is not None:
         mode = "PAID  (DeepSeek-first dialogue/reflection; live speed uncapped)"
     elif paid:
         mode = "FREE-QUOTA  [!] AI_TOWN_PAID=1 but no OPENROUTER_API_KEY -> paid config NOT active"

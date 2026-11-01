@@ -176,9 +176,11 @@ class EpisodicMemory:
         about it (names the subject or shares >=2 theme words); 1.0 otherwise."""
         if not self.suppressed or kind not in ("reflection", "rumor"):
             return 1.0
-        words = {w.strip(".,;:!?'\"").lower() for w in text.split()}
+        from . import texts
+        words = texts.word_set(text)
         for subj, kws, before in self.suppressed:
-            if minute < before and ((subj and subj in words) or len(kws & words) >= 2):
+            if minute < before and ((subj and (subj in words or (texts.zh_native() and texts.mentions(text, subj))))
+                                    or len(kws & words) >= 2):
                 return 0.5
         return 1.0
 
@@ -216,7 +218,8 @@ class EpisodicMemory:
     BIOGRAPHY_TOPIC_MIN = 2
 
     def biography_hits(self, query: str, location: str = "") -> list[str]:
-        q_words = {w.strip(".,;:!?'\"()-").lower() for w in query.split()}
+        from . import texts
+        q_words = texts.word_set(query, strip=".,;:!?'\"()-")
         out: list[str] = []
         for m in self.items:
             if m.kind != "biography":
@@ -257,13 +260,15 @@ class EpisodicMemory:
     def _rank(self, query: str, k: int) -> list[str]:
         """Score = keyword overlap + importance + recency, scaled by the chapter
         weight. Biography entries never rank here."""
-        q_words = {w for w in query.lower().split() if len(w) > 2}
+        from . import texts
+        zh = texts.zh_native()
+        q_words = texts.tokens(query) if zh else {w for w in query.lower().split() if len(w) > 2}
         scored: list[tuple[float, MemoryItem]] = []
         latest = self.items[-1].minute if self.items else 0
         for m in self.items:
             if m.kind == "biography":
                 continue
-            overlap = len(q_words & set(m.text.lower().split()))
+            overlap = len(q_words & (texts.tokens(m.text) if zh else set(m.text.lower().split())))
             recency = 1.0 - min((latest - m.minute) / (24 * 60), 1.0)
             score = ((overlap * 2.0 + m.importance * 0.3 + recency)
                      * self.penalty(m.text, m.kind, m.minute) * m.weight)

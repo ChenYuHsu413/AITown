@@ -35,6 +35,7 @@ from ..world.world import Observation, World
 from . import chapters as chapters_mod
 from . import romance as romance_mod
 from . import transitions as transitions_mod
+from . import texts
 from . import wishes as wishes_mod
 from .agent import Agent
 from .core import Belief, MemoryItem
@@ -126,6 +127,26 @@ def _has_cjk(text: str) -> bool:
     return bool(_CJK_RE.search(text or ""))
 
 
+def zh_quality_reason(text: str) -> str | None:
+    """Chinese quality gate for zh-native free text (reflection, rumor, wish,
+    biography): the dialogue gibberish rules (corruption, glued mixed script, stuck
+    loops, under 60% CJK -- which is what "a big chunk of English" looks like) plus an
+    empty/dodge answer. None when the text is clean."""
+    t = (text or "").strip()
+    if not t or len(t) < 4 or t.lower().strip(" .!?。!?") in _BELIEF_JUNK:
+        return "empty"
+    return _zh_reject_reason(t)
+
+
+def _knowledge_lang_ok(text: str) -> bool:
+    """Is this generated knowledge text in the town's language? A zh-native town
+    holds the Chinese quality gate; an English town rejects a stray zh line, as it
+    always has (one language per version chain)."""
+    if builders.lang_is_zh():
+        return zh_quality_reason(text) is None
+    return not _has_cjk(text)
+
+
 _BELIEF_JUNK = {
     "ok", "okay", "none", "n/a", "na", "good", "fine", "bad", "nothing", "idk",
     "unknown", "yes", "no", "true", "false", "null", "nil", "...", "…", "n a",
@@ -144,6 +165,8 @@ def belief_text_ok(text: str, world: "World") -> bool:
         return False
     if t.lower().strip(" .!?\"'…").replace("/", " ").strip() in _BELIEF_JUNK:
         return False
+    if builders.lang_is_zh() and _zh_reject_reason(t) is not None:
+        return False                      # zh-native: English or soup is not a belief
     if _CJK_RE.search(t):                 # zh: a handful of characters is already a real sentence
         return len(t) >= 6
     if len(t) < 15:
@@ -342,10 +365,13 @@ def translate_gender_ok(source_en: str, translated_zh: str) -> bool:
 
 
 def gender_ok(text: str) -> bool:
-    """Generation gate. When a piece of English free text names exactly ONE resident
-    and then uses a pronoun contradicting that resident's roster gender, it is wrong
-    with no ambiguity to hide behind. Multi-name text is left alone -- resolving which
-    pronoun belongs to whom is guesswork, and a wrong guess would reject good output.
+    """Generation gate. When a piece of free text names exactly ONE resident and then
+    uses a pronoun contradicting that resident's roster gender, it is wrong with no
+    ambiguity to hide behind. Multi-name text is left alone -- resolving which pronoun
+    belongs to whom is guesswork, and a wrong guess would reject good output.
+
+    English pronouns (he/she) and Chinese ones (他/她 -- never 他人, 其他, 他們, 她們)
+    are both checked, so a zh-native town is held to the same rule.
 
     Raises ``RosterNotLoadedError`` when the cast has not been published -- without it
     this check answers "fine" to everything (see builders.require_roster)."""
@@ -356,10 +382,12 @@ def gender_ok(text: str) -> bool:
     if len(named) != 1:
         return True
     gender = builders.gender_of(next(iter(named)))
+    he = bool(_EN_MASC.search(text) or _ZH_MASC.search(text))
+    she = bool(_EN_FEM.search(text) or _ZH_FEM.search(text))
     if gender == "male":
-        return not (_EN_FEM.search(text) and not _EN_MASC.search(text))
+        return not (she and not he)
     if gender == "female":
-        return not (_EN_MASC.search(text) and not _EN_FEM.search(text))
+        return not (he and not she)
     return True
 
 
@@ -399,6 +427,51 @@ def reflection_gender_ok(parsed: object) -> bool:
                 print(f"[gender-reject] {t[:120]!r}", flush=True)
             return False
     return True
+
+
+# ---- zh-native quality gate (reflection / wish) -------------------------------------
+# The gibberish gate turned around: a zh-native town's knowledge must BE Chinese, so a
+# reflection or a wish that comes back in English, as soup, or as an empty dodge falls
+# through to the next provider instead of landing in memory. English runs pass
+# untouched. Counted as ``zh_quality`` in the gate counters.
+
+def _zh_texts_ok(texts_: list) -> bool:
+    if not builders.lang_is_zh():
+        return True
+    for t in texts_:
+        reason = zh_quality_reason(t)
+        if reason is not None:
+            if _GATE_DIAG:
+                print(f"[zh-quality-reject] reason={reason} text={t[:120]!r}", flush=True)
+            return False
+    return True
+
+
+def reflection_zh_ok(parsed: object) -> bool:
+    if not isinstance(parsed, dict):
+        return True
+    texts_ = [str(x) for x in (parsed.get("insights") or [])]
+    texts_ += [str(b.get("text", "")) for b in (parsed.get("beliefs") or []) if isinstance(b, dict)]
+    secret = parsed.get("new_secret")
+    if isinstance(secret, dict):
+        texts_.append(str(secret.get("text", "")))
+    return _zh_texts_ok(texts_)
+
+
+def _wish_text_zh_ok(parsed: object) -> bool:
+    if not isinstance(parsed, dict) or parsed.get("no_wish"):
+        return True
+    title = str(parsed.get("title", "") or "")
+    if builders.lang_is_zh() and _zh_reject_reason(title) is not None:   # a title may be short
+        return False
+    return _zh_texts_ok([str(parsed.get(k, "") or "") for k in ("statement", "motivation", "narrative")
+                         if k in parsed and (k != "narrative" or parsed.get(k))])
+
+
+def _note_zh_gate(passed: bool) -> bool:
+    if not passed:
+        builders.note_gate_reject("zh_quality")
+    return passed
 
 
 # ---- referential-integrity gate (anchored pronouns; no self-third-person) ----------
@@ -684,7 +757,7 @@ class DecisionEngine:
                     and self._social_gate(agent, partner_id, now,
                                           wish_target=bool(wish_social) or wish_bonus):
                 memories = await agent.memory.retrieve_async(
-                    f"{partner.id.capitalize()} {obs.location}", k=5, location=obs.location)
+                    f"{texts.name_query(partner.id)} {obs.location}", k=5, location=obs.location)
                 res = await self.router.generate(
                     task="should_talk",
                     messages=builders.should_talk_prompt(agent, partner.name, _resolve_mems(memories, world)),
@@ -748,7 +821,7 @@ class DecisionEngine:
                 if leaker is not None:
                     target = leaker
             if action == "seek_out" and target is not None:
-                confront_text = f"I heard people are saying: {heard}. Did this come from you?"
+                confront_text = texts.T("confront_opener", heard=heard)
                 if target.state.location == agent.state.location and target.state.current_action != "sleep":
                     decision = Decision(  # already together -> confront right now
                         action="talk", talk_partner=target.id, duration=TALK_DURATION_MIN,
@@ -918,7 +991,7 @@ class DecisionEngine:
         agent.state.closed_reroute_notes[shop] = day
         agent.memory.add(MemoryItem(
             minute=now, importance=1,
-            text=f"{{loc:{shop}}} was closed today, went to {{loc:{went_to}}} instead.",
+            text=texts.T("closed_reroute", shop=shop, went_to=went_to),
         ))
 
     @staticmethod
@@ -982,13 +1055,13 @@ class DecisionEngine:
             if worker is not None and (prev is None or jumped):
                 agent.memory.add(MemoryItem(
                     minute=now, importance=2,
-                    text=f"Saw {{agent:{worker.id}}} working on {{landmark:{lid}}} at {{loc:{loc.id}}}.",
+                    text=texts.T("saw_working", worker=worker.id, lid=lid, loc=loc.id),
                 ))
                 seen[lid] = cur
             elif jumped:
                 agent.memory.add(MemoryItem(
                     minute=now, importance=2,
-                    text=f"{{landmark:{lid}}} at {{loc:{loc.id}}} has come along since I last saw it.",
+                    text=texts.T("landmark_progress", lid=lid, loc=loc.id),
                 ))
                 seen[lid] = cur
             elif prev is None:
@@ -1189,14 +1262,14 @@ class DecisionEngine:
                 per_call_timeout=SYNC_CALL_TIMEOUT_S,   # in-tick (start_conversation): don't park the loop
             )
             new = str(res.parsed.get("text") or "") if isinstance(res.parsed, dict) else ""
-            if new and not _has_cjk(new):   # reject a zh hallucination -> keep the prior English version
+            if new and _knowledge_lang_ok(new):   # wrong language -> keep the prior version
                 text = new
 
         if rumor.subject and rumor.subject == b.id:
             # The rumor made it back to the person it is about -- no relationship
             # math against oneself; instead it lands hard and demands a reaction.
             b.memory.add(MemoryItem(
-                minute=now, text=f"{{agent:{a.id}}} told me people are saying: {text}",
+                minute=now, text=texts.T("rumor_about_me", teller=a.id, text=text),
                 importance=8, kind="rumor", rumor_id=rumor.id,
             ))
             if rumor.sentiment < 0:
@@ -1204,7 +1277,7 @@ class DecisionEngine:
             b.state.pending_concern = {"rumor_id": rumor.id, "told_by": a.id}
         else:
             b.memory.add(MemoryItem(
-                minute=now, text=f"Heard from {{agent:{a.id}}}: {text}",
+                minute=now, text=texts.T("heard_from", teller=a.id, text=text),
                 importance=4, kind="rumor", rumor_id=rumor.id,
             ))
             # Relationship math stays in Python; the rumor's polarity moves it.
@@ -1296,7 +1369,8 @@ class DecisionEngine:
                     messages=builders.wish_generation_prompt(agent, material, rejection),
                     agent_id=agent.id, sim_minute=day * 24 * 60,
                     schema={"type": "object"}, max_tokens=500,
-                    validate=lambda r: _note_gender_gate(_wish_text_gender_ok(r.parsed)),
+                    validate=lambda r: (_note_zh_gate(_wish_text_zh_ok(r.parsed))
+                                        and _note_gender_gate(_wish_text_gender_ok(r.parsed))),
                     per_call_timeout=45.0, no_floor=True,
                 )
             except builders.RosterNotLoadedError:
@@ -1396,8 +1470,8 @@ class DecisionEngine:
     def secret_theme_keywords(secret) -> set:
         """The distinctive words of a secret's worry -- used to fade pre-resolution
         memories of the same theme."""
-        return {w.strip(".,;:!?'\"").lower() for w in secret.text.split() if len(w) > 3} \
-            - DecisionEngine._GOAL_STOP
+        return ({w.strip(".,;:!?'\"").lower() for w in secret.text.split() if len(w) > 3}
+                - DecisionEngine._GOAL_STOP) | texts.cjk_bigrams(secret.text)
 
     def rebuild_suppressed_themes(self, world: World) -> None:
         """Re-derive every agent's suppressed themes from the resolved secrets --
@@ -1421,12 +1495,11 @@ class DecisionEngine:
     def goal_matches_secret(goal_text: str, secret) -> bool:
         """A goal is 'about' a secret when it names the secret's subject or shares
         enough distinctive words with it."""
-        g = {w.strip(".,;:!?'\"").lower() for w in goal_text.split()}
+        g = texts.word_set(goal_text)
         about = (secret.about or "").lower()
-        if about and about in g:
+        if about and (about in g or (texts.zh_native() and texts.mentions(goal_text, about))):
             return True
-        kw = {w.strip(".,;:!?'\"").lower() for w in secret.text.split()
-              if len(w) > 3} - DecisionEngine._GOAL_STOP
+        kw = DecisionEngine.secret_theme_keywords(secret)
         if about:
             kw.add(about)
         return len(kw & g) >= 2
@@ -1438,14 +1511,17 @@ class DecisionEngine:
         gentle generic reframe toward the secret's subject."""
         m = re.search(r"ask (\w+) to teach me (.+?)(?:\.|$| but| every)", goal_text, re.I)
         if m:
-            return f"Keep learning {m.group(2).strip()} from {m.group(1).capitalize()}"
-        about = (secret.about or "").capitalize()
+            return texts.T("goal_forward_teach", what=m.group(2).strip(), who=m.group(1).capitalize())
+        m = re.search(r"請(.+?)教我(.+?)(?:[。,,]|$)", goal_text)   # the zh shape of the same goal
+        if m:
+            return texts.T("goal_forward_teach", what=m.group(2).strip(), who=m.group(1).strip())
+        about = texts.display_name(secret.about) if secret.about else ""
         if not about:
             for w in secret.text.split():           # else pull a name out of the secret text
                 if w.istitle() and len(w) > 2:
                     about = w
                     break
-        return f"Keep building on things with {about}" if about else ""
+        return texts.T("goal_forward_generic", who=about) if about else ""
 
     def rewrite_goals_on_resolve(self, owner: Agent, secret, now: int) -> list[tuple[str, str]]:
         """Rewrite any of the owner's goals that were about this now-settled worry.
@@ -1460,7 +1536,7 @@ class DecisionEngine:
                 g["goal"] = new
                 owner.memory.add(MemoryItem(
                     minute=now, importance=4, kind="reflection",
-                    text=f"That old worry is behind me now -- my focus is on the next chapter: {new}."))
+                    text=texts.T("goal_forward", new=new)))
                 changed.append((old, new))
         return changed
 
@@ -1489,7 +1565,7 @@ class DecisionEngine:
         if random.Random(seed).random() >= p:
             return None
         b.memory.add(MemoryItem(
-            minute=now, text=f"{{agent:{a.id}}} confided in me: {secret.text}",
+            minute=now, text=texts.T("confided", owner=a.id, text=secret.text),
             importance=int(4 + secret.sensitivity * 4), kind="secret", secret_id=secret.id,
         ))
         self.secrets.record_confide(secret.id, b.id, now)
@@ -1528,7 +1604,7 @@ class DecisionEngine:
             return None
 
         owner = world.agents.get(secret.owner)
-        owner_name = secret.owner.capitalize() if owner else secret.owner   # pinyin for the model
+        owner_name = texts.display_name(secret.owner) if owner else secret.owner
         res = await self.router.generate(       # rephrase to a 3rd-person rumor + appraise, in one call
             task="leak", messages=builders.leak_prompt(owner_name, secret.text),
             agent_id=b.id, sim_minute=now, schema={"type": "object"}, max_tokens=80,
@@ -1536,8 +1612,8 @@ class DecisionEngine:
         )
         parsed = res.parsed if isinstance(res.parsed, dict) else {}
         text = str(parsed.get("text") or "").strip()
-        if not text or _has_cjk(text):   # English-canonical -> reject a zh hallucination, use a plain fallback
-            text = f"{owner_name} has been hiding something."
+        if not text or not _knowledge_lang_ok(text):   # wrong language -> a plain fallback
+            text = texts.T("leak_fallback", owner=owner_name)
         try:
             sentiment = max(-1.0, min(1.0, float(parsed.get("sentiment", -0.3))))
         except (TypeError, ValueError):
@@ -1550,7 +1626,8 @@ class DecisionEngine:
         self.secrets.mark_leaked(secret.id, leaked_by=b.id)
         # c now holds the leaked rumor: record it + apply the recipient relationship math.
         c.memory.add(MemoryItem(
-            minute=now, text=f"Heard from {{agent:{b.id}}}: {text}", importance=5, kind="rumor", rumor_id=rumor.id))
+            minute=now, text=texts.T("heard_from", teller=b.id, text=text), importance=5, kind="rumor",
+            rumor_id=rumor.id))
         rel = c.rel(secret.owner)
         rel.trust += sentiment * 5; rel.friendship += sentiment * 2; rel.clamp()
         if sentiment <= -0.4:
@@ -1603,8 +1680,8 @@ class DecisionEngine:
         # feed biography surfacing only -- the ordinary top-k query is unchanged.
         a_topic = " ".join(x for x in (confront_text or "", (fwd or leak_fwd or {}).get("text", "")) if x)
         b_topic = " ".join(x for x in ((rev or leak_rev or {}).get("text", ""),) if x)
-        a_mem = await a.memory.retrieve_async(b.id.capitalize(), k=3, location=a.state.location, topic=a_topic)
-        b_mem = await b.memory.retrieve_async(a.id.capitalize(), k=3, location=b.state.location, topic=b_topic)
+        a_mem = await a.memory.retrieve_async(texts.name_query(b.id), k=3, location=a.state.location, topic=a_topic)
+        b_mem = await b.memory.retrieve_async(texts.name_query(a.id), k=3, location=b.state.location, topic=b_topic)
         # A held impression of the other person rides into the dialogue context, so
         # the model naturally carries the weight of the relationship's history.
         a_imp = self._impression_of(a, b.id)
@@ -1724,10 +1801,10 @@ class DecisionEngine:
         # is skipped here: conversation gets a flat importance; a real
         # importance call is wired for notable events in the engine).
         a.memory.add(MemoryItem(
-            minute=now, text=f"Talked with {{agent:{b.id}}} at {{loc:{plan.location}}}.",
+            minute=now, text=texts.T("talked_with", other=b.id, loc=plan.location),
             importance=3, kind="conversation"))
         b.memory.add(MemoryItem(
-            minute=now, text=f"Talked with {{agent:{a.id}}} at {{loc:{plan.location}}}.",
+            minute=now, text=texts.T("talked_with", other=a.id, loc=plan.location),
             importance=3, kind="conversation"))
         f_before = a.rel(b.id).friendship                     # for the relationship-milestone check
         a.apply_conversation_signals(b.id, **signals)
@@ -1800,9 +1877,9 @@ class DecisionEngine:
         if rel.romance < romance_mod.CRUSH or rel.romance_stage != "none":
             return
         self._set_pair_stage(x, y, "crushing", now)
-        if not any(s.about == y.id and not s.resolved and "feelings" in s.text.lower()
+        if not any(s.about == y.id and not s.resolved and romance_mod.is_crush_text(s.text)
                    for s in self.secrets.secrets_of(x.id)):
-            s = self.secrets.add(x.id, romance_mod.crush_secret_text(y.id.capitalize()), 0.7, now)
+            s = self.secrets.add(x.id, romance_mod.crush_secret_text(y.id), 0.7, now)
             s.about = y.id
 
     def _settle_confession(self, world: World, conf: dict, now: int) -> dict:
@@ -1817,9 +1894,9 @@ class DecisionEngine:
             self._set_pair_stage(a, b, "dating", now)
             a.rel(b.id).romance = max(a.rel(b.id).romance, romance_mod.CONFESS_ROMANCE)
             a.memory.add(MemoryItem(minute=now, importance=8, kind="reflection",
-                text=f"I confessed to {{agent:{b.id}}} -- and we're together now."))
+                text=texts.T("confessed_yes", other=b.id)))
             b.memory.add(MemoryItem(minute=now, importance=8, kind="reflection",
-                text=f"{{agent:{a.id}}} confessed to me, and I said yes."))
+                text=texts.T("confessed_to_me_yes", other=a.id)))
             return {"verb": "romance_dating", "a": a.id, "b": b.id}
         rel = a.rel(b.id)
         rel.romance = max(0.0, rel.romance - romance_mod.REJECT_ROMANCE_HIT)
@@ -1827,9 +1904,9 @@ class DecisionEngine:
         a.state.awkward_until[b.id] = day + romance_mod.AWKWARD_DAYS
         b.state.awkward_until[a.id] = day + romance_mod.AWKWARD_DAYS
         a.memory.add(MemoryItem(minute=now, importance=7, kind="reflection",
-            text=f"I confessed to {{agent:{b.id}}}, but the feeling wasn't mutual."))
+            text=texts.T("confessed_no", other=b.id)))
         b.memory.add(MemoryItem(minute=now, importance=8, kind="reflection",
-            text=f"{{agent:{a.id}}} confessed to me; I had to turn them down as gently as I could."))
+            text=texts.T("confessed_to_me_no", other=a.id)))
         return {"verb": "romance_rejected", "a": a.id, "b": b.id}
 
     def _detect_milestone(self, a: Agent, b: Agent, f_before: float, now: int) -> dict | None:
@@ -1899,21 +1976,21 @@ class DecisionEngine:
         if is_betrayal:
             a.memory.add(MemoryItem(
                 minute=now, importance=9, kind="conversation",
-                text=f"Confronted {{agent:{b.id}}} for leaking the secret I trusted them with. Betrayed.",
+                text=texts.T("confront_leak_self", other=b.id),
             ))
             b.memory.add(MemoryItem(
                 minute=now, importance=8, kind="conversation",
-                text=f"{{agent:{a.id}}} confronted me for leaking their secret.",
+                text=texts.T("confront_leak_other", other=a.id),
             ))
         else:
             a.memory.add(MemoryItem(
                 minute=now, importance=6, kind="conversation",
-                text=f"Confronted {{agent:{b.id}}} about the rumor. They {'admitted it' if admitted else 'denied it'}.",
+                text=texts.T("confront_rumor_admitted" if admitted else "confront_rumor_denied", other=b.id),
             ))
             b.memory.add(MemoryItem(
                 minute=now, importance=6, kind="conversation",
-                text=f"{{agent:{a.id}}} confronted me about the rumor I "
-                     f"{'started' if admitted else 'was accused of starting'}.",
+                text=texts.T("confronted_rumor_admitted" if admitted else "confronted_rumor_denied",
+                             other=a.id),
             ))
         return {"rumor_id": rumor_id, "outcome": outcome, "admitted": admitted, "betrayal": is_betrayal}
 
@@ -1955,7 +2032,7 @@ class DecisionEngine:
             if n in (a.name.lower(), a.id):
                 return (a.id, a.name)
         for loc in world.locations.values():
-            if n in (loc.name.lower(), loc.id):
+            if n in (loc.name.lower(), loc.id, (loc.name_zh or "").lower()):
                 return (loc.id, loc.name)
         return None
 
@@ -2031,7 +2108,7 @@ class DecisionEngine:
         offer = []
         if not agent.state.pending_transition and not agent.state.pending_confession:
             if now // (24 * 60) - agent.state.last_transition_day >= transitions_mod.TRANSITION_COOLDOWN_DAYS:
-                offer += [(t.id, t.label) for t in transitions_mod.available_for(agent, world)]
+                offer += [(t.id, t.label_text()) for t in transitions_mod.available_for(agent, world)]
             offer += self._romance_options(agent, world, now)
         res = await self.router.generate(
             task="reflection",
@@ -2043,7 +2120,8 @@ class DecisionEngine:
             # Mechanical backstop behind the roster: an insight/belief/secret that
             # names one resident and mis-genders them is rejected, so the chain
             # retries rather than writing it into memory forever.
-            validate=lambda r: _note_gender_gate(reflection_gender_ok(r.parsed)),
+            validate=lambda r: (_note_zh_gate(reflection_zh_ok(r.parsed))
+                                and _note_gender_gate(reflection_gender_ok(r.parsed))),
             # belief/secret/life_decision quality must never be a canned mock line:
             # a total chain failure raises ProvidersExhausted so the engine can brew a
             # pause and retry rather than settle for the floor (task 3).
@@ -2144,7 +2222,7 @@ class DecisionEngine:
         self._set_pair_stage(a, b, "partners", now)
         for x, y in ((a, b), (b, a)):
             x.memory.add(MemoryItem(minute=now, importance=8, kind="reflection",
-                text=f"{{agent:{y.id}}} and I decided to make it permanent."))
+                text=texts.T("partners", other=y.id)))
         self._partner_routine_tweak(a, b)
         return [{"verb": "romance_partners", "a": a.id, "b": b.id}]
 
@@ -2190,7 +2268,7 @@ class DecisionEngine:
             self._maybe_crush(agent, other, now)
             agent.memory.add(MemoryItem(
                 minute=now, importance=4, kind="reflection",
-                text=f"Lately I keep noticing {{agent:{other.id}}}'s presence more than I'd expect."))
+                text=texts.T("noticing", other=other.id)))
             return
 
     def _maybe_new_secret(self, agent: Agent, world: World, raw: object, now: int) -> bool:

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from ..agents import chapters as chapters_mod
+from ..agents import texts
 from ..agents import wishes as wishes_mod
 from ..agents.agent import Agent
 from ..agents.core import MemoryItem
@@ -502,7 +503,8 @@ class SimulationEngine:
                 else:
                     imp, mood = 2, ""
                 owner.memory.add(MemoryItem(
-                    minute=self.now, text=f"{{loc:{loc.id}}} made ${x:.0f} today.", importance=imp))
+                    minute=self.now, text=texts.T("revenue_today", loc=loc.id, amount=f"{x:.0f}"),
+                    importance=imp))
                 if mood:
                     owner.state.mood = mood
                 self._publish(
@@ -518,7 +520,8 @@ class SimulationEngine:
                     else:
                         wimp, wmood = 3, ""
                     owner.memory.add(MemoryItem(
-                        minute=self.now, text=f"This week {{loc:{loc.id}}} made ${xw:.0f}.", importance=wimp))
+                        minute=self.now, text=texts.T("revenue_week", loc=loc.id, amount=f"{xw:.0f}"),
+                        importance=wimp))
                     if wmood:
                         owner.state.mood = wmood
             loc.revenue_today = 0.0
@@ -604,10 +607,10 @@ class SimulationEngine:
             tech.state.money += fee
             owner.memory.add(MemoryItem(
                 minute=self.now, importance=3, kind="conversation",
-                text=f"{{agent:{tech.id}}} fixed the equipment at {{loc:{loc_id}}}. Cost me $15, but at least it works again."))
+                text=texts.T("repaired_owner", tech=tech.id, loc=loc_id)))
         tech.memory.add(MemoryItem(
             minute=self.now, importance=3, kind="conversation",
-            text=f"Fixed the equipment at {{loc:{loc_id}}} -- whoever installed it did a sloppy job."))
+            text=texts.T("repaired_tech", loc=loc_id)))
         self._publish("action", "repaired", actor=tech, location_id=loc_id)
 
     _TRANSITION_RIPPLE = {                        # third person, for friends' memories
@@ -622,6 +625,25 @@ class SimulationEngine:
         "take_job_bakery": "started working at the bakery",
         "freelance_from_home": "started freelancing from home",
     }
+    _TRANSITION_RIPPLE_ZH = {
+        "quit_job": "辭掉了工作",
+        "take_job_cafe": "開始在咖啡館工作",
+        "take_job_bakery": "開始在麵包店工作",
+        "freelance_from_home": "開始在家接案",
+    }
+    _TRANSITION_SELF_ZH = {
+        "quit_job": "辭掉工作,去尋找新的方向",
+        "take_job_cafe": "開始在咖啡館工作",
+        "take_job_bakery": "開始在麵包店工作",
+        "freelance_from_home": "開始在家接案",
+    }
+
+    def _transition_note(self, tid: str, first_person: bool) -> str:
+        if texts.zh_native():
+            table = self._TRANSITION_SELF_ZH if first_person else self._TRANSITION_RIPPLE_ZH
+            return table.get(tid, "做了一個重大的改變")
+        table = self._TRANSITION_SELF if first_person else self._TRANSITION_RIPPLE
+        return table.get(tid, "made a big change")
 
     def _apply_pending_transitions(self) -> None:
         """Apply every staged life change (decided by yesterday's reflection). Each:
@@ -648,32 +670,32 @@ class SimulationEngine:
                 g for g in agent.profile.goals
                 if not any(s in str(g.get("goal", "")).lower() for s in tmpl.clears_goal)
             ]
-            agent.profile.goals.insert(0, {"goal": tmpl.goal, "priority": 0.85})
+            agent.profile.goals.insert(0, {"goal": tmpl.goal_text(), "priority": 0.85})
             # Resolve the secret this change acts on (Xue's interview secret on quit).
             for s in self.decisions.secrets.active_secrets_of(agent.id):
                 if tmpl.resolves_secret_kw and any(kw in s.text.lower() for kw in tmpl.resolves_secret_kw):
                     self.decisions._resolve_secret(
                         agent, s, self.now,
-                        f"{agent.id.capitalize()} acted on it and moved forward.")
+                        texts.T("secret_acted_on", owner=texts.display_name(agent.id)))
             agent.state.last_transition_day = self.now // DAY_MIN
             agent.memory.add(MemoryItem(
                 minute=self.now, importance=9, kind="reflection",
-                text=f"I made a real change today: I {self._TRANSITION_SELF.get(tid, 'made a big change')}."
+                text=texts.T("transition_self", what=self._transition_note(tid, True))
                      + (f" ({reason})" if reason else "")))
             self._publish("system", "transition", actor=agent,
-                          location_id=agent.state.location, text=tid, detail=reason or tmpl.label)
+                          location_id=agent.state.location, text=tid, detail=reason or tmpl.label_text())
             # A life change that makes the current pursuit moot (a job-themed chapter
             # vs quit/take-job/freelance) closes that chapter as completed.
             if chapters_mod.goal_matches_chapter(agent.chapter, *tmpl.clears_goal):
-                self.request_chapter_close(agent, "completed", "transition", tmpl.label)
+                self.request_chapter_close(agent, "completed", "transition", tmpl.label_text())
             # Friends hear about it.
-            note = self._TRANSITION_RIPPLE.get(tid, "made a big change")
+            note = self._transition_note(tid, False)
             for other in self.world.agents.values():
                 rel = other.relationships.get(agent.id)
                 if other.id != agent.id and rel is not None and rel.friendship >= 55:
                     other.memory.add(MemoryItem(
                         minute=self.now, importance=4, kind="reflection",
-                        text=f"Heard {{agent:{agent.id}}} {note}."))
+                        text=texts.T("transition_heard", who=agent.id, what=note)))
 
     async def tick(self) -> None:
         item = self.scheduler.pop_next()
@@ -1113,7 +1135,7 @@ class SimulationEngine:
         if wish.scale != "major":
             agent.memory.add(MemoryItem(
                 minute=self.now, importance=3, kind="reflection",
-                text=wishes_mod.MINOR_CLOSE_TEXT.get(status, wishes_mod.MINOR_CLOSE_TEXT["completed"]),
+                text=wishes_mod.minor_close_text(status),
                 tags=[f"goal:{wish.id}"]))
             self._event_snapshot("wish_closed")
             return
@@ -1409,7 +1431,8 @@ class SimulationEngine:
                 cp = agent.state.copresence
                 cp[other.id] = cp.get(other.id, 0) + elapsed
 
-    _LANDMARK_WORDS = ("installation", "mural", "artwork", "project", "sculpture")
+    _LANDMARK_WORDS = ("installation", "mural", "artwork", "project", "sculpture",
+                       "裝置", "壁畫", "作品", "計畫", "雕塑")
 
     def _resolve_landmark_worries(self, creator: Agent, landmark_text: str) -> int:
         """A finished landmark lays to rest the creator's worry about finishing it --
@@ -1417,11 +1440,11 @@ class SimulationEngine:
         secret that names the piece (installation/mural/...). Returns how many settled."""
         n = 0
         for s in self.decisions.secrets.active_secrets_of(creator.id):
-            words = {w.strip(".,;:!?'\"").lower() for w in s.text.split()}
+            words = texts.word_set(s.text)
             if any(k in words for k in self._LANDMARK_WORDS):
                 if self.decisions._resolve_secret(
                         creator, s, self.now,
-                        f"{creator.id.capitalize()} finished it -- the worry never came true."):
+                        texts.T("secret_landmark_done", owner=texts.display_name(creator.id))):
                     n += 1
         return n
 
@@ -1443,11 +1466,11 @@ class SimulationEngine:
         detail = f"{{agent:{a.id}}} ↔ {{agent:{b.id}}} · {m['fa']} / {m['fb']}"
         self._publish("system", "milestone", actor=a, target=b,
                       location_id=a.state.location, text=stage, detail=detail, minute=minute)
-        note = ("grew closer to" if m["up"] else "drifted apart from")
+        note = "grew_closer" if m["up"] else "drifted_apart"
         a.memory.add(MemoryItem(minute=m_at, importance=4, kind="reflection",
-                                text=f"I {note} {{agent:{b.id}}}."))
+                                text=texts.T(note, other=b.id)))
         b.memory.add(MemoryItem(minute=m_at, importance=4, kind="reflection",
-                                text=f"I {note} {{agent:{a.id}}}."))
+                                text=texts.T(note, other=a.id)))
 
     def _interrupt_colocated(self, mover: Agent) -> None:
         """Arrival interrupt: others at the destination may react now."""

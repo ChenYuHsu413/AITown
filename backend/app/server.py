@@ -24,6 +24,7 @@ from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
 from .agents import chapters as chapters_mod
+from .agents import texts
 from .agents import wishes as wishes_mod
 from .agents.core import MemoryItem
 from .agents.decision import (
@@ -115,6 +116,13 @@ try:
     SYNC_CALL_TIMEOUT_S = float(os.environ.get("AI_TOWN_SYNC_CALL_TIMEOUT", "10") or "10")
 except ValueError:
     SYNC_CALL_TIMEOUT_S = 10.0
+
+
+# Display-layer translation is retired: the zh-native era writes Chinese at the
+# source, so nothing new needs translating. The pipeline (and its person / gender
+# gates) is kept, unreached, for the formal era's English knowledge -- whose cached
+# translations still answer translate_text -- and so it can be revived deliberately.
+TRANSLATION_RETIRED = True
 
 
 class Sim:
@@ -296,6 +304,9 @@ class Sim:
         hit = self._translate_cache.get(text)
         if hit is not None:
             return hit
+        # Retired (see TRANSLATION_RETIRED): only the cache still answers.
+        if TRANSLATION_RETIRED:
+            return self._apply_name_subs(text)
         # Already non-English (e.g. historical zh knowledge) -> nothing to translate;
         # just normalize any resident names and return (no LLM call).
         if not re.search(r"[A-Za-z]", text):
@@ -379,7 +390,7 @@ class Sim:
         the user never has to open a panel to trigger the first translation (and any
         English left from a prior run turns to zh in the background). Returns how many
         new texts were queued. No-op in en mode."""
-        if not builders.lang_is_zh():
+        if not builders.lang_is_zh() or TRANSLATION_RETIRED:
             return 0
         before = len(self._tr_inflight)
         texts: list[str] = []
@@ -1705,7 +1716,7 @@ async def rewrite_stale_goals(body: dict = Body(default={})) -> JSONResponse:
                 g["goal"] = c["new_goal"]
                 owner.memory.add(MemoryItem(
                     minute=now, importance=4, kind="reflection",
-                    text=f"That old worry is behind me now -- my focus is on the next chapter: {c['new_goal']}."))
+                    text=texts.T("goal_forward", new=c["new_goal"])))
                 applied += 1
                 break
     if sim.persistence is not None:
@@ -1735,7 +1746,7 @@ async def resolve_completed_landmark_worries(body: dict = Body(default={})) -> J
             if creator is None:
                 continue
             for s in dec.secrets.active_secrets_of(creator.id):
-                sw = {w.strip(".,;:!?'\"").lower() for w in s.text.split()}
+                sw = texts.word_set(s.text)
                 if any(k in sw for k in words):
                     candidates.append({"owner": creator.id, "owner_name": creator.name,
                                        "landmark": lm.get("name"), "secret_id": s.id, "text": s.text})

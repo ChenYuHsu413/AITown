@@ -85,7 +85,12 @@ def growth(a: "Agent", b: "Agent", sentiment: float, setting: bool, confided: bo
     return g
 
 
-def crush_secret_text(target_pinyin: str) -> str:
-    """English (internal rule); the display layer translates it. Pinyin name so the
-    secret system resolves the subject like any other."""
-    return f"I think I'm developing feelings for {target_pinyin}."
+def crush_secret_text(target_id: str) -> str:
+    """The crush secret, in the town's language (pinyin name in English, the zh name
+    in a zh-native town); ``about`` carries the target id either way."""
+    from . import texts
+    return texts.T("crush_secret", name=texts.display_name(target_id))
+
+
+def is_crush_text(text: str) -> bool:
+    return "feelings" in (text or "").lower() or "喜歡上" in (text or "")
