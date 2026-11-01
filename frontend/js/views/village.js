@@ -1,9 +1,9 @@
-// Live village: watch and listen at once — the ported pixel map plus an always-on
-// live column (a drawer on narrow screens). Major beats also float a gold-ink card
-// over the map.
+// Live village: watch and listen at once — the 3-D town plus an always-on live column
+// (a drawer on narrow screens). Major beats float a glass event card and put a gold-ink
+// marker + one light pulse over the people involved.
 import {markRaw} from 'vue';
 import {store, nav, onTick, getJSON} from '../store.js';
-import {VillageMap} from '../pixmap.js';
+import {TownMap as VillageMap} from '../town3d/townmap.js';
 import {evText, beatDetail, dialogueSubst, CARD_KIND, hhmm, agentName} from '../names.js';
 import {Icon} from '../ui.js';
 import LiveFeed from './livefeed.js';
@@ -24,7 +24,7 @@ export default {
     drawer(v) { if (v) this.unread = 0; },
   },
   mounted() {
-    this.map = markRaw(new VillageMap(this.$refs.stage, {onAgentClick: id => nav.inspect(id)}));
+    this.map = markRaw(new VillageMap(this.$refs.stage, {onAgentClick: (id, at) => nav.inspect(id, at)}));
     this.map.setActive(this.active);
     if (store.locations.length) { this.map.buildMap(store.locations); this.paint(); }
     this.off = onTick((evs, msg, isSnap) => { if (!isSnap) this.onEvents(evs); });
@@ -51,6 +51,7 @@ export default {
       const card = {id: ++cardSeq, ...k, text: evText(ev), detail: beatDetail(ev), time: hhmm(ev.minute),
         minute: ev.minute, actor: ev.actor, target: ev.target};
       this.cards.unshift(card);
+      this.map.mark([ev.actor, ev.target].filter(Boolean), k.label);
       if (this.cards.length > 3) this.cards.pop();
       setTimeout(() => this.dismiss(card.id), 15000);
     },
@@ -80,7 +81,7 @@ export default {
           </article>
         </transition-group>
       </div>
-      <p class="map-hint">點居民開角色卡 · 拖曳平移 · 滾輪縮放</p>
+      <p class="map-hint">點居民開角色卡 · 拖曳平移 · 滾輪/雙指縮放 · 雙擊回到全景</p>
     </div>
     <LiveFeed class="live-col" @focus="focus"/>
     <button class="drawer-toggle" @click="drawer = !drawer" :aria-expanded="drawer">

@@ -20,8 +20,9 @@ everything else under `frontend/` is served at `/static/` (for example `frontend
   `index.html`, each at an exact version:
   - Vue `3.5.13`, ESM browser build, from unpkg. This includes the template compiler, so
     components are plain objects with string templates.
-  - PixiJS `8.22.0`, `pixi.min.mjs`, from jsdelivr, for the village map (WebGL).
-  - Fonts from Google Fonts: Huninn, Noto Sans TC and JetBrains Mono, all under the SIL OFL.
+  - three.js `0.186.1` (`build/three.module.js` + `examples/jsm/` addons), from jsdelivr, for the
+    3-D town (village and replay).
+  - Fonts from Google Fonts: Inter, Noto Sans TC and JetBrains Mono, all under the SIL OFL.
 
   Upgrading means editing one URL and checking the page.
 
@@ -36,12 +37,13 @@ everything else under `frontend/` is served at `/static/` (for example `frontend
 | `js/names.js` | zh-TW display layer: names, placeholder resolver, event phrasing, the day/night phase. |
 | `js/views/*.js` | 鎮誌 (chronicle), 小鎮 (village + live column), 回放 (replay), 關係 (relations). |
 | `js/inspector.js`, `js/ops.js` | Resident cast sheet (operator view) and the operator panel. |
-| `js/pixmap.js` | The village map on PixiJS: camera, residents, lights, weather, bubbles. |
-| `js/pixelart.js` | Programmatic pixel art: residents, buildings, props, critters, ground. No third-party assets. |
+| `js/town3d/townmap.js` | The 3-D town as the village / replay map: who stands where, walking, cutaways, the DOM overlay (tags, bubbles, place labels, markers, talk lines). Same interface as the old pixel map. |
+| `js/town3d/scene.js` | The renderer: island, water, sky, plaza, paths, props, buildings, figures, camera, fx, degrade step. |
+| `js/town3d/buildings.js`, `kit.js`, `figure.js`, `clay.js` | Parametric buildings, the furniture/prop kit, the chibi residents, shared clay helpers. |
+| `js/town3d/town.json`, `js/town3d/residents.json` | All 3-D tuning: layout, buildings, interiors, palette, camera, render settings; resident looks and motion. |
+| `js/town3d/portraits.js` | Resident portraits for the UI, rendered once from the 3-D figures. |
 | `js/threads.js` | Conversation threads (one conversation = one card) for the live column and the chronicle. |
 | `js/ui.js`, `js/icons.js` | Small shared components (avatars, ...) and the inline line-icon set (no icon dependency). |
-| `town3d.html`, `css/glass.css`, `js/town3d/` | The 3-D validation slice at `/town3d-preview` (see below). |
-| `map/town.json` | The tile world: the fountain plaza, building doors, curved paths (also the walking routes), anchors, aprons, ground patches, props, lamps. |
 
 ## One event source
 
@@ -59,111 +61,35 @@ the minute the conversation began. It stamps each `say` line at that minute plus
 index. A thread's key is therefore (unordered pair, `talk_start` minute), and a `say` belongs to
 the latest thread of its pair that started at or before the line's minute.
 
-## Map depth and density
+## The 3-D town
 
-- **Shadows.** Everything that stands on the ground has two shadows: a soft contact shadow at
-  its feet, and a cast silhouette whose length and direction follow the sun. The cast shadow
-  points west in the morning, is short at noon, falls long to the east in the late afternoon,
-  and disappears at night.
-- **Elevation.** The plaza is a raised platform: a lit rim, a shaded stone face on its visible
-  side, and steps wherever a path meets it. Door aprons have a two-step front edge. Retaining
-  ledges (`ledges` in `map/town.json`) have a lit grass lip, a stone face, and steps where a
-  path crosses them. The riverbank sits below the grass, with an earth face.
-- **Density.** The open ground has grass-colour variation, tufts, pebbles, clover, flowers and
-  footpaths (`trails`). Bushes, tall grass, flower clumps, rocks, stumps and logs are scattered
-  through it (`scatter`), and woodland frames the town along the north, east and south edges
-  (`forest`).
-- **Placement rules.** Scattered items and the woodland are placed procedurally but
-  deterministically, so the town looks the same on every load. They stay clear of buildings,
-  paths, plazas, props and the spots where residents stand.
+The village and replay views render the whole town in three.js (Townscaper-like clay
+miniature). The 2-D pixel map (Pixi) is retired and its files are gone (git history keeps
+them).
 
-## Layout and pixel texture
-
-- **A compact town.** The map is 64 × 46 tiles. The café, the bakery and the market ring the
-  fountain plaza. The two homes and the office (a three-storey brick building, the tallest in
-  town) form a second ring. The park sits in the south-west corner.
-- **Little open ground.** Between buildings there are narrow back lanes and small clumps of
-  trees. The only large open ground is the park and the riverbank.
-- **A 1 px dark outline on every object.** `outlined()` in `pixelart.js` pads each canvas by
-  one pixel and draws the outline into that border.
-- **Trees are clusters of leaf clumps.** Each clump is lit from the top left, with four
-  steps of light from highlight to shadow and a dark rim where clumps meet. Pines are jagged
-  tiers. Bushes use the same clumps.
-- **One warm tint over the whole map.** The day/night multiply layer is warm at noon too,
-  which costs nothing extra.
-- **One 8 px grain.** Plaza stones, roof tiles, bricks and stone aprons all use roughly the same
-  8 px module.
-
-## Cutaway interiors
-
-A building with people inside opens like a doll's house. The roof fades to a faint ghost
-and the room shows: the back wall, the floor, cut side walls, and a low front wall with a
-doorway. Each room has its furniture, and the residents inside are at their spots.
-
-This is a view, not a walkable interior: there is no interior map and no furniture
-interaction.
-
-- **Layout lives in the map file.** Each room's furniture and anchors are in
-  `map/town.json` under `interiors.<location>`, in the building's own pixel coordinates.
-- **Where each resident goes depends on what they are doing:**
-
-  | Action | Spot |
-  |---|---|
-  | `sleep` | their own bed |
-  | `eat`, `rest` | a seat |
-  | `work` | the owner's spot first (ㄐㄐ at the café counter, 安哥 at the bakery oven); office workers sit at the desks |
-  | anything else | a free standing spot |
-
-  Whoever doesn't fit stands outside.
-- **Each home has five beds**, one per resident of that household in the seed (`bedOf`).
-  Sleepers lie under a blanket in their own colour.
-- **Open rooms are lamp-lit at night.** They and the people in them are drawn above the night
-  tint, so a sleeping town shows one lit room per occupied house.
-- **When rooms open is a setting.** By default a room opens automatically whenever someone is
-  inside. A small switch on the map changes this to opening a building only when you click it.
-  The choice is remembered in the browser (`localStorage`).
-
-## Map performance
-
-The static ground is baked once into a single texture. Each building and prop is one sprite.
-What moves each frame:
-
-- ten residents;
-- speech bubbles;
-- about 25 river glints;
-- rain, when it is raining;
-- a few slow touches: now and then a tree's canopy sways, chimneys of occupied buildings
-  smoke, petals fall along the cherry lane, a bird crosses every 15–40 seconds, and a
-  butterfly sometimes visits a flower bed.
-
-Each of these is capped (at most 24 smoke puffs and 26 petals at a time).
-
-If the frame rate stays under 45 fps for 3 seconds, the map switches to low quality:
-
-- it drops the decorative motion (river glints, idle bob, half the rain, the installation's
-  shimmer, swaying trees, smoke, petals, birds, butterflies);
-- it caps the map at 30 fps.
-
-After 20 seconds it tries full quality again. If the frame rate drops a second time, it stays
-in low quality. The current tier is shown on the canvas as `data-quality`.
-
-The map's ticker stops while the village view is hidden. Users who set "reduce motion" in their
-system keep the walking, but lose the decorative motion.
-
-## The 3-D validation slice (`/town3d-preview`)
-
-A standalone page, separate from the live UI at `/`, that tests a Townscaper-style 3-D
-direction. It is a validation slice, not the full town: one island with one café and a
-corner of the plaza on moving water, plus two residents.
-
-- **Files.** `town3d.html` (its own import map: Vue `3.5.13` and three.js `0.186.1` from
-  jsdelivr), `css/glass.css` (the dark "glass observatory" panels, this page only),
-  `js/town3d/main.js` (the Vue shell), `js/town3d/world.js` (the scene) and
-  `js/town3d/slice.json` (the scene description).
-- **Generated, not modelled.** Every mesh is built from `slice.json` (rounded boxes,
-  slab roofs, windows, doors, awnings) with vertex colours only: no model files and no
-  textures.
-- **Clock-driven light.** The sun's angle and colour follow the sim clock; the renderer
-  uses ACES tone mapping, soft shadows and GTAO ambient occlusion.
-- **Read-only reuse.** It reuses the store (WebSocket, paced dialogue), the zh display
-  layer and the live column component without changing the main page.
+- **Generated, not modelled.** Every mesh is built from `js/town3d/town.json` (island,
+  plaza, paths, buildings, interiors, props) and `js/town3d/residents.json` (the ten
+  residents' looks and motion), with vertex colours only: no model files, no textures.
+  All tuning lives in those two files.
+- **Clock-driven light.** Sun, sky and water follow the sim clock (day / dusk / night);
+  ACES tone mapping, soft shadows, GTAO ambient occlusion. Transparent things (smoke
+  sprites) are kept out of the AO pass.
+- **Cutaways.** When someone is inside, a building's roof and upper floor lift away to
+  show the room; residents sit at their anchors (bed, chair, counter). A toggle forces
+  them open.
+- **Residents.** Chibi figures with jointed limbs and one occupation prop each; walk,
+  idle, talk, sit and sleep poses. UI portraits are rendered once from these figures.
+- **Camera.** Drag to pan, wheel / pinch to zoom, right-drag (or Shift+drag, two
+  fingers) to orbit: 360 degrees around, pitch clamped to 20-70 degrees, damped.
+  WASD / arrow keys pan relative to the current heading (Shift = faster), bounded to
+  the island like drag-pan, and ignored while a text field has focus. Clicking a name
+  tag follows that resident; any manual move ends it; double-click returns to the
+  overview.
+- **Cast card.** Clicking a resident opens one floating card on the map next to them;
+  it can be dragged and closed, never covers the live column, and keeps its position
+  for the session.
+- **Event layer.** A major beat marks the people involved and raises a glass event
+  card; a conversation draws a line between its two speakers; clicking a live-column
+  item moves the camera to them.
+- **Performance.** If the frame rate stays under 45 fps for 3 seconds, AO is switched
+  off and the pixel ratio drops to 1.

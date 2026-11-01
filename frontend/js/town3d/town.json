@@ -1,0 +1,280 @@
+{
+  "_doc": "The 3-D town (the 小鎮 view). Units are metres; x east, z south, y up; the plaza centre is the origin. Everything is generated from this file -- no model files, no textures. Buildings face south (+z) unless rot (degrees) says otherwise; parts/roofs/windows/door/awning/sign use the slice's vocabulary. interior = the cutaway shown while someone is inside: furniture [kind, x, z, rotDeg, color?] in the ground floor's local metres, anchors [x, z, faceDeg] (beds/seats/work/stand). outside = anchor offsets [dx, dz] in front of every door. See docs/frontend.md (3-D tuning list).",
+
+  "render": {
+    "exposure": 0.92, "exposureNight": 1.12, "maxPixelRatio": 2,
+    "shadowMap": 4096, "shadowRadius": 6, "shadowExtent": 50, "shadowBias": -0.0003, "shadowNormalBias": 0.05,
+    "ao": {"radius": 2.2, "distanceExponent": 1.4, "thickness": 2.0, "scale": 1.6, "samples": 16},
+    "fog": [110, 250],
+    "degrade": {"fps": 45, "seconds": 3},
+    "interiorLights": 6, "interiorLightIntensity": 9
+  },
+  "sky": {
+    "top": {"day": "#7fb0bf", "dusk": "#6a78a8", "night": "#0d1530"},
+    "bottom": {"day": "#d6e8e4", "dusk": "#f4b88e", "night": "#28385a"},
+    "steps": 32
+  },
+  "sun": {
+    "day": "#fff4e6", "morning": "#ffd08a", "dusk": "#ff9a5c", "night": "#8aa4ff",
+    "intensity": 2.9, "intensityNight": 0.5, "distance": 60,
+    "hemiSky": {"day": "#d8ecf2", "dusk": "#ffc8a0", "night": "#2a3c6c"}, "hemiGround": {"day": "#e8d4b0", "night": "#161a28"},
+    "hemi": 1.25, "hemiNight": 0.5
+  },
+  "water": {
+    "y": 0.55, "size": 900, "segments": 200,
+    "color": {"day": "#64aeb6", "dusk": "#c99a86", "night": "#25466a"},
+    "rim": {"day": "#bfe8e0", "dusk": "#f4d0b4", "night": "#3a5a80"},
+    "roughness": 0.12, "reflect": 0.55,
+    "waves": [[0.32, 0.8, 0.09], [0.27, 1.05, 0.08], [0.6, 1.6, 0.025]]
+  },
+  "island": {
+    "blobs": [[0, 0, 15], [-13, -15, 9], [13, -15, 9], [1, 17, 10], [-30, -14, 9], [30, -16, 9], [31, 4, 9], [24, 14, 7], [-24, 15, 12], [-14, 2, 9], [15, 2, 8], [-36, 0, 7], [-35, 20, 7], [-34, -22, 6], [12, 24, 7], [38, -2, 6]],
+    "margin": 3.0, "noise": 1.2, "smooth": 5, "points": 180,
+    "riverX": -40, "bankNoise": 0.6,
+    "grass": "#b9dc8e", "soil": "#a87a58", "stone": "#c9b89e",
+    "layers": {"stone": 1.8, "soil": 1.15, "grass": 0.55}
+  },
+  "farBank": {"x": -66, "w": 18, "z": [-90, 90], "trees": 26},
+  "pier": {"at": [-41, 3], "len": 8, "w": 2.6, "color": "#b98a62"},
+
+  "plaza": {"center": [0, 0], "radius": 9, "tile": 0.72, "gap": 0.06, "grout": "#9c8f7a", "colors": ["#ece2cf", "#e2d5bd", "#d8c9ae", "#f2ead9"]},
+  "paths": {
+    "color": "#e6dac4", "edge": "#cdbd9f", "width": 2.2, "vary": 0.3,
+    "extra": [
+      {"id": "riverwalk", "w": 1.8, "pts": [[-37, -26], [-37.6, -12], [-36.8, 0], [-37.4, 12], [-36.6, 26]]},
+      {"id": "pier", "w": 1.8, "pts": [[-37, 3], [-33, 2.4], [-26, 3.6], [-18, 2.6], [-9.2, 1.2]]},
+      {"id": "south", "w": 1.5, "pts": [[1, 21.5], [2.5, 25], [4, 27.5]]}
+    ]
+  },
+
+  "outside": [[0, 2.2], [-2.2, 1.6], [2.2, 1.6], [-1.2, 3.6], [1.4, 3.8], [-3.6, 3.2], [3.6, 3.2], [0, 5.2], [-2.6, 5.4], [2.6, 5.6], [-4.8, 1.8], [4.8, 1.8]],
+
+  "buildings": [
+    {
+      "id": "cafe", "name": "潮汐咖啡館", "pos": [-13, -15], "bend": [-1.5, 3],
+      "parts": [
+        {"size": [8, 3.4, 5.6], "at": [0, 0, 0], "color": "#f7c3a5"},
+        {"size": [5.2, 2.6, 4.4], "at": [-1.1, 3.4, -0.3], "color": "#bfe6cf"},
+        {"size": [2.4, 1.6, 2.4], "at": [2.6, 3.4, -0.8], "color": "#f9e3a8"}
+      ],
+      "roofs": [
+        {"part": 1, "kind": "gable", "color": "#e8645a", "height": 1.7, "overhang": 0.35, "chimney": 1.4},
+        {"part": 2, "kind": "gable", "color": "#5f8fd0", "height": 1.0, "overhang": 0.25},
+        {"part": 0, "kind": "ledge", "color": "#d98f74"}
+      ],
+      "windows": [
+        {"part": 0, "face": "front", "x": -2.6, "y": 1.7, "w": 2.2, "h": 1.5},
+        {"part": 0, "face": "front", "x": 3.2, "y": 1.9, "w": 0.9, "h": 1.1},
+        {"part": 1, "face": "front", "x": -2.4, "y": 1.3, "w": 0.9, "h": 1.1},
+        {"part": 1, "face": "front", "x": -0.6, "y": 1.3, "w": 0.9, "h": 1.1},
+        {"part": 1, "face": "front", "x": 1.2, "y": 1.3, "w": 0.9, "h": 1.1},
+        {"part": 0, "face": "east", "x": 0.4, "y": 1.8, "w": 1.2, "h": 1.2},
+        {"part": 1, "face": "east", "x": 0, "y": 1.3, "w": 0.9, "h": 1.0},
+        {"part": 2, "face": "front", "x": 0, "y": 0.8, "w": 0.7, "h": 0.8}
+      ],
+      "door": {"part": 0, "face": "front", "x": 0.8, "w": 1.3, "h": 2.3, "color": "#7a4a3a"},
+      "awning": {"part": 0, "x": -0.6, "w": 6.4, "y": 2.85, "depth": 1.3, "colors": ["#e8645a", "#fff4ea"]},
+      "sign": {"part": 0, "x": -0.6, "y": 3.15, "w": 2.6, "h": 0.5, "color": "#5a3a32"},
+      "props": [["umbrella", -5.6, 3.6], ["umbrella", -7.4, 5.4], ["pot", -3.6, 3.3], ["pot", 4.6, 3.2], ["board", 3.0, 3.8]],
+      "interior": {
+        "floor": "#d9b48c", "wall": "#f3d2bb",
+        "furniture": [["counter", -1.6, -1.2, 0, "#9a6a4a"], ["shelf", -1.6, -2.45, 0, "#8a5a3c"], ["espresso", -2.4, -1.2, 0], ["table", 1.4, 0.4], ["chair", 0.6, 0.4, 90], ["chair", 2.2, 0.4, -90], ["table", 2.6, -1.6], ["chair", 2.6, -0.8, 180], ["table", -1.8, 1.3], ["chair", -2.6, 1.3, 90], ["chair", -1.0, 1.3, -90], ["plant", 3.4, 2.1]],
+        "work": [[-1.6, -1.9, 0], [-0.4, -1.9, 0]],
+        "seats": [[0.6, 0.4, 90], [2.2, 0.4, -90], [2.6, -0.8, 180], [-2.6, 1.3, 90], [-1.0, 1.3, -90]],
+        "stand": [[0.6, 1.9, 180], [1.8, 2.0, 200], [-0.2, -0.4, 0]],
+        "beds": []
+      }
+    },
+    {
+      "id": "bakery", "name": "爐心烘焙坊", "pos": [13, -15], "bend": [1.5, 3],
+      "parts": [
+        {"size": [9, 3.2, 6], "at": [0, 0, 0], "color": "#f3dcb4"},
+        {"size": [6.4, 2.2, 4.6], "at": [0.8, 3.2, -0.4], "color": "#f6e7cc"}
+      ],
+      "roofs": [
+        {"part": 1, "kind": "gable", "color": "#c8643c", "height": 1.9, "overhang": 0.4, "chimney": -2.0, "smoke": true},
+        {"part": 0, "kind": "ledge", "color": "#b98a62"}
+      ],
+      "windows": [
+        {"part": 0, "face": "front", "x": -2.4, "y": 1.55, "w": 2.8, "h": 1.6, "shop": true},
+        {"part": 0, "face": "front", "x": 3.0, "y": 1.7, "w": 1.0, "h": 1.2},
+        {"part": 1, "face": "front", "x": -1.0, "y": 1.1, "w": 1.0, "h": 1.0},
+        {"part": 1, "face": "front", "x": 2.4, "y": 1.1, "w": 1.0, "h": 1.0},
+        {"part": 0, "face": "east", "x": -0.6, "y": 1.7, "w": 1.1, "h": 1.2},
+        {"part": 1, "face": "east", "x": 0, "y": 1.1, "w": 0.9, "h": 0.9}
+      ],
+      "door": {"part": 0, "face": "front", "x": 1.0, "w": 1.3, "h": 2.3, "color": "#5d6f4a"},
+      "awning": {"part": 0, "x": -2.4, "w": 3.6, "y": 2.75, "depth": 1.0, "colors": ["#c8643c", "#f6e7cc"]},
+      "sign": {"part": 0, "x": 1.0, "y": 2.85, "w": 2.0, "h": 0.45, "color": "#6a4a2e"},
+      "props": [["sacks", -4.8, 3.4], ["sacks", 4.6, 3.6], ["crate", 5.4, 3.0], ["pot", -0.5, 3.3], ["bike", 6.4, 2.2]],
+      "interior": {
+        "floor": "#d8b892", "wall": "#f6e3c6",
+        "furniture": [["oven", -3.2, -1.9, 0, "#b5654a"], ["knead", 0.2, -0.4, 0, "#c8a07a"], ["breadshelf", 2.6, -2.5, 0, "#9a6a4a"], ["display", 2.2, 1.4, 0, "#e9dccb"], ["sacks", -3.6, 1.8], ["stool", -1.6, 1.9]],
+        "work": [[-3.2, -0.9, 180], [0.2, 0.5, 180], [2.2, 0.6, 0]],
+        "seats": [[-1.6, 1.9, 0]],
+        "stand": [[0.4, 1.9, 180], [-1.0, 0.9, 120], [3.4, 0.2, 270]],
+        "beds": []
+      }
+    },
+    {
+      "id": "home_a", "name": "聽雨居", "pos": [-30, -14], "bend": [3, 4],
+      "parts": [
+        {"size": [9, 3.0, 6], "at": [0, 0, 0], "color": "#d6e6ee"},
+        {"size": [9, 2.6, 6], "at": [0, 3.0, 0], "color": "#d6e6ee"},
+        {"size": [3.6, 3.4, 3.2], "at": [5.6, 0, 1.0], "color": "#e8eef0"}
+      ],
+      "roofs": [
+        {"part": 1, "kind": "gable", "color": "#4f7a96", "height": 2.0, "overhang": 0.4, "chimney": 2.6},
+        {"part": 2, "kind": "gable", "color": "#4f7a96", "height": 1.2, "overhang": 0.3}
+      ],
+      "windows": [
+        {"part": 0, "face": "front", "x": -2.6, "y": 1.6, "w": 1.2, "h": 1.2, "box": true},
+        {"part": 1, "face": "front", "x": -2.6, "y": 1.3, "w": 1.0, "h": 1.1, "box": true},
+        {"part": 1, "face": "front", "x": 0.2, "y": 1.3, "w": 1.0, "h": 1.1},
+        {"part": 1, "face": "front", "x": 2.8, "y": 1.3, "w": 1.0, "h": 1.1, "box": true},
+        {"part": 2, "face": "front", "x": 0, "y": 1.7, "w": 1.0, "h": 1.0},
+        {"part": 2, "face": "east", "x": 0, "y": 1.7, "w": 0.9, "h": 1.0},
+        {"part": 1, "face": "east", "x": -1.2, "y": 1.3, "w": 0.9, "h": 1.0}
+      ],
+      "door": {"part": 0, "face": "front", "x": 0.9, "w": 1.2, "h": 2.2, "color": "#3f5f78"},
+      "props": [["washline", -2.0, 6.5, 0], ["pot", -0.4, 3.3], ["pot", 2.2, 3.3], ["mailbox", 3.4, 4.4], ["woodpile", -5.6, 1.0], ["flowerbed", -4.2, 4.6]],
+      "interior": {
+        "floor": "#cdb08e", "wall": "#e4eef2",
+        "furniture": [["bed", -3.4, -1.6, 0, "#7fa6d8"], ["bed", -1.7, -1.6, 0, "#e8a0a0"], ["bed", 0, -1.6, 0, "#9fd0a8"], ["bed", 1.7, -1.6, 0, "#e8cf8a"], ["bed", 3.4, -1.6, 0, "#c0a6e0"], ["table", 0, 1.4, 0, "#b98258"], ["chair", -1.0, 1.4, 90], ["chair", 1.0, 1.4, -90], ["stove", 3.7, 1.9, 270], ["shelf", -3.9, 1.6, 90, "#8a5a3c"], ["rug", -2.2, 1.2, 0, "#c86a5a"]],
+        "beds": [[-3.4, -0.6, 0], [-1.7, -0.6, 0], [0, -0.6, 0], [1.7, -0.6, 0], [3.4, -0.6, 0]],
+        "bedOf": ["jiji", "oula", "lengyue", "xixi", "aisi"],
+        "seats": [[-1.0, 1.4, 90], [1.0, 1.4, -90]],
+        "work": [[3.0, 1.9, 90]],
+        "stand": [[-2.4, 1.6, 180], [2.2, 0.4, 200], [-0.8, 0.2, 160]]
+      }
+    },
+    {
+      "id": "home_b", "name": "望坡樓", "pos": [31, 3], "bend": [-2, 1],
+      "parts": [
+        {"size": [8.6, 3.0, 6], "at": [0, 0, 0], "color": "#f4dc9c"},
+        {"size": [5.4, 2.6, 5.2], "at": [-1.4, 3.0, -0.2], "color": "#f4dc9c"},
+        {"size": [3.0, 2.4, 3.0], "at": [2.6, 3.0, -0.8], "color": "#f7e8c0"},
+        {"size": [2.6, 2.0, 2.6], "at": [2.6, 5.4, -0.8], "color": "#f7e8c0"}
+      ],
+      "roofs": [
+        {"part": 1, "kind": "gable", "color": "#c95a3c", "height": 1.6, "overhang": 0.35},
+        {"part": 3, "kind": "gable", "color": "#a8452e", "height": 1.4, "overhang": 0.3, "chimney": 0.6},
+        {"part": 0, "kind": "ledge", "color": "#d9b070"}
+      ],
+      "windows": [
+        {"part": 0, "face": "front", "x": -2.8, "y": 1.6, "w": 1.1, "h": 1.2, "box": true},
+        {"part": 0, "face": "front", "x": 2.8, "y": 1.6, "w": 1.1, "h": 1.2, "box": true},
+        {"part": 1, "face": "front", "x": -2.4, "y": 1.2, "w": 0.9, "h": 1.0},
+        {"part": 1, "face": "front", "x": -0.4, "y": 1.2, "w": 0.9, "h": 1.0},
+        {"part": 2, "face": "front", "x": 0, "y": 1.2, "w": 0.9, "h": 1.0},
+        {"part": 3, "face": "front", "x": 0, "y": 1.0, "w": 0.8, "h": 0.9},
+        {"part": 0, "face": "east", "x": -0.8, "y": 1.6, "w": 1.0, "h": 1.1},
+        {"part": 3, "face": "east", "x": 0, "y": 1.0, "w": 0.7, "h": 0.8}
+      ],
+      "door": {"part": 0, "face": "front", "x": 0.2, "w": 1.2, "h": 2.2, "color": "#8a4a3a"},
+      "props": [["washline", 3.0, 6.6, 0], ["pot", -1.0, 3.3], ["pot", 1.4, 3.3], ["mailbox", -3.6, 4.2], ["bike", 5.6, 2.4], ["flowerbed", 5.2, 4.8]],
+      "interior": {
+        "floor": "#d2b48a", "wall": "#f7e6bd",
+        "furniture": [["bed", -3.4, -1.6, 0, "#e09a7a"], ["bed", -1.7, -1.6, 0, "#86b4d8"], ["bed", 0, -1.6, 0, "#e8d08a"], ["bed", 1.7, -1.6, 0, "#a6d0a0"], ["bed", 3.4, -1.6, 0, "#d0a6c8"], ["table", -0.4, 1.4, 0, "#a8744c"], ["chair", -1.4, 1.4, 90], ["chair", 0.6, 1.4, -90], ["stove", 3.5, 1.9, 270], ["easel", -3.6, 1.6, 45], ["rug", 1.8, 1.2, 0, "#5a86b0"]],
+        "beds": [[-3.4, -0.6, 0], [-1.7, -0.6, 0], [0, -0.6, 0], [1.7, -0.6, 0], [3.4, -0.6, 0]],
+        "bedOf": ["ange", "azong", "xue", "long", "kuaizheng"],
+        "seats": [[-1.4, 1.4, 90], [0.6, 1.4, -90]],
+        "work": [[-2.9, 1.2, 225]],
+        "stand": [[2.2, 1.8, 180], [-2.2, 0.3, 160], [1.0, 0.2, 200]]
+      }
+    },
+    {
+      "id": "office", "name": "川流事務所", "pos": [30, -16], "bend": [-3, 4],
+      "parts": [
+        {"size": [8, 3.3, 6.5], "at": [0, 0, 0], "color": "#b8664c"},
+        {"size": [8, 3.0, 6.5], "at": [0, 3.3, 0], "color": "#b8664c"},
+        {"size": [8, 3.0, 6.5], "at": [0, 6.3, 0], "color": "#b8664c"},
+        {"size": [2.6, 1.4, 2.2], "at": [1.8, 9.3, -1.2], "color": "#d9cbb8"}
+      ],
+      "brick": true,
+      "roofs": [
+        {"part": 2, "kind": "flat", "color": "#8a4a38"},
+        {"part": 3, "kind": "ledge", "color": "#6a6a72"},
+        {"part": 0, "kind": "band", "color": "#e8dccb"},
+        {"part": 1, "kind": "band", "color": "#e8dccb"}
+      ],
+      "windows": [
+        {"part": 0, "face": "front", "x": -2.6, "y": 1.7, "w": 1.6, "h": 1.5},
+        {"part": 0, "face": "front", "x": 2.8, "y": 1.7, "w": 1.0, "h": 1.5},
+        {"part": 1, "face": "front", "x": -2.6, "y": 1.5, "w": 1.1, "h": 1.4},
+        {"part": 1, "face": "front", "x": 0, "y": 1.5, "w": 1.1, "h": 1.4},
+        {"part": 1, "face": "front", "x": 2.6, "y": 1.5, "w": 1.1, "h": 1.4},
+        {"part": 2, "face": "front", "x": -2.6, "y": 1.5, "w": 1.1, "h": 1.4},
+        {"part": 2, "face": "front", "x": 0, "y": 1.5, "w": 1.1, "h": 1.4},
+        {"part": 2, "face": "front", "x": 2.6, "y": 1.5, "w": 1.1, "h": 1.4},
+        {"part": 0, "face": "east", "x": -1.4, "y": 1.7, "w": 1.1, "h": 1.4},
+        {"part": 0, "face": "east", "x": 1.4, "y": 1.7, "w": 1.1, "h": 1.4},
+        {"part": 1, "face": "east", "x": -1.4, "y": 1.5, "w": 1.1, "h": 1.4},
+        {"part": 1, "face": "east", "x": 1.4, "y": 1.5, "w": 1.1, "h": 1.4},
+        {"part": 2, "face": "east", "x": -1.4, "y": 1.5, "w": 1.1, "h": 1.4},
+        {"part": 2, "face": "east", "x": 1.4, "y": 1.5, "w": 1.1, "h": 1.4}
+      ],
+      "door": {"part": 0, "face": "front", "x": 0.2, "w": 1.5, "h": 2.4, "color": "#3c4a5a", "plate": "#d8b45a"},
+      "props": [["postbox", -4.6, 3.6], ["bike", 5.0, 2.6], ["pot", -1.4, 3.3], ["pot", 1.8, 3.3]],
+      "interior": {
+        "floor": "#c9b49a", "wall": "#e8d6c6",
+        "furniture": [["desk", -2.6, -1.4, 0, "#a87a52"], ["desk", 0, -1.4, 0, "#a87a52"], ["desk", 2.6, -1.4, 0, "#a87a52"], ["chair", -2.6, -0.6, 180], ["chair", 0, -0.6, 180], ["chair", 2.6, -0.6, 180], ["cabinet", 3.5, 1.4, 270, "#8a96a6"], ["cooler", -3.5, 1.8, 90], ["plant", -3.5, 0.4]],
+        "work": [[-2.6, -0.6, 180], [0, -0.6, 180], [2.6, -0.6, 180]],
+        "seats": [[-2.6, -0.6, 180], [0, -0.6, 180], [2.6, -0.6, 180]],
+        "stand": [[-1.2, 1.6, 180], [1.4, 1.8, 200], [-2.4, 1.0, 120]],
+        "beds": [],
+        "sitAtWork": true
+      }
+    },
+    {
+      "id": "market", "name": "渡口市場", "kind": "market", "pos": [1, 17], "doorAt": [-2.3, -1.4], "bend": [0, -1],
+      "stalls": [
+        {"at": [-4.6, -1.8], "w": 3.4, "d": 2.4, "colors": ["#e8645a", "#fff4ea"], "goods": ["#e8645a", "#f2a23c", "#8cc06a"]},
+        {"at": [0, -2.2], "w": 3.4, "d": 2.4, "colors": ["#5f8fd0", "#fff4ea"], "goods": ["#f2d04a", "#8cc06a", "#c8643c"]},
+        {"at": [4.6, -1.8], "w": 3.4, "d": 2.4, "colors": ["#4fa88a", "#fff4ea"], "goods": ["#d65a8a", "#f2a23c", "#e8e0c8"]},
+        {"at": [-2.6, 4.8], "w": 3.0, "d": 2.2, "colors": ["#f2a23c", "#fff4ea"], "goods": ["#8cc06a", "#e8645a", "#f2d04a"]},
+        {"at": [3.0, 5.0], "w": 3.0, "d": 2.2, "colors": ["#a46cc8", "#fff4ea"], "goods": ["#c8643c", "#f2d04a", "#5f8fd0"]}
+      ],
+      "props": [["crate", -7.2, 0.6], ["crate", -7.0, 1.5], ["barrel", 7.2, 0.8], ["barrel", 6.9, 1.8], ["basket", 0.6, 0.4], ["basket", -0.8, 0.5], ["sacks", 6.2, 5.6], ["crate", -5.6, 5.4]],
+      "anchors": [[-4.2, 1.0], [-1.4, 1.6], [1.4, 1.4], [4.2, 1.0], [-2.8, 2.6], [2.6, 2.6], [0, 3.2], [-6.4, 2.4], [6.2, 2.8], [0.2, 6.4], [-6.0, 6.0], [6.4, 6.6]]
+    },
+    {
+      "id": "park", "name": "螢火公園", "kind": "park", "pos": [-24, 15], "doorAt": [3, -5], "bend": [4, -2],
+      "mound": {"at": [-3, 2], "r": 7.5, "h": 1.4, "color": "#a9d47e"},
+      "installation": {
+        "at": [-3, 2.4], "posts": [[-3.6, -1.6], [3.6, -1.6], [-3.6, 2.2], [3.6, 2.2], [0, 3.6], [0, -3.4]], "postH": 3.4,
+        "strings": [[0, 1], [1, 3], [3, 4], [4, 2], [2, 0], [0, 5], [5, 1], [2, 3]], "bulbsPer": 7, "sag": 0.7,
+        "colors": ["#ffcf6e", "#7fd8ff", "#ff8fc8", "#a6f08a"], "core": "#e8dccb"
+      },
+      "benches": [[-9.2, -2.4, 70], [4.6, 5.6, -20], [-6.2, 7.8, 10], [4.2, -3.6, 200]],
+      "props": [["flowerbed", -8.6, 5.4], ["flowerbed", 1.6, 7.6], ["flowerbed", 6.4, 1.0], ["lamp", 5.8, -1.2], ["board", 6.8, -4.6]],
+      "anchors": [[0, -0.8], [2.4, 0.2], [-2.4, 0.4], [1.6, 4.6], [-1.6, 4.8], [4.8, 3.2], [-5.4, 2.8], [5.6, -2.4], [-5.8, -1.8], [0.2, 6.6], [-3.4, 6.8], [3.2, 6.8]]
+    }
+  ],
+
+  "props": {
+    "trees": [
+      [-21, -24, 1.2], [-19, -21.5, 0.9], [-23.5, -20.5, 1.0],
+      [0, -22, 1.1], [2.4, -23.6, 0.85], [-2.2, -24, 0.9],
+      [21, -23.5, 1.1], [23.6, -22, 0.9],
+      [37, 2, 1.0], [38.4, -1.4, 0.8], [36.2, 5.2, 0.9],
+      [12, 25.5, 1.1], [14.6, 24, 0.85], [17, 25.8, 0.95],
+      [-12.5, 25.5, 1.0], [-15, 26.6, 0.8],
+      [-35, -20, 1.0], [-34, 8.5, 0.9], [-34.6, 24, 1.1],
+      [-15, 8, 0.8], [17, -3, 0.75], [37, 18, 1.0], [35.6, 21.4, 0.8],
+      [-6, -22.5, 0.8], [8.6, 26.6, 0.8]
+    ],
+    "treeGreens": ["#8fcf7a", "#6fb866", "#a8dc84"],
+    "shrubs": [[-8, -8.6], [-17.6, -9.8], [8.2, -8.4], [18.2, -9.6], [-24.6, -8.4], [-35, -9], [24.6, -10.4], [35, -11], [24.2, 9.6], [36.4, 9.6], [-7.6, 12], [9.4, 13.2], [-12.4, 10.4], [11.6, 9.4], [-30.8, 4.6], [-28.6, 6], [33.6, 16.4], [-5.4, 22.6], [6.6, 22.8], [20.4, 18.8]],
+    "flowerbeds": [[-4.6, -10.2], [4.6, -10.2], [-10.8, 6.6], [10.8, 6.6], [-2, 11.4], [21, -6.4], [-21, -6.6], [16.8, 15.4]],
+    "flowerColors": ["#f27a8a", "#f2c84a", "#ffffff", "#b48ae0", "#f29a4a"],
+    "benches": [[-5.6, 7.3, 200], [5.6, 7.3, 160], [-7.6, -4.0, 110], [7.6, -4.0, 250]],
+    "board": [-7.8, 4.2, 60],
+    "postbox": [8.2, 3.6, -30],
+    "lamps": [[-8.6, -6.6], [8.6, -6.6], [-8.8, 6.4], [8.8, 6.4], [-20, -8.4], [20, -8.6], [-30, -4], [29, -6], [18, 7], [-14, 13.6], [6.4, 13], [-36, -12], [-36, 12]],
+    "lampColor": "#3c3f4a", "lampLight": "#ffc27a"
+  },
+
+  "residents": {"speed": 4.2, "maxTrip": 2.4, "talkGap": 1.15, "sleepLift": 0.41, "seatY": 0.46},
+  "camera": {"target": [4, 1, 2], "distance": 90, "azimuth": 32, "elevation": 22, "fov": 34, "shift": 0.22, "shiftX": 0.12, "min": 16, "max": 150, "focus": 30, "ease": 0.08, "pitchMin": 20, "pitchMax": 70, "damping": 0.86}
+}

@@ -14,8 +14,13 @@
 他們會從自己的經歷長出願望,為它奔走、受挫、在個性允許的範圍內放棄,事情了結時寫下一段收束反思,翻到下一頁。
 沒有導演,沒有劇本:世界自己運轉,你只是在旁邊看。
 
-<!-- 截圖位:3D 小鎮(日 / 夜)與對話串卡片的新截圖,待 3D 介面正式上線後補上。 -->
-> 截圖:新版 3D 小鎮(日 / 夜)與對話串卡片的截圖,會在 3D 介面正式上線後補上。
+| 白天 | 夜晚(右側為即時動態欄的對話串卡片) |
+|---|---|
+| ![3D 小鎮白天](docs/img/town3d-day.png) | ![3D 小鎮夜晚](docs/img/town3d-night.png) |
+
+![十位居民](docs/img/residents.png)
+
+<sub>截圖取自 mock 驗證環境;白天那張的居民位置是為了拍攝擺放的,實際運行時由即時資料驅動。</sub>
 
 ---
 
@@ -60,12 +65,11 @@
 - 紀元封存:`simulation_runs.archived` 標記的 run 唯讀、不再續跑,但仍可回放。
 
 **介面**(`frontend/`,不用 build)
-- Vue 3(CDN)+ ES modules;主頁 `/` 是 PixiJS 2D 村莊地圖,旁邊是即時動態欄。
+- Vue 3(CDN)+ ES modules + three.js;主頁 `/` 是整座 3D 小鎮(陶土微縮風格,日夜隨模擬時鐘、有人在屋裡時屋頂掀開成剖面、十位居民各帶一件職業小物),玻璃面板的即時動態欄浮在上面。2D 像素地圖已退役。
+- 鏡頭:拖曳平移、滾輪縮放、右鍵軌道旋轉(俯仰 20°–70°)、WASD / 方向鍵依視角平移;點名牌跟隨居民。點居民開一張可拖曳的浮動角色卡。
 - **即時動態欄與對話串卡片**:一段對話就是一張卡片(雙方、時間、地點、輪流的對話泡泡,同場的傾訴 / 對質也附在卡片裡)。
 - 鎮誌、回放(拖時間軸重演歷史)、關係圖、居民檢視器。
 - **營運面板**(角落的小按鈕):上帝模式(謠言、秘密、天氣、慶典、故障、植入願望、手動收束章節)與維護端點;破壞性操作預設 dry-run。
-- **3D 驗證切片**(`/town3d-preview`,Three.js):一座島上一間咖啡館加一角廣場,陶土微縮風格,太陽隨模擬時鐘移動,沿用同一個即時動態欄。
-  這只是驗證切片,不是完整的 3D 小鎮。
 
 ---
 
@@ -169,8 +173,8 @@ python -m unittest discover tests -v
 ```mermaid
 flowchart TB
   subgraph FE["frontend/ (no build step)"]
-    UI["index.html · Vue 3 (CDN) + ES modules<br/>PixiJS 2D village · live feed · thread cards<br/>chronicle · replay · relations · ops panel"]
-    T3D["town3d.html + js/town3d/<br/>Three.js validation slice (/town3d-preview)"]
+    UI["index.html · Vue 3 (CDN) + ES modules<br/>live feed · thread cards · chronicle · replay · relations · ops panel"]
+    T3D["js/town3d/<br/>three.js 3D town (village + replay)"]
   end
 
   subgraph SRV["backend/app/server.py · FastAPI"]
@@ -246,7 +250,6 @@ flowchart TB
   - 心情狀態
 - **第三階段剩餘工作**:結構化猜測、謠言 × 願望的交互。
 - **小鎮報紙**。
-- **3D 小鎮介面**:從目前的 `/town3d-preview` 驗證切片擴成完整小鎮(日夜、對話串卡片)。
 
 ---
 

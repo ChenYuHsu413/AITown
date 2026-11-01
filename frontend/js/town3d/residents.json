@@ -1,0 +1,246 @@
+{
+ "_doc": "Chibi resident figures, all procedural (figure.js). 'proportions' are metres at height 1 / build 1; head:body is about 1:1.45. 'motion' tunes the animation. Per resident: hair {style, color}, top ('main' = the resident colour from tokens.css), bottom, shoes, height and build multipliers, stoop (forward lean, radians), extras (the occupation prop). Hair styles: messy, short, mop, side, long, ponytail, bun, bob, buzz, hat. Extras: apron, toque, satchel, coat (+stethoscope), backpack, brush, goggles, bag, toolbelt, cane. Seed facts (genders, ages, jobs) are from data/seed.py -- appearance follows them, it does not change them.",
+ "skin": "#f6d5b8",
+ "blush": "#f29a8e",
+ "eyes": "#2a2430",
+ "proportions": {
+  "head": 0.43,
+  "neck": 0.02,
+  "torso": [
+   0.54,
+   0.5,
+   0.36
+  ],
+  "pelvis": [
+   0.48,
+   0.22,
+   0.32
+  ],
+  "hip": 0.7,
+  "hipGap": 0.13,
+  "thigh": 0.3,
+  "shin": 0.3,
+  "leg": 0.105,
+  "shoulder": 0.34,
+  "upperArm": 0.2,
+  "foreArm": 0.2,
+  "arm": 0.08,
+  "hand": 0.085,
+  "shoe": [
+   0.17,
+   0.1,
+   0.27
+  ]
+ },
+ "motion": {
+  "walkFreq": 8.5,
+  "legSwing": 0.6,
+  "knee": 0.9,
+  "armSwing": 0.55,
+  "elbow": 0.35,
+  "bob": 0.06,
+  "twist": 0.08,
+  "breath": 0.018,
+  "sway": 0.035,
+  "nod": 0.22,
+  "nodEvery": 2.6,
+  "seat": 0.46
+ },
+ "residents": {
+  "jiji": {
+   "_who": "27, cafe owner",
+   "hair": {
+    "style": "messy",
+    "color": "#3b2a26"
+   },
+   "top": "main",
+   "bottom": "#3f3d4c",
+   "shoes": "#5b3a2e",
+   "height": 1.0,
+   "build": 1.0,
+   "extras": [
+    {
+     "kind": "apron",
+     "color": "#f2e4cf"
+    }
+   ]
+  },
+  "ange": {
+   "_who": "38, baker",
+   "hair": {
+    "style": "short",
+    "color": "#2e2420"
+   },
+   "top": "main",
+   "bottom": "#4a4038",
+   "shoes": "#3a2e28",
+   "height": 1.03,
+   "build": 1.14,
+   "extras": [
+    {
+     "kind": "toque",
+     "color": "#fbf8f2"
+    }
+   ]
+  },
+  "oula": {
+   "_who": "34, postman",
+   "hair": {
+    "style": "buzz",
+    "color": "#7a4a2a"
+   },
+   "top": "main",
+   "bottom": "#2f4a5a",
+   "shoes": "#2a2e36",
+   "height": 1.02,
+   "build": 0.94,
+   "extras": [
+    {
+     "kind": "satchel",
+     "color": "#a86a3c"
+    }
+   ]
+  },
+  "lengyue": {
+   "_who": "36, doctor",
+   "hair": {
+    "style": "long",
+    "color": "#1e1a24"
+   },
+   "top": "main",
+   "bottom": "#3a3448",
+   "shoes": "#2a2430",
+   "height": 1.0,
+   "build": 0.9,
+   "extras": [
+    {
+     "kind": "coat",
+     "color": "#f6f6f2",
+     "stethoscope": "#4a5a6a"
+    }
+   ]
+  },
+  "azong": {
+   "_who": "35, freelance designer",
+   "hair": {
+    "style": "bun",
+    "color": "#9a4a2e"
+   },
+   "top": "main",
+   "bottom": "#5a6a7a",
+   "shoes": "#c8643c",
+   "height": 0.98,
+   "build": 0.95,
+   "extras": [
+    {
+     "kind": "brush",
+     "color": "#c8643c",
+     "tip": "#3a7ad0"
+    }
+   ]
+  },
+  "xixi": {
+   "_who": "19, student",
+   "hair": {
+    "style": "mop",
+    "color": "#2a2430"
+   },
+   "top": "main",
+   "bottom": "#3a3a40",
+   "shoes": "#e8e4dc",
+   "height": 0.94,
+   "build": 0.88,
+   "extras": [
+    {
+     "kind": "backpack",
+     "color": "#f2a23c"
+    }
+   ]
+  },
+  "aisi": {
+   "_who": "24, engineer",
+   "hair": {
+    "style": "ponytail",
+    "color": "#4a3026"
+   },
+   "top": "main",
+   "bottom": "#3c4250",
+   "shoes": "#2a2e36",
+   "height": 0.96,
+   "build": 0.88,
+   "extras": [
+    {
+     "kind": "goggles",
+     "color": "#f2b84a"
+    }
+   ]
+  },
+  "xue": {
+   "_who": "31, office worker",
+   "hair": {
+    "style": "bob",
+    "color": "#1c1a1e"
+   },
+   "top": "main",
+   "bottom": "#2e3440",
+   "shoes": "#2a2430",
+   "height": 0.95,
+   "build": 0.88,
+   "extras": [
+    {
+     "kind": "bag",
+     "color": "#c8a07a"
+    }
+   ]
+  },
+  "long": {
+   "_who": "52, repair technician",
+   "hair": {
+    "style": "buzz",
+    "color": "#6a6460"
+   },
+   "top": "main",
+   "bottom": "#4a4a3a",
+   "shoes": "#3a3028",
+   "height": 1.02,
+   "build": 1.16,
+   "extras": [
+    {
+     "kind": "toolbelt",
+     "color": "#7a5a3c"
+    }
+   ]
+  },
+  "kuaizheng": {
+   "_who": "61, retired",
+   "hair": {
+    "style": "side",
+    "color": "#d8d2ca"
+   },
+   "top": "main",
+   "bottom": "#5a5248",
+   "shoes": "#3a2e28",
+   "height": 0.96,
+   "build": 1.0,
+   "stoop": 0.14,
+   "extras": [
+    {
+     "kind": "cane",
+     "color": "#6b4a32"
+    }
+   ]
+  }
+ },
+ "placeholder": {
+  "hair": {
+   "style": "short",
+   "color": "#4a3a32"
+  },
+  "top": "main",
+  "bottom": "#3f3d4c",
+  "shoes": "#5b3a2e",
+  "height": 1.0,
+  "build": 1.0,
+  "extras": []
+ }
+}

@@ -6,14 +6,24 @@ import {agentName, locName, locByEn, occName, traitName, actName, moodZh, resolv
 import {Avatar, Icon, Num} from './ui.js';
 
 const MEM_KIND = {rumor: '傳言', secret: '秘密', reflection: '反思'};
+const POS_KEY = 'aitown.cardPos';
+const W = 388, GAP = 12;
+const loadPos = () => { try { return JSON.parse(sessionStorage.getItem(POS_KEY) || 'null'); } catch (e) { return null; } };
+const savePos = p => { try { sessionStorage.setItem(POS_KEY, JSON.stringify(p)); } catch (e) { /* private mode */ } };
 const TABS = [['chapter', '章節'], ['wish', '願望'], ['mind', '記憶'], ['trace', '決策'], ['rel', '關係']];
 
 export default {
   components: {Avatar, Icon, Num},
   setup: () => ({TABS}),
-  data: () => ({a: null, secrets: [], loading: false, error: '', tab: 'chapter'}),
-  computed: { id: () => store.inspectId },
-  watch: { id: { handler(v) { this.a = null; if (v) this.load(true); }, immediate: true } },
+  data: () => ({a: null, secrets: [], loading: false, error: '', tab: 'chapter', pos: null, dragging: false}),
+  computed: {
+    id: () => store.inspectId,
+    cardStyle() { return {'--rc': 'var(--r-' + this.id + ')', ...(this.pos ? {left: this.pos.x + 'px', top: this.pos.y + 'px'} : {})}; },
+  },
+  watch: {
+    id: { handler(v) { this.a = null; if (v) { this.load(true); this.$nextTick(() => this.place()); } }, immediate: true },
+    'store.inspectAt'() { if (this.id) this.$nextTick(() => this.place()); },
+  },
   created() { this.timer = setInterval(() => { if (this.id && !this.loading) this.load(false); }, 5000); },
   beforeUnmount() { clearInterval(this.timer); },
   methods: {
@@ -33,6 +43,32 @@ export default {
       this.loading = false;
     },
     close() { store.inspectId = null; },
+    // A floating card: a position the viewer dragged it to (this session) wins; otherwise it
+    // opens beside the resident who was clicked. It never covers the live column.
+    bounds() {
+      const st = this.$el.parentElement.getBoundingClientRect(), col = document.querySelector('.village .live-col');
+      let right = st.width - GAP;
+      if (store.view === 'village' && col && col.offsetParent) right = Math.min(right, col.getBoundingClientRect().left - st.left - GAP);
+      return {st, right, bottom: st.height - GAP};
+    },
+    clamp(p) {
+      const {right, bottom} = this.bounds(), h = this.$el.offsetHeight || 400;
+      return {x: Math.round(Math.max(GAP, Math.min(right - W, p.x))), y: Math.round(Math.max(GAP, Math.min(bottom - Math.min(h, bottom - GAP), p.y)))};
+    },
+    place() {
+      if (!this.$el || !this.$el.getBoundingClientRect || matchMedia('(max-width: 900px)').matches) { this.pos = null; return; }
+      const saved = loadPos(), at = store.inspectAt, {st} = this.bounds();
+      if (saved) this.pos = this.clamp(saved);
+      else if (at) { const x = at.x - st.left, y = at.y - st.top; this.pos = this.clamp({x: x + 28, y: y - 40}); if (this.pos.x < x && x - W - 28 > GAP) this.pos = this.clamp({x: x - W - 28, y: y - 40}); }
+      else this.pos = this.clamp({x: GAP + 8, y: GAP + 44});
+    },
+    dragStart(e) {
+      if (e.target.closest('button') || !this.pos) return;
+      const sx = e.clientX, sy = e.clientY, p0 = {...this.pos}; this.dragging = true;
+      const move = ev => { this.pos = this.clamp({x: p0.x + ev.clientX - sx, y: p0.y + ev.clientY - sy}); };
+      const up = () => { this.dragging = false; removeEventListener('pointermove', move); removeEventListener('pointerup', up); savePos(this.pos); };
+      addEventListener('pointermove', move); addEventListener('pointerup', up);
+    },
     reqTarget(r) {
       if (!r.target) return '';
       if (CAST.includes(r.target)) return agentName(r.target);
@@ -52,8 +88,8 @@ export default {
     pair(other) { nav.pair(this.id, other); },
   },
   template: `
-  <aside class="inspector" v-if="id" role="dialog" aria-label="角色卡" :style="{'--rc': 'var(--r-' + id + ')'}">
-    <header class="insp-head">
+  <aside class="inspector" v-if="id" role="dialog" aria-label="角色卡" :class="{floating: !!pos, dragging}" :style="cardStyle">
+    <header class="insp-head" @pointerdown="dragStart" title="拖曳移動角色卡">
       <span class="lab">角色卡 · 上帝視角</span>
       <button class="x" @click="close" aria-label="關閉"><Icon name="x" :size="15"/></button>
     </header>

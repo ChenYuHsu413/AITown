@@ -3,7 +3,7 @@
 // scrolling in sync. The old whole-run slider survives as the "advanced" entry.
 import {markRaw, nextTick} from 'vue';
 import {store, nav, getJSON, fetchDay} from '../store.js';
-import {VillageMap} from '../pixmap.js';
+import {TownMap as VillageMap} from '../town3d/townmap.js';
 import {CAST, evText, dialogueSubst, resolve, fmtDay, hhmm, fmtMinute, DAY_MIN, dayOf} from '../names.js';
 import {Icon} from '../ui.js';
 import {verbIcon} from '../icons.js';
@@ -48,7 +48,7 @@ export default {
     'store.locations'(l) { this.map.buildMap(l); this.render(); },
   },
   async mounted() {
-    this.map = markRaw(new VillageMap(this.$refs.stage, {onAgentClick: id => nav.inspect(id), showRevenue: false}));
+    this.map = markRaw(new VillageMap(this.$refs.stage, {onAgentClick: (id, at) => nav.inspect(id, at), showRevenue: false}));
     this.map.setActive(true);
     if (store.locations.length) this.map.buildMap(store.locations);
     const r = store.replay;

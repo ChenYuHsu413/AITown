@@ -14,7 +14,7 @@ export const store = reactive({
   digestsVersion: 0,  // bumped when a day closes -> the chronicle refetches
   usage: null,
   // navigation
-  view: 'chronicle', inspectId: null,
+  view: 'chronicle', inspectId: null, inspectAt: null,   // inspectAt: where the card opens (client px, next to the resident)
   chronFocus: null,   // {day, minute} -> chronicle scrolls to and expands
   replay: null,       // {day, minute, runId}
   relPair: null,      // [a, b] preselected in the relationships view
@@ -151,7 +151,7 @@ setInterval(pollUsage, 5000); pollUsage();
 // Navigation helpers used across views.
 export const nav = {
   go(view) { store.view = view; if (view === 'village') store.unseenMajor = 0; },
-  inspect(id) { store.inspectId = id; },
+  inspect(id, at = null) { store.inspectAt = at; store.inspectId = id; },
   chronicle(day, minute) { store.chronFocus = {day, minute: minute ?? null, t: Date.now()}; nav.go('chronicle'); },
   replay(day, minute, runId) { store.replay = {day, minute: minute ?? null, runId: runId || '', t: Date.now()}; nav.go('replay'); },
   pair(a, b) { store.relPair = [a, b]; nav.go('relations'); },

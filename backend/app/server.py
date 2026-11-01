@@ -1034,12 +1034,6 @@ async def index() -> FileResponse:
     return FileResponse(INDEX)
 
 
-@app.get("/town3d-preview")
-async def town3d_preview() -> FileResponse:
-    """The 3-D direction's validation slice (a standalone page; the live UI is "/")."""
-    return FileResponse(ROOT / "frontend" / "town3d.html")
-
-
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()

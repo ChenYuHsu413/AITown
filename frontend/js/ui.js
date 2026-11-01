@@ -1,5 +1,5 @@
 // Small shared components.
-import {avatarURL} from './pixelart.js';
+import {PORTRAIT, ensurePortraits} from './town3d/portraits.js';
 import {agentName} from './names.js';
 import {nav} from './store.js';
 import {Icon} from './icons.js';
@@ -8,13 +8,14 @@ export const REDUCE_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matc
 // The resolved hex of a token (for math, e.g. comparing two residents' colors).
 export const tokenHex = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-// A resident's pixel portrait: the same generated character the map draws (head and
-// shoulders of the standing front frame), optionally framed in their identity color.
+// A resident's portrait: the 3-D figure's head (rendered once), optionally framed in their
+// identity color; a colour dot until the portraits are ready.
 export const Avatar = {
   props: {id: String, size: {type: Number, default: 22}, framed: Boolean},
-  computed: { src() { return avatarURL(this.id); } },
-  template: `<span class="avatar" :class="{framed}" :style="framed ? {'--rc': 'var(--r-' + id + ')'} : null">
-    <img :src="src" :width="size" :height="size" alt="" aria-hidden="true"></span>`,
+  created() { ensurePortraits(); },
+  computed: { src() { return PORTRAIT[this.id]; } },
+  template: `<span class="avatar" :class="{framed}" :style="{'--rc': 'var(--r-' + id + ')', width: size + 'px', height: size + 'px'}">
+    <img v-if="src" :src="src" :width="size" :height="size" alt="" aria-hidden="true"><i v-else class="av-dot"></i></span>`,
 };
 
 // A clickable resident chip -> opens the inspector.
