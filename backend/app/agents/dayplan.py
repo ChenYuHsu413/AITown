@@ -74,7 +74,7 @@ def _duty(agent: "Agent") -> str:
 def material(agent: "Agent", world: "World", decisions, day: int) -> dict:
     """What this resident wakes up with. Everything here is their own."""
     from .decision import _resolve_placeholders
-    res = lambda t: _resolve_placeholders(t, world)          # noqa: E731
+    res = lambda t: _resolve_placeholders(t, world, (day - 1) * DAY)   # noqa: E731  -- as of this morning
     day_start = (day - 1) * DAY
     y0 = day_start - DAY
     yesterday = [res(m.text) for m in agent.memory.items

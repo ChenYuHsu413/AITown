@@ -65,7 +65,8 @@ export function resolve(text) {
   return String(text ?? '')
     .replace(/\{agent:([a-z_]+)\}/g, (_, id) => agentName(id))
     .replace(/\{loc:([a-z_]+)\}/g, (_, id) => locName(id))
-    .replace(/\{landmark:([a-z_]+)\}/g, (_, id) => landmarkName(id));
+    .replace(/\{landmark:([a-z_]+)\}/g, (_, id) => landmarkName(id))
+    .replace(/\{day:(\d+)\}/g, (_, n) => `第${n}天`);   // a stored day (relative wording is the backend's)
 }
 
 // Dialogue backstop: a model occasionally copies pinyin/English sign names into a line.

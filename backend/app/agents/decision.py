@@ -571,12 +571,25 @@ def _referential_ok(parsed: object, a: "Agent", b: "Agent") -> bool:
 # in an English town, the Chinese names in a zh-native one (an English name inside
 # Chinese context invites English back out). The UI resolves the same placeholders
 # at display time.
-_PLACEHOLDER_RE = re.compile(r"\{(agent|loc|landmark):([a-z_]+)\}")
+_PLACEHOLDER_RE = re.compile(r"\{(agent|loc|landmark|day):([a-z_0-9]+)\}")
 
 
-def _resolve_placeholders(text: str, world: "World") -> str:
+def _relative_day(day: int, now: int | None) -> str:
+    """{day:N} -> today / tomorrow / yesterday as seen from ``now``; an absolute day
+    when the reading moment is unknown or the gap is wider. A promise stores the day
+    itself, never the word, so "tomorrow" doesn't stay "tomorrow" forever."""
+    if now is None:
+        return texts.T("day_abs", n=day)
+    diff = day - (now // (24 * 60) + 1)
+    key = {0: "day_today", 1: "day_tomorrow", -1: "day_yesterday"}.get(diff)
+    return texts.T(key) if key else texts.T("day_abs", n=day)
+
+
+def _resolve_placeholders(text: str, world: "World", now: int | None = None) -> str:
     def repl(m: "re.Match") -> str:
         kind, key = m.group(1), m.group(2)
+        if kind == "day":
+            return _relative_day(int(key), now) if key.isdigit() else key
         if kind == "agent":
             return texts.display_name(key)                # pinyin, or the zh name
         if kind == "loc":
@@ -592,8 +605,8 @@ def _resolve_placeholders(text: str, world: "World") -> str:
     return _PLACEHOLDER_RE.sub(repl, text)
 
 
-def _resolve_mems(mems: list[str], world: "World") -> list[str]:
-    return [_resolve_placeholders(m, world) for m in mems]
+def _resolve_mems(mems: list[str], world: "World", now: int | None = None) -> list[str]:
+    return [_resolve_placeholders(m, world, now) for m in mems]
 
 
 @dataclass
@@ -875,7 +888,7 @@ class DecisionEngine:
                     f"{texts.name_query(partner.id)} {obs.location}", k=5, location=obs.location)
                 res = await self.router.generate(
                     task="should_talk",
-                    messages=builders.should_talk_prompt(agent, partner.name, _resolve_mems(memories, world)),
+                    messages=builders.should_talk_prompt(agent, partner.name, _resolve_mems(memories, world, now)),
                     agent_id=agent.id,
                     sim_minute=now,
                     schema={"type": "object"},
@@ -913,7 +926,7 @@ class DecisionEngine:
             res = await self.router.generate(
                 task="decision",
                 messages=builders.decision_prompt(
-                    agent, observation, _resolve_mems(memories, world), ["continue_routine", "seek_out"]
+                    agent, observation, _resolve_mems(memories, world, now), ["continue_routine", "seek_out"]
                 ),
                 agent_id=agent.id,
                 sim_minute=now,
@@ -1525,10 +1538,11 @@ class DecisionEngine:
         # Memory text is stored with {agent:id}/{loc:id}/{landmark:id} placeholders.
         # Every other free-text prompt resolves them first; this one must too, or the
         # model reads "{landmark:installation}" and may well write it back out.
+        at = (day - 1) * 24 * 60                                # the reflection's own day
         for item in material["biography"] + material["memories"]:
-            item["text"] = _resolve_placeholders(item["text"], world)
+            item["text"] = _resolve_placeholders(item["text"], world, at)
         for key in ("town_objects", "my_actions"):
-            material[key] = [_resolve_placeholders(t, world) for t in material.get(key) or []]
+            material[key] = [_resolve_placeholders(t, world, at) for t in material.get(key) or []]
         rejection = ""
         log = attempts if attempts is not None else []
         last_hit = ""                    # the old wish the previous attempt ran into, if any
@@ -1624,12 +1638,12 @@ class DecisionEngine:
                 # The model reads the memories with names, not {agent:id} placeholders
                 # (the gate below still checks ids and numbers against the originals).
                 messages=builders.chapter_closure_prompt(
-                    agent, {**material, **{k: [{**m, "text": _resolve_placeholders(m["text"], world)}
+                    agent, {**material, **{k: [{**m, "text": _resolve_placeholders(m["text"], world, material["window"]["end_minute"])}
                                                for m in material.get(k) or []]
                                            for k in ("memories", "aftermath")},
-                               "promises": [_resolve_placeholders(p, world)
+                               "promises": [_resolve_placeholders(p, world, material["window"]["end_minute"])
                                             for p in material.get("promises") or []],
-                               "actions": [_resolve_placeholders(p, world)
+                               "actions": [_resolve_placeholders(p, world, material["window"]["end_minute"])
                                            for p in material.get("actions") or []]},
                     outcome, chapters_mod.relationship_summary_lines(material, world)),
                 agent_id=agent.id, sim_minute=material["window"]["end_minute"],
@@ -1926,9 +1940,9 @@ class DecisionEngine:
         elif confide_rev and not confide_fwd and not is_confront:
             first, second = b, a                       # the one opening up speaks first
         ctx = {
-            a.id: self._speaker_ctx(a, b, world, now, _resolve_mems(a_mem, world), a_imp, a_intents,
+            a.id: self._speaker_ctx(a, b, world, now, _resolve_mems(a_mem, world, now), a_imp, a_intents,
                                     a_role, scene, (confide_fwd or {}).get("secret_id", "")),
-            b.id: self._speaker_ctx(b, a, world, now, _resolve_mems(b_mem, world), b_imp, b_intents,
+            b.id: self._speaker_ctx(b, a, world, now, _resolve_mems(b_mem, world, now), b_imp, b_intents,
                                     b_role, scene, (confide_rev or {}).get("secret_id", "")),
         }
         tense = intimate or self._tense_pair(a, b)
@@ -2009,7 +2023,7 @@ class DecisionEngine:
             if (m.minute < now - 2 * 24 * 60 or m.importance < 4 or m.kind == "biography"
                     or m.weight < 1.0):
                 continue
-            t = _resolve_placeholders(m.text, world)
+            t = _resolve_placeholders(m.text, world, now)
             if t not in seen:
                 seen.add(t)
                 recent.append(t)
@@ -2019,8 +2033,8 @@ class DecisionEngine:
             line = f"[{w.scale}] {w.title}: {w.statement}" if w.title else w.statement
             if w.expires_on:
                 line += f" ({max(0, w.expires_on - day)} days left)"
-            wishes.append(_resolve_placeholders(line, world))
-        private = [_resolve_placeholders(x.text, world) for x in self.secrets.active_secrets_of(me.id)
+            wishes.append(_resolve_placeholders(line, world, now))
+        private = [_resolve_placeholders(x.text, world, now) for x in self.secrets.active_secrets_of(me.id)
                    if x.id != confiding_secret][:2]
         rel = me.rel(other.id)
         return {
@@ -2330,7 +2344,7 @@ class DecisionEngine:
         for x, y in ((a, b), (b, a)):
             x.memory.add(MemoryItem(
                 minute=now, importance=5, kind="conversation", tags=["promise"],
-                text=texts.T("promise_made", other=y.id, loc=loc, when=texts.T("when_" + when), hour=hour)))
+                text=texts.T("promise_made", other=y.id, loc=loc, day=minute // (24 * 60) + 1, hour=hour)))
         return {"verb": "promise_made", "actor": a.id, "target": b.id, "location": loc, "at": minute}
 
     # ---- romance (an independent track; see romance.py) --------------
@@ -2610,7 +2624,7 @@ class DecisionEngine:
         call). Does NOT reset ``importance_since_reflection``; the engine resets it at
         initiation so a second reflection can't pile up while this one generates."""
         day_start = now - (now % (24 * 60))
-        events = _resolve_mems(agent.memory.today(day_start), world)
+        events = _resolve_mems(agent.memory.today(day_start), world, now)
         # The agent's own still-open worries ride into the reflection so it can judge
         # which, if any, recent experience has laid to rest.
         open_secrets = self.secrets.active_secrets_of(agent.id)

@@ -260,6 +260,59 @@ class Consequences(unittest.TestCase):
         self.assertLess(lj.friendship, w0.agents["lengyue"].rel("jiji").friendship)
 
 
+class PromiseDays(unittest.TestCase):
+    """Era-3 report: a meeting agreed on D3 for "tomorrow 15:00" was still "tomorrow"
+    in both residents' memories on D4. The day is stored ({day:N}) and the word is
+    worked out when the memory is read."""
+
+    def promise(self, now, day_word, hour):
+        from backend.app.agents.decision import _resolve_placeholders
+        world, engine = make_world()
+        for i in ("jiji", "lengyue"):
+            world.agents[i].state.location = "cafe"
+        engine.decisions.secrets.secrets.clear()
+        a, b = world.agents["jiji"], world.agents["lengyue"]
+        lines = [line("Meet then?", plan={"place": "cafe", "day": day_word, "hour": hour}),
+                 line("Yes.", end=True, plan={"place": "cafe", "day": day_word, "hour": hour})]
+        gen, _ = scripted(lines)
+
+        async def go():
+            plan = await engine.decisions.start_conversation(a, b, world, now)
+            with unittest.mock.patch.object(engine.decisions.router, "generate", gen):
+                res = await engine.decisions.generate_conversation(plan)
+            engine.decisions.settle_conversation(plan, world, res)
+        asyncio.run(go())
+        mem = next(m.text for m in a.memory.items if "promise" in (m.tags or []))
+        return a.state.pending_meetup["minute"], mem, (lambda at: _resolve_placeholders(mem, world, at))
+
+    def test_today_three_pm_is_today(self):
+        minute, mem, read = self.promise(NOW, "today", 15)                # day 3, 10:00
+        self.assertEqual(minute, (NOW // DAY_MIN) * DAY_MIN + 15 * 60)
+        self.assertIn("{day:3}", mem)
+        self.assertIn("today", read(NOW))
+        self.assertIn("yesterday", read(NOW + DAY_MIN))
+
+    def test_tomorrow_is_the_next_day_and_reads_as_today_once_it_comes(self):
+        minute, mem, read = self.promise(NOW, "tomorrow", 15)
+        self.assertEqual(minute, (NOW // DAY_MIN + 1) * DAY_MIN + 15 * 60)
+        self.assertIn("{day:4}", mem)
+        self.assertIn("tomorrow", read(NOW))
+        self.assertIn("today", read((NOW // DAY_MIN + 1) * DAY_MIN + 8 * 60))   # the D4 bug
+        self.assertNotIn("tomorrow", read((NOW // DAY_MIN + 1) * DAY_MIN + 8 * 60))
+
+    def test_across_midnight(self):
+        late = (NOW // DAY_MIN) * DAY_MIN + 23 * 60 + 50                  # day 3, 23:50
+        minute, mem, read = self.promise(late, "tomorrow", 9)
+        self.assertEqual(minute, (late // DAY_MIN + 1) * DAY_MIN + 9 * 60)
+        self.assertIn("tomorrow", read(late))
+        self.assertIn("today", read(late + 20))                           # 00:10 on day 4
+
+    def test_unknown_reading_moment_is_an_absolute_day(self):
+        from backend.app.agents.decision import _resolve_placeholders
+        world, _ = make_world()
+        self.assertEqual(_resolve_placeholders("{day:4}", world), "on Day 4")
+
+
 class PromisesKeptAndMissed(unittest.TestCase):
     def test_missed_promise_is_remembered_by_both_and_raised_once(self):
         world, engine = make_world()
