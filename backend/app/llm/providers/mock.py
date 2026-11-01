@@ -145,9 +145,9 @@ class MockProvider(LLMProvider):
             goal = raw.split("-- goal: ", 1)[1].split(". Outcome", 1)[0].strip() if "-- goal: " in raw else "that chapter"
             g = (goal[:1].lower() + goal[1:]) if goal else goal
             line, residue = ({
-                "completed": (f"我曾下定決心要{goal.rstrip('。')},這麼多天過去,我真的做到了。", "fulfilled"),
-                "failed": (f"我試著{goal.rstrip('。')},卻還是從指縫間溜走了;我仍在學著接受。", "unmoored"),
-                "abandoned": (f"我原本想{goal.rstrip('。')},但我選擇放下,我不後悔。", "relieved"),
+                "completed": (f"我曾下定決心要{re.sub(r'^我(?:想要|想|要|希望)', '', goal).rstrip('。')},這麼多天過去,我真的做到了。", "fulfilled"),
+                "failed": (f"我試著{re.sub(r'^我(?:想要|想|要|希望)', '', goal).rstrip('。')},卻還是從指縫間溜走了;我仍在學著接受。", "unmoored"),
+                "abandoned": (f"我原本想{re.sub(r'^我(?:想要|想|要|希望)', '', goal).rstrip('。')},但我選擇放下,我不後悔。", "relieved"),
             } if zh else {
                 "completed": (f"I set out to {g}, and after all those days I actually did it.", "fulfilled"),
                 "failed": (f"I tried to {g} and it slipped through my fingers; I'm still learning to carry that.", "unmoored"),

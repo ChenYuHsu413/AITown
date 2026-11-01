@@ -266,6 +266,12 @@ def occupation_text(occupation: str) -> str:
     return occupation
 
 
+def goal_clause(goal: str) -> str:
+    """A zh goal as the object of "set out to ...": no leading 我想/我要/我希望,
+    no closing full stop."""
+    return re.sub(r"^我(?:想要|想|要|希望)", "", (goal or "").strip()).rstrip("。")
+
+
 def T(key: str, **kw) -> str:
     en, zh = _CATALOGUE[key]
     return (zh if zh_native() else en).format(**kw)

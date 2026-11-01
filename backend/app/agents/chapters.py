@@ -394,7 +394,9 @@ def template_biography(agent: "Agent", chapter: Chapter, outcome: str) -> str:
     from . import texts as texts_mod
     what = chapter.goal or chapter.title
     if texts_mod.zh_native():
-        what = what.rstrip("。") if what else texts_mod.T("that_chapter")
+        # A grown wish's goal is its first-person statement ("我想…"): drop the
+        # "I want" so the line doesn't read 「我曾下定決心要我想…」.
+        what = texts_mod.goal_clause(what) if what else texts_mod.T("that_chapter")
     else:
         what = what[:1].lower() + what[1:] if what else texts_mod.T("that_chapter")
     key = {"completed": "bio_completed", "failed": "bio_failed"}.get(outcome, "bio_abandoned")

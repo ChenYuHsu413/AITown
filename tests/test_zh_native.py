@@ -199,6 +199,13 @@ class ChineseBiography(unittest.TestCase):
                 self.assertIsNone(chapters_mod.validate_closure_output(
                     {"biography_line": line}, self.MATERIAL), line)
 
+    def test_a_grown_wishs_statement_reads_as_a_goal(self):
+        world, _ = make_world()
+        with zh():
+            ch = chapters_mod.make_pursuit("我想真正認識安哥。", "認識安哥", "我想認識安哥。", 1)
+            self.assertEqual(chapters_mod.template_biography(world.agents["lengyue"], ch, "completed"),
+                             "我曾下定決心要真正認識安哥,而我做到了。人生的這一段已經畫下句點。")
+
     def test_the_template_fallback_is_chinese(self):
         world, _ = make_world()
         with zh():
