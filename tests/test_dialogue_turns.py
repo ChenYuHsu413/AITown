@@ -306,9 +306,9 @@ class AnswersLand(unittest.TestCase):
         texts_ = [m.text for m in told]
         self.assertTrue(any("掛號信已經送到" in t for t in texts_), texts_)
         self.assertTrue(any("紙條" in t for t in texts_), texts_)          # the other news lands too
-        ans = next(m for m in told if "掛號信已經送到" in m.text)
+        ans = next(m for m in told if "answer" in m.tags)
+        self.assertIn("是艾斯的掛號", ans.text)                          # his own words
         self.assertEqual(ans.importance, 5)                               # bears on her active wish
-        self.assertIn("answer", ans.tags)
 
     def test_an_answer_not_marked_as_news_still_lands(self):
         """Era 3, D7: Long asked who wrote the unsigned letter; Oula said he never
@@ -320,8 +320,23 @@ class AnswersLand(unittest.TestCase):
 
     def test_an_answer_unrelated_to_her_aims_lands_at_the_usual_weight(self):
         told = self.run_talk(self.AZONG_CASE, azong_wish=False)
-        ans = next(m for m in told if "掛號信已經送到" in m.text)
+        ans = next(m for m in told if "answer" in m.tags)
         self.assertEqual(ans.importance, 4)
+
+    def test_the_answer_survives_a_summary_about_something_else(self):
+        """Era 3, D8: Long asked who wrote the letter; Oula said he had no memory of
+        it, the marked summary was about Xixi's note, and a later line about the note
+        folded it away -- the answer itself never reached Long."""
+        lines = [line("早啊,正好碰到妳。"), line("那封沒署名的信,你知不知道是誰寫的?"),
+                 line("沒署名的信我送過不少,這封我還真沒印象。不過我也在找希希。",
+                      tells="歐拉這幾天在找希希,想問那張紙條的事。"),
+                 line("希希?"),
+                 line("是ㄐㄐ說那張紙條墨還沒乾,猜是希希寫的,我想找希希問問那張紙條。",
+                      tells="歐拉說ㄐㄐ猜那張紙條是希希寫的,歐拉想找希希問那張紙條。"),
+                 line("好。", end=True)]
+        told = self.run_talk(lines, azong_wish=False)
+        self.assertTrue(any("這封我還真沒印象" in m.text and "answer" in m.tags for m in told),
+                        [m.text for m in told])
 
     def test_answers_land_beyond_the_cap_but_unasked_news_stays_capped(self):
         lines = [line("早啊。"), line("你今天去了哪?"), line("市場。", tells="歐拉今天去了渡口市場。")]
@@ -343,6 +358,7 @@ class SpeakerKeeps(AnswersLand):
     test_an_answer_not_marked_as_news_still_lands = None
     test_an_answer_unrelated_to_her_aims_lands_at_the_usual_weight = None
     test_answers_land_beyond_the_cap_but_unasked_news_stays_capped = None
+    test_the_answer_survives_a_summary_about_something_else = None
 
     def said(self):
         return [m for m in self.world.agents["oula"].memory.items if "said" in m.tags]

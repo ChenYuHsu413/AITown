@@ -2261,11 +2261,11 @@ class DecisionEngine:
         pair and is a beat the town sees."""
         a, b = plan.a, plan.b
         beats: list[dict] = []
-        for listener, tell, answer, own in self._tells_to_land(plan, turns):
+        for listener, tell, answer, own, basis in self._tells_to_land(plan, turns):
             speaker = b if listener is a else a
             # An answer to the listener's own question that bears on what they are
             # after (an active wish, today's plan) is what they came for: weightier.
-            weight = 5 if answer and self._bears_on(listener, tell, now) else 4
+            weight = 5 if answer and self._bears_on(listener, basis, now) else 4
             listener.memory.add(MemoryItem(
                 minute=now, importance=weight, kind="conversation",
                 tags=["answer"] if answer else [],
@@ -2300,7 +2300,8 @@ class DecisionEngine:
     _QUESTION_RE = re.compile(r"[?？]|嗎|呢$")
 
     def _tells_to_land(self, plan: ConvPlan, turns: list) -> list:
-        """News handed over in a conversation -> (listener, text, is_answer, speaker_keeps).
+        """News handed over in a conversation -> (listener, text, is_answer, speaker_keeps,
+        basis) to keep -- ``basis`` is what an answer's weight is read against.
 
         A speaker restating one thing line after line counts once (the fuller, later
         version replaces a near-duplicate). Every distinct piece of news is kept up to
@@ -2317,28 +2318,41 @@ class DecisionEngine:
             answer = bool(prev and prev.get("speaker_id") != sid
                           and self._QUESTION_RE.search(str(prev.get("text", "")).strip()))
             # the speaker's own record follows the same marked news -- not the bare line
-            # kept for an unmarked answer, and not a meeting proposal (promises have
-            # their own memory)
+            # kept for an answer, and not a meeting proposal (promises have their own
+            # memory)
             own = bool(tell) and not t.get("plan")
-            if answer and not tell:
-                # An answer the model didn't mark as news ("I never handled it, I don't
-                # know") is still the answer the listener came for: keep the line itself.
-                tell = texts.T("answered", text=str(t.get("text", "")).strip()[:100])
-            if not tell or len(tell) > 120 or sid not in per or not _knowledge_lang_ok(tell):
+            if sid not in per:
                 continue
             items = per[sid]
-            dup = next((k for k, (x, _a, _o) in enumerate(items) if self._same_news(x, tell)), None)
+            if answer:
+                # The answer the listener came for is the line itself -- what was
+                # actually said back. A marked summary can be about something else, or
+                # be folded into later news (Era 3, D8: Long asked who wrote the letter,
+                # Oula said "no memory of it", and only his aside about Xixi's note
+                # survived). Its weight is read against the line and the summary both.
+                said = str(t.get("text", "")).strip()
+                ok_tell = bool(tell) and len(tell) <= 120 and _knowledge_lang_ok(tell)
+                if ok_tell and self._same_news(said, tell):
+                    items[:] = [x for x in items if x[1] or not self._same_news(x[0], tell)]
+                    items.append((tell, True, own, tell))     # the summary IS the answer
+                    continue
+                line_ = texts.T("answered", text=said[:100])
+                if _knowledge_lang_ok(line_):
+                    items.append((line_, True, False, f"{line_} {tell}"))
+            if not tell or len(tell) > 120 or not _knowledge_lang_ok(tell):
+                continue
+            dup = next((k for k, x in enumerate(items) if not x[1] and self._same_news(x[0], tell)), None)
             if dup is None:
-                items.append((tell, answer, own))
+                items.append((tell, False, own, tell))
             else:
-                items[dup] = (tell, items[dup][1] or answer, own)
+                items[dup] = (tell, False, own, tell)
         out = []
         for sid, items in per.items():
             listener = b if sid == a.id else a
             answers = [x for x in items if x[1]]
             others = [x for x in items if not x[1]]
-            for tell, ans, own in answers + others[:pacing.DIALOGUE_TELLS_MAX]:
-                out.append((listener, tell, ans, own))
+            for x in answers + others[:pacing.DIALOGUE_TELLS_MAX]:
+                out.append((listener, *x))
         return out
 
     @staticmethod
