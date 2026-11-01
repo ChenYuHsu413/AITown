@@ -75,6 +75,52 @@ the latest thread of its pair that started at or before the line's minute.
   deterministically, so the town looks the same on every load. They stay clear of buildings,
   paths, plazas, props and the spots where residents stand.
 
+## Layout and pixel texture
+
+- **A compact town.** The map is 64 × 46 tiles. The café, the bakery and the market ring the
+  fountain plaza. The two homes and the office (a three-storey brick building, the tallest in
+  town) form a second ring. The park sits in the south-west corner.
+- **Little open ground.** Between buildings there are narrow back lanes and small clumps of
+  trees. The only large open ground is the park and the riverbank.
+- **A 1 px dark outline on every object.** `outlined()` in `pixelart.js` pads each canvas by
+  one pixel and draws the outline into that border.
+- **Trees are clusters of leaf clumps.** Each clump is lit from the top left, with four
+  steps of light from highlight to shadow and a dark rim where clumps meet. Pines are jagged
+  tiers. Bushes use the same clumps.
+- **One warm tint over the whole map.** The day/night multiply layer is warm at noon too,
+  which costs nothing extra.
+- **One 8 px grain.** Plaza stones, roof tiles, bricks and stone aprons all use roughly the same
+  8 px module.
+
+## Cutaway interiors
+
+A building with people inside opens like a doll's house. The roof fades to a faint ghost
+and the room shows: the back wall, the floor, cut side walls, and a low front wall with a
+doorway. Each room has its furniture, and the residents inside are at their spots.
+
+This is a view, not a walkable interior: there is no interior map and no furniture
+interaction.
+
+- **Layout lives in the map file.** Each room's furniture and anchors are in
+  `map/town.json` under `interiors.<location>`, in the building's own pixel coordinates.
+- **Where each resident goes depends on what they are doing:**
+
+  | Action | Spot |
+  |---|---|
+  | `sleep` | their own bed |
+  | `eat`, `rest` | a seat |
+  | `work` | the owner's spot first (ㄐㄐ at the café counter, 安哥 at the bakery oven); office workers sit at the desks |
+  | anything else | a free standing spot |
+
+  Whoever doesn't fit stands outside.
+- **Each home has five beds**, one per resident of that household in the seed (`bedOf`).
+  Sleepers lie under a blanket in their own colour.
+- **Open rooms are lamp-lit at night.** They and the people in them are drawn above the night
+  tint, so a sleeping town shows one lit room per occupied house.
+- **When rooms open is a setting.** By default a room opens automatically whenever someone is
+  inside. A small switch on the map changes this to opening a building only when you click it.
+  The choice is remembered in the browser (`localStorage`).
+
 ## Map performance
 
 The static ground is baked once into a single texture. Each building and prop is one sprite.

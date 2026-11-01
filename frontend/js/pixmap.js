@@ -8,7 +8,8 @@
 // Camera: drag to pan, wheel / pinch to zoom; clicking a resident calls onAgentClick.
 import {Application, Container, Sprite, Texture, Graphics, Text, TextureSource} from 'pixi.js';
 import {agentName, locName, KINDS, phaseOf} from './names.js';
-import {charCanvas, lookOf, buildingCanvas, decorCanvas, installationCanvas, groundCanvas, glowCanvas, iconCanvas, critterCanvas, splinePts, hash} from './pixelart.js';
+import {charCanvas, lookOf, buildingCanvas, decorCanvas, installationCanvas, groundCanvas, glowCanvas, iconCanvas, critterCanvas, splinePts, hash,
+  interiorCanvas, sleeperCanvas, sitterCanvas} from './pixelart.js';
 
 TextureSource.defaultOptions.scaleMode = 'nearest';   // crisp pixel art
 const tok = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -19,6 +20,8 @@ let MAP = null;
 const loadMap = () => MAP || (MAP = fetch('/static/map/town.json').then(r => r.json()));
 const FONT = "'Huninn','Noto Sans TC',sans-serif";
 const DIRS = ['down', 'up', 'left', 'right'];
+const CAST_IDS = ['jiji', 'ange', 'oula', 'lengyue', 'azong', 'xixi', 'aisi', 'xue', 'long', 'kuaizheng'];
+const CAST_ORDER = id => { const i = CAST_IDS.indexOf(id); return i < 0 ? 99 : i; };
 const CAST_K = {tree: 1, pine: 1, blossom: 1, bush: 0.7, shrub: 0.6, lamp: 0.55, washline: 0.6, well: 0.8, terrace: 0.8, board: 0.7, stall: 0.8,
   fountain: 0.5, bench: 0.4, crate: 0.5, barrel: 0.5, sacks: 0.5, postbox: 0.6, mailbox: 0.6, bike: 0.5, sandwich: 0.5, woodpile: 0.4,
   stump: 0.4, log: 0.3, rock: 0.3, grass: 0, bloom: 0, flowers: 0.2, pot: 0.4, basket: 0.3};
@@ -30,6 +33,8 @@ export class VillageMap {
     this.state = {agents: null, landmarks: null, effects: null, minute: null};
     this.lowFx = false; this.slow = 0; this.alive = true;
     this.reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;   // walking stays; decoration stops
+    try { this.cutMode = localStorage.getItem('aitown.cutaway') === 'click' ? 'click' : 'auto'; } catch (e) { this.cutMode = 'auto'; }
+    this.manualOpen = new Set(); this.bedOf = {};
     this.ready = this.init().catch(e => console.error('map init failed', e));
   }
 
@@ -49,7 +54,9 @@ export class VillageMap {
     this.ground = L('ground'); this.shade = L('shadows'); this.objects = L('objects'); this.objects.sortableChildren = true;
     this.fx = L('fx'); this.lights = L('lights'); this.labels = L('labels'); this.overlay = L('overlay');
     this.night = new Graphics().rect(0, 0, this.W, this.H).fill(0xffffff); this.night.blendMode = 'multiply';
-    this.world.addChild(this.ground, this.shade, this.objects, this.fx, this.night, this.lights, this.labels, this.overlay);
+    // rooms: open cutaways and the people in them sit above the night tint -- lamp-lit at night
+    this.rooms = L('rooms'); this.rooms.sortableChildren = true;
+    this.world.addChild(this.ground, this.shade, this.objects, this.fx, this.night, this.rooms, this.lights, this.labels, this.overlay);
     this.casters = [];
 
     this.ground.addChild(new Sprite(Texture.from(groundCanvas(M))));
@@ -68,6 +75,7 @@ export class VillageMap {
     this.puffs = []; this.petals = []; this.critters = []; this.sway = []; this.nextBird = performance.now() + 8000; this.nextFly = performance.now() + 5000;
     this.buildDecor(); this.buildWater();
     this.setupCamera();
+    this.addCutToggle();
     app.ticker.add(t => this.tick(t.deltaMS));
     this.fpsTimer = setInterval(() => this.watchFps(), 1000);
     // replay whatever arrived before we were ready
@@ -130,7 +138,7 @@ export class VillageMap {
       const b = {id: l.id, l, d, windows: [], spr: null};
       if (meta.landmark) { b.spr = new Sprite(Texture.EMPTY); }   // the park: its landmark is drawn by updateLandmarks
       else {
-        const art = buildingCanvas(l); b.spr = new Sprite(Texture.from(art.c)); b.spr.anchor.set(0.5, 1);
+        const art = buildingCanvas(l); b.art = art.c; b.spr = new Sprite(Texture.from(art.c)); b.spr.anchor.set(0.5, 1);
         for (const w of art.windows) {   // night: warm window glow + a soft halo
           const g = new Graphics().rect(d.x - art.w / 2 + w.x, d.y - art.h + w.y, w.w, w.h).fill(0xffcf6e);
           const h = new Sprite(this.tex.glowWarm); h.anchor.set(0.5); h.x = d.x - art.w / 2 + w.x + w.w / 2; h.y = d.y - art.h + w.y + w.h / 2;
@@ -141,7 +149,16 @@ export class VillageMap {
         if (art.chimney) b.chimney = {x: d.x - art.w / 2 + art.chimney.x, y: d.y - art.h + art.chimney.y};
       }
       b.spr.x = d.x; b.spr.y = d.y; b.spr.zIndex = d.y - 1; this.objects.addChild(b.spr);
-      if (!meta.landmark) { this.cast(b.spr, 1, b.spr.width * 0.95); b.w = b.spr.width; }
+      if (!meta.landmark) { this.cast(b.spr, 1, b.spr.width * 0.95); b.w = b.spr.width; b.h = b.spr.height; }
+      const spec = (this.M.interiors || {})[l.id];
+      if (spec && !meta.landmark) {   // the doll-house cutaway, faded in while someone is inside
+        b.spec = spec; b.open = 0;
+        b.int = new Sprite(Texture.from(interiorCanvas(l, b.art, spec))); b.int.anchor.set(0.5, 1); b.int.x = d.x; b.int.y = d.y; b.int.zIndex = d.y - 0.9; b.int.alpha = 0;
+        this.rooms.addChild(b.int);
+        b.roomGlow = new Sprite(this.tex.glowWarm); b.roomGlow.anchor.set(0.5); b.roomGlow.blendMode = 'add'; b.roomGlow.alpha = 0;
+        b.roomGlow.x = d.x; b.roomGlow.y = d.y - b.h * 0.32; b.roomGlow.scale.set(b.w / 48, b.h / 90); this.lights.addChild(b.roomGlow);
+        for (const sp of [b.spr, b.int]) { sp.eventMode = 'static'; sp.on('pointertap', () => { if (!this.dragMoved && this.cutMode === 'click') this.toggleOpen(b.id); }); }
+      }
       b.label = new Text({text: locName(l.id) + '\n' + (KINDS[l.kind] || l.kind), resolution: 3,
         style: {fontFamily: FONT, fontSize: 11, fill: 0x2b2520, align: 'center', lineHeight: 12, stroke: {color: 0xfbf7ee, width: 3}}});
       b.label.anchor.set(0.5, 0); b.label.x = d.x; b.label.y = d.y + (meta.landmark ? 6 : 36); b.label.scale.set(1);
@@ -269,7 +286,7 @@ export class VillageMap {
       const done = lm.state === 'completed', lit = done ? 16 : Math.round(16 * Math.max(0, Math.min(1, lm.progress)));
       const key = lit + (done ? 'd' : '');
       if (b.lmKey !== key) {
-        b.lmKey = key; b.spr.texture = Texture.from(installationCanvas(lit, done)); b.spr.anchor.set(0.5, 1); b.spr.scale.set(1.5);
+        b.lmKey = key; b.spr.texture = Texture.from(installationCanvas(lit, done)); b.spr.anchor.set(0.5, 1); b.spr.scale.set(2.1);
         if (!b.lmCast) b.lmCast = this.cast(b.spr, 1, 60); else b.lmCast.sh.texture = b.spr.texture;
         if (this.sun) this.shapeShadow(b.lmCast);
         if (!b.lmGlow) {
@@ -288,6 +305,7 @@ export class VillageMap {
     if (r) return r;
     const cloth = tok(`--r-${id}`) || '#8a7a6a', look = lookOf(id);
     const frames = {}; for (const d of DIRS) frames[d] = [0, 1, 2].map(f => Texture.from(charCanvas(cloth, look, d, f)));
+    frames.sleep = Texture.from(sleeperCanvas(cloth, look)); frames.sit = Texture.from(sitterCanvas(cloth, look));
     const c = new Container(); c.eventMode = 'static'; c.cursor = 'pointer';
     c.on('pointertap', () => { if (!this.dragMoved && this.onAgentClick) this.onAgentClick(id); });
     const shadow = new Graphics().ellipse(0, 0, 7, 2.5).fill({color: 0x000000, alpha: 0.18});
@@ -324,27 +342,51 @@ export class VillageMap {
     return pts;
   }
 
+  // Who stands where. Inside a building with an interior, each resident takes a spot by
+  // what they are doing: asleep -> their own bed, eating / resting -> a seat, working ->
+  // the counter / oven / desk (the owner first), anything else -> a free standing spot.
+  // Whoever doesn't fit (or is at the market / park) uses the outside anchors.
   updateAgents(list) {
     this.state.agents = list;
     if (!this.buildings) return;
     const byLoc = {};
     for (const a of list) (byLoc[a.location] = byLoc[a.location] || []).push(a);
-    const sleepers = {};
     for (const [loc, people] of Object.entries(byLoc)) {
-      const anchors = this.anchorsFor(loc), taken = new Set();
-      const isHome = (this.locs[loc] || {}).kind === 'home';
-      // keep each resident on the anchor they already hold here; newcomers take the next free one
-      const order = people.slice().sort((p, q) => { const rp = this.res[p.id], rq = this.res[q.id];
-        return ((rq && rq.loc === loc && rq.slot >= 0) ? 1 : 0) - ((rp && rp.loc === loc && rp.slot >= 0) ? 1 : 0); });
+      const b = this.buildings.find(x => x.id === loc), spec = b && b.spec, d = this.doorPx(loc);
+      const anchors = this.anchorsFor(loc), taken = new Set(), used = {beds: new Set(), seats: new Set(), work: new Set(), stand: new Set()};
+      const inSlot = (kind, id) => {
+        if (!spec) return null;
+        const list_ = spec[kind] || [];
+        if (kind === 'beds') {
+          const mine = (this.bedOf[loc] = this.bedOf[loc] || {});
+          let i = mine[id];
+          if (i == null) { const pref = (spec.bedOf || []).indexOf(id); i = pref >= 0 && !Object.values(mine).includes(pref) ? pref : list_.findIndex((_, k) => !Object.values(mine).includes(k)); if (i >= 0) mine[id] = i; }
+          if (i == null || i < 0 || used.beds.has(i)) return null; used.beds.add(i); return list_[i];
+        }
+        let order = list_.map((_, k) => k);
+        if (kind === 'work' && spec.owner && id !== spec.owner) order = order.slice(1).concat(0);   // slot 0 is the owner's
+        for (const k of order) if (!used[kind].has(k)) { used[kind].add(k); return list_[k]; }
+        return null;
+      };
+      const order = people.slice().sort((p, q) => (q.id === (spec && spec.owner)) - (p.id === (spec && spec.owner)) || CAST_ORDER(p.id) - CAST_ORDER(q.id));
       for (const a of order) {
-        const r = this.resident(a.id);
-        r.act = a.action; r.asleep = a.action === 'sleep' && isHome;
-        if (r.asleep) { sleepers[loc] = (sleepers[loc] || 0) + 1; }
+        const r = this.resident(a.id); r.act = a.action; r.asleep = false;
+        const pose = a.action === 'sleep' ? 'beds' : (a.action === 'eat' || a.action === 'rest') ? 'seats' : a.action === 'work' ? 'work' : 'stand';
+        let spot = inSlot(pose, a.id); if (!spot && pose !== 'stand') spot = inSlot(pose === 'beds' ? 'stand' : 'stand', a.id);
+        if (spot && b) {
+          r.inside = loc; r.pose = pose === 'beds' && spot === (spec.beds || [])[(this.bedOf[loc] || {})[a.id]] ? 'sleep' : pose === 'seats' || (pose === 'work' && loc === 'office') ? 'sit' : 'stand';
+          const x = d.x - b.w / 2 + spot[0] + 1, y = d.y - b.h + spot[1] + 1;   // +1: the outline pads the canvas
+          this.moveTo(r, loc, -1, x, y, 'down');
+          r.zIn = d.y + spot[1] / 1000;
+          continue;
+        }
+        r.inside = null; r.pose = 'stand'; r.zIn = null;
+        if (a.action === 'sleep' && (this.locs[loc] || {}).kind === 'home') { r.asleep = true; }   // no bed free: asleep out of sight
         let slot = r.loc === loc && r.slot >= 0 && !taken.has(r.slot) ? r.slot : -1;
         if (slot < 0) { for (let i = 0; i < anchors.length; i++) if (!taken.has(i)) { slot = i; break; } }
         if (slot < 0) slot = taken.size % anchors.length;
         taken.add(slot);
-        const d = this.doorPx(loc), [ox, oy] = anchors[slot];
+        const [ox, oy] = anchors[slot];
         this.moveTo(r, loc, slot, d.x + ox, d.y + oy, ox < -30 ? 'right' : ox > 30 ? 'left' : 'down');
       }
     }
@@ -353,21 +395,35 @@ export class VillageMap {
     for (const [a, v] of Object.entries(this.talk)) {
       if (now - v.t > 12000) { delete this.talk[a]; continue; }
       const ra = this.res[a], rb = this.res[v.to];
-      if (!ra || !rb || ra.loc !== rb.loc || ra.asleep || rb.asleep) continue;
+      if (!ra || !rb || ra.loc !== rb.loc || ra.asleep || rb.asleep || ra.inside || rb.inside) continue;
       const left = ra.tx <= rb.tx ? ra : rb, right = left === ra ? rb : ra;
       this.moveTo(right, right.loc, right.slot, left.tx + 18, left.ty, 'left', true);
       left.face = 'right';
     }
-    for (const b of this.buildings) {   // asleep inside: a quiet zzz by the house instead of figures outside
-      const n = sleepers[b.id] || 0; b.zzz.visible = n > 0; b.zzzText.text = n > 1 ? '×' + n : '';
+    for (const b of this.buildings) {
+      b.occupied = Object.values(this.res).some(r => r.inside === b.id);
+      const asleepOut = Object.values(this.res).filter(r => r.loc === b.id && r.asleep).length;
+      const hidden = b.spec && !this.isOpen(b) ? Object.values(this.res).filter(r => r.inside === b.id && r.pose === 'sleep').length : 0;
+      const n = asleepOut + hidden; b.zzz.visible = n > 0; b.zzzText.text = n > 1 ? '×' + n : '';
     }
     for (const r of Object.values(this.res)) {
-      r.c.visible = !r.asleep;
-      const icon = r.act === 'eat' ? this.tex.eat : r.act === 'work' ? this.tex.work : null;
+      const b = r.inside && this.buildings.find(x => x.id === r.inside);
+      r.c.visible = !r.asleep && (!b || this.isOpen(b));
+      const icon = r.pose === 'sleep' ? this.tex.zzz : r.act === 'eat' ? this.tex.eat : r.act === 'work' ? this.tex.work : null;
       r.icon.visible = !!icon; if (icon) r.icon.texture = icon;
       r.ring.visible = !!this.focus && this.focus.has(r.id);
     }
     this.updateWindows();
+  }
+
+  isOpen(b) { return !!b.spec && (this.cutMode === 'auto' ? b.occupied : this.manualOpen.has(b.id)); }
+  toggleOpen(id) { if (this.manualOpen.has(id)) this.manualOpen.delete(id); else this.manualOpen.add(id); if (this.state.agents) this.updateAgents(this.state.agents); }
+  addCutToggle() {   // a small switch over the map: interiors open automatically, or on click
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'cut-toggle';
+    btn.style.cssText = 'position:absolute;left:10px;top:10px;z-index:4;font:12px var(--f-body);padding:3px 10px;border:1px solid var(--line);border-radius:999px;background:var(--card);color:var(--ink);cursor:pointer;opacity:.9';
+    const label = () => { btn.textContent = this.cutMode === 'auto' ? '室內:自動打開' : '室內:點建築打開'; btn.title = this.cutMode === 'auto' ? '有人在裡面就打開屋頂;點一下改成手動' : '點建築打開或關上;點一下改回自動'; };
+    btn.onclick = () => { this.cutMode = this.cutMode === 'auto' ? 'click' : 'auto'; this.manualOpen.clear(); try { localStorage.setItem('aitown.cutaway', this.cutMode); } catch (e) {} label(); if (this.state.agents) this.updateAgents(this.state.agents); };
+    label(); this.el.appendChild(btn); this.cutBtn = btn;
   }
 
   moveTo(r, loc, slot, x, y, face, keepPath) {
@@ -425,9 +481,11 @@ export class VillageMap {
     if (!this.app) return;
     const {n, dusk, h} = phaseOf(minute);
     this.phase = {n, dusk, h};
-    let col = mixHex(0xffffff, 0xf0b47a, dusk * 0.45);
+    let col = mixHex(0xfff0dc, 0xf0b47a, dusk * 0.45);   // one warm tint over the whole map, by day too
     col = mixHex(col, 0x4a5a92, n * 0.78);
     this.night.tint = col;
+    const warm = mixHex(0xffffff, 0xffdcae, n * 0.45);   // open rooms glow warm at night
+    for (const b of this.buildings || []) if (b.int) b.int.tint = warm;
     const lamp = Math.min(1, n * 1.1 + dusk * 0.5);
     for (const g of this.lampGlows) g.alpha = lamp;
     const dow = ((Math.floor(minute / 1440) % 7) + 7) % 7;
@@ -443,7 +501,7 @@ export class VillageMap {
     for (const b of this.buildings) {
       const shop = !!b.l.owner || b.l.kind === 'market';
       const lit = b.lit = !b.closed && (awake[b.id] > 0 || (shop && h >= 6 && h < 22));
-      b.windows.forEach(w => { w.alpha = lit ? glow : 0; });
+      b.windows.forEach(w => { w.baseAlpha = lit ? glow : 0; w.alpha = w.baseAlpha * (1 - (b.open || 0)); });
       if (b.lmGlow) b.lmGlow.alpha = (b.lmLit || 0) / 16 * Math.min(0.8, n + dusk * 0.4);
     }
   }
@@ -482,11 +540,23 @@ export class VillageMap {
       } else r.dir = r.face || 'down';
       if (moving) { r.ft += dt; if (r.ft > 130) { r.ft = 0; r.frame = r.frame === 1 ? 2 : 1; } }
       else r.frame = 0;
-      r.spr.texture = r.frames[r.dir][r.frame];
-      r.spr.y = moving || this.lowFx || this.reduce ? 0 : ((now + r.phase) % 1400 < 700 ? 0 : -1);   // idle breathing
-      r.c.x = Math.round(r.x); r.c.y = Math.round(r.y); r.c.zIndex = r.c.y;
+      const posed = !moving && r.pose !== 'stand' && r.inside;
+      r.spr.texture = posed ? r.frames[r.pose] : r.frames[r.dir][r.frame];
+      r.spr.y = moving || posed || this.lowFx || this.reduce ? 0 : ((now + r.phase) % 1400 < 700 ? 0 : -1);   // idle breathing
+      r.c.x = Math.round(r.x); r.c.y = Math.round(r.y); r.c.zIndex = r.inside && !moving ? r.zIn : r.c.y;
+      r.tag.y = -27; r.icon.y = posed && r.pose === 'sleep' ? -26 : -24;
+      const home = r.inside && !moving && !r.path.length ? this.rooms : this.objects;   // inside a cutaway: lamp-lit layer
+      if (r.c.parent !== home) home.addChild(r.c);
       if (r.cst.sh) { r.cst.sh.texture = r.spr.texture; r.cst.sh.x = r.c.x + (this.sun ? this.sun.dir * 2 : 0); r.cst.sh.y = r.c.y; r.cst.sh.visible = r.c.visible && this.sun && this.sun.alpha > 0.01; }
-      r.tag.visible = this.zoom >= 0.75 || r.ring.visible;
+      r.tag.visible = (this.zoom >= 0.75 && !(posed && r.pose === 'sleep')) || r.ring.visible;
+    }
+    for (const b of this.buildings || []) if (b.spec) {   // cutaway crossfade (~300 ms)
+      const target = this.isOpen(b) ? 1 : 0, k = Math.min(1, dt / 300);
+      b.open += (target - b.open) * (this.reduce ? 1 : k);
+      b.int.alpha = b.open; b.spr.alpha = 1 - b.open * 0.999;
+      const glow = this.phase ? Math.min(1, this.phase.n + this.phase.dusk * 0.5) : 0;
+      b.roomGlow.alpha = b.open * glow * 0.75;
+      b.windows.forEach(w => { w.alpha = w.baseAlpha * (1 - b.open); });
     }
     for (const b of this.bubbles.slice()) {
       const r = this.res[b.actor];
