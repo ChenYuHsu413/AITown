@@ -30,6 +30,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING
 
+from .. import pacing
 from .core import MemoryItem
 
 if TYPE_CHECKING:
@@ -47,12 +48,9 @@ DOWNWEIGHT_COEFF = 0.3
 
 # Emotional residue vocabulary the closure reflection may return; anything else
 # falls back to the outcome's default. Each maps to a base interlude length.
-RESIDUES: dict[str, int] = {
-    "fulfilled": 4, "relieved": 3, "proud": 4,
-    "wistful": 6, "restless": 5, "unmoored": 7,
-}
+RESIDUES: dict[str, int] = dict(pacing.RESIDUE_DAYS)   # tempo lives in app/pacing.py
 RESIDUE_DEFAULT = {"completed": "fulfilled", "failed": "unmoored", "abandoned": "relieved"}
-INTERLUDE_MIN_DAYS, INTERLUDE_MAX_DAYS = 3, 7
+INTERLUDE_MIN_DAYS, INTERLUDE_MAX_DAYS = pacing.INTERLUDE_MIN_DAYS, pacing.INTERLUDE_MAX_DAYS
 
 # Interlude behaviour tendencies (Level 0 rules; see decision.py).
 INTERLUDE_DRIFT_P = 0.15       # per routine decision: wander to a public place instead of the timetable
@@ -216,8 +214,9 @@ def make_interlude(residue: str, day: int, until_day: int) -> Chapter:
 
 
 def interlude_days(residue: str, agent: "Agent") -> int:
-    """3-7 sim-days from residue + personality (rules only)."""
-    n = RESIDUES.get(residue, 5)
+    """INTERLUDE_MIN_DAYS..INTERLUDE_MAX_DAYS sim-days from residue + personality
+    (rules only)."""
+    n = RESIDUES.get(residue, 3)
     p = agent.profile.personality
     if p.get("neuroticism", 0.4) >= 0.55:
         n += 1

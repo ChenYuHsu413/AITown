@@ -38,6 +38,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING
 
+from .. import pacing
 from .chapters import DAY_MIN, memory_id
 from .core import MemoryItem
 
@@ -99,18 +100,19 @@ DRIVE_SOCIAL_GATE_MULT = 2.0                              # bias, never a bypass
 # now and then during ordinary days. The environment gets a pressure valve: the
 # more major wishes the town is already carrying, the less likely anyone is to
 # start another, so ten residents do not all take up quests at once.
-GENERATION_BASE_P = 0.80          # attempt probability with no active major in town
-GENERATION_DECAY = 0.65           # multiplied per active major town-wide
-GENERATION_ORDINARY_EVERY = 5     # min sim-days between two attempts by one resident
+# Tempo values live in app/pacing.py (one notch faster in the zh-native era).
+GENERATION_BASE_P = pacing.GENERATION_BASE_P          # attempt probability with no active major in town
+GENERATION_DECAY = pacing.GENERATION_DECAY            # multiplied per active major town-wide
+GENERATION_ORDINARY_EVERY = pacing.GENERATION_ORDINARY_EVERY   # min sim-days between two attempts
 GENERATION_RETRIES = 2            # extra attempts after a gate rejection (3 calls max)
 NOVELTY_THRESHOLD = 0.85          # cosine similarity above which a proposal is a repeat
-DEFAULT_SPAN_DAYS = {"major": 21, "minor": 10}
+DEFAULT_SPAN_DAYS = dict(pacing.SPAN_DAYS)
 MATERIAL_MEMORIES = 8             # recent high-weight memories offered to the reflection
 MATERIAL_RELATIONSHIPS = 5
 
 
 def generation_probability(active_major_town_wide: int) -> float:
-    """base × decay^(active majors). 0 -> 0.80, 2 -> 0.34, 4 -> 0.14."""
+    """base × decay^(active majors). 0 -> 0.80, 2 -> 0.45, 4 -> 0.25."""
     return GENERATION_BASE_P * (GENERATION_DECAY ** max(0, active_major_town_wide))
 
 

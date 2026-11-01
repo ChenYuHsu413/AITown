@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+from ... import pacing
+
 if TYPE_CHECKING:  # avoid circular imports at runtime
     from ...agents.agent import Agent
 
@@ -664,7 +666,9 @@ def wish_generation_prompt(agent: "Agent", material: dict, rejection: str = "") 
         "person, 1-2 sentences -- it becomes their self-description while they pursue this.\n"
         '- "provenance" is REQUIRED and must list ids from the material below. These are the '
         "memories the wish grew out of. Never invent an id; cite only ids you were given.\n"
-        '- "expires_in_days" is how long they would give themselves.\n\n'
+        f'- "expires_in_days" is how long they would give themselves -- about '
+        f'{pacing.SPAN_DAYS["major"]} days for a major wish and {pacing.SPAN_DAYS["minor"]} '
+        f'for a minor one, unless their own life clearly asks for more or less.\n\n'
         "Requirements are how the world will observe progress. Use ONLY these kinds:\n"
         "  location_visits (target = a location id) -- arriving there, N times\n"
         "  talk_count      (target = a resident id) -- conversations with that person\n"

@@ -100,7 +100,9 @@ class SeedToCompletion(unittest.TestCase):
         world, engine = make_engine()
         agent = world.agents["kuaizheng"]
         self.assertIsNone(agent.chapter)
-        with always_drive():
+        # A wish growing on its own (the 3-day ordinary cadence reaches day 3 here)
+        # would open a chapter that is not this minor's doing -- keep it out.
+        with always_drive(), mock.patch.object(wishes_mod, "GENERATION_BASE_P", 0.0):
             seed_wish(engine, world, "kuaizheng",
                       requirements=[{"kind": "location_visits", "target": "cafe", "threshold": 1}])
             asyncio.run(run_to(engine, START + 2 * DAY_MIN))

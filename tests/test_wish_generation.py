@@ -263,8 +263,8 @@ class SoftThreshold(unittest.TestCase):
     def test_the_curve_matches_the_constants_of_record(self):
         p = wishes_mod.generation_probability
         self.assertAlmostEqual(p(0), 0.80, places=3)
-        self.assertAlmostEqual(p(2), 0.338, places=3)
-        self.assertAlmostEqual(p(4), 0.1428, places=3)
+        self.assertAlmostEqual(p(2), 0.45, places=3)     # decay 0.75 (zh-native era; was 0.65)
+        self.assertAlmostEqual(p(4), 0.2531, places=3)
         for n in range(6):                                   # monotonically decreasing, never negative
             self.assertGreater(p(n), p(n + 1))
             self.assertGreater(p(n + 1), 0)

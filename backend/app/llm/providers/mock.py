@@ -13,6 +13,7 @@ import os
 import random
 import re
 
+from ...pacing import SPAN_DAYS
 from .base import LLMProvider, LLMResult
 
 
@@ -112,7 +113,7 @@ class MockProvider(LLMProvider):
                          "motivation": "The same rooms every week have started to feel small.",
                          "narrative": "I am quietly trying to put myself somewhere new."})
                 parsed = {**text, "scale": scales,
-                          "expires_in_days": 21, "provenance": ids[:2],
+                          "expires_in_days": SPAN_DAYS[scales], "provenance": ids[:2],
                           "requirements": [{"kind": "location_visits", "target": place, "threshold": 3}]}
             elif strangers:
                 who = strangers[0].lower()
@@ -126,7 +127,7 @@ class MockProvider(LLMProvider):
                          "motivation": "It bothers me that we have shared a town this long.",
                          "narrative": "I am quietly trying to get to know someone I never talk to."})
                 parsed = {**text, "scale": scales,
-                          "expires_in_days": 21, "provenance": ids[:2],
+                          "expires_in_days": SPAN_DAYS[scales], "provenance": ids[:2],
                           "requirements": [{"kind": "talk_count", "target": who, "threshold": 3}]}
             else:
                 parsed = {"no_wish": True, "reason": "nothing outside the routine to reach for"}

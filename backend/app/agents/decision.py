@@ -26,6 +26,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
+from .. import pacing
 from ..llm.prompts import builders
 from ..llm.router import LLMRouter
 from ..llm.usage import LLMCall
@@ -639,9 +640,9 @@ class DecisionEngine:
         self._live = live
         if live and self.dialogue_cap == 0:
             try:
-                self.dialogue_cap = int(os.environ.get("AI_TOWN_DIALOGUE_CAP", "25"))
+                self.dialogue_cap = int(os.environ.get("AI_TOWN_DIALOGUE_CAP", str(pacing.DIALOGUE_CAP)))
             except ValueError:
-                self.dialogue_cap = 25
+                self.dialogue_cap = pacing.DIALOGUE_CAP
 
     # Social initiative is a live-mode beat (it drives real LLM conversations); the mock
     # baseline stays deterministic. AI_TOWN_MEETUPS=1 force-enables it for testing.
