@@ -221,6 +221,17 @@ class FrozenTime(unittest.TestCase):
         decide(engine, world, kz, DAY0 + 16 * 60 + 10)
         self.assertEqual(a["state"], "done")
 
+    def test_a_deferred_doing_outranks_the_stretch_it_lands_in(self):
+        """Live Day 46: deferred into a cafe stretch, the doing at the office lapsed."""
+        world, engine = make_world()
+        kz = world.agents["kuaizheng"]
+        kz.state.day_plan = plan_for(kz, world, act(hour=15, place="Riverrun Office"),
+                                     slots=[{"from": 16, "to": 18, "place": "Tide Cafe", "doing": "visit"}])
+        dayplan_mod.defer_actions(kz, DAY0 + 14 * 60 + 50, DAY0 + 16 * 60 + 5)
+        kz.state.location, kz.state.current_action = "cafe", "idle"
+        d = decide(engine, world, kz, DAY0 + 16 * 60 + 10)
+        self.assertEqual((d.action, d.target_location), ("move", "office"))
+
     def test_nothing_moves_when_the_hour_was_not_lost(self):
         world, engine = make_world()
         kz = world.agents["kuaizheng"]

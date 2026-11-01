@@ -389,7 +389,9 @@ def entry_for(agent: "Agent", now: int, routine_entry: RoutineEntry) -> tuple | 
     if not plan or plan.get("day") != now // DAY + 1 or routine_entry.action == "sleep":
         return None
     mod = now % DAY
-    for s in plan.get("slots") or []:
+    # A doing's own hour wins over a stretch it overlaps (a deferred doing lands
+    # inside some other stretch of the day).
+    for s in sorted(plan.get("slots") or [], key=lambda s: s.get("action") != "free"):
         if s["from"] <= mod < s["to"]:
             return RoutineEntry(s["from"], s["action"], s["location"]), s["to"]
     if plan.get("skip_work") and routine_entry.action == "work":
