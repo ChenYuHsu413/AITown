@@ -44,6 +44,8 @@ class SimulationRun(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     note: Mapped[str] = mapped_column(String(200), default="")
+    # A closed era: read-only from then on. Resume never continues it; replay still reads it.
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class EventRow(Base):

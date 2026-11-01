@@ -311,3 +311,32 @@ one timeline) instead of restarting at Day 1 06:00. Startup logs one line —
 
 Without `AI_TOWN_DB_URL` the town is in-memory only, so a cold start still
 restarts from Day 1 06:00 — expected for the stateless first deploy.
+
+**Pausing writes a snapshot.** `POST /api/control {"cmd": "pause"}` persists the
+frozen world through the same event-snapshot hook as a wish being born (counted
+under `snapshots.event` in `/api/usage`). After a pause the snapshot always equals
+the clock, so a stop that follows — graceful or not — loses nothing.
+
+### Eras (archived runs)
+
+An era is one run, closed for good. `simulation_runs.archived = true` makes it
+read-only: a boot whose latest snapshot belongs to an archived run logs
+`[resume] latest snapshot belongs to archived run … -- not continuing it` and
+opens a new run at Day 1 instead. Replay is unchanged — `/api/runs` lists every
+run (with its `archived` flag) and `/api/history?run_id=…` reads any of them.
+
+```bash
+python scripts/archive_run.py --run <run_id> --note "..."            # dry run
+python scripts/archive_run.py --run <run_id> --note "..." --execute  # stop the server first
+```
+
+| run | era | span | state |
+|---|---|---|---|
+| `e6afdde6…` | Beta 紀元 | Day 1–106 | closed by note only (predates the flag) |
+| `f2024443…` | 正式紀元 (formal era) | Day 1 06:00 – Day 132 00:30 | **archived**, read-only |
+
+The formal era ran Day 1–131; the last 30 minutes of Day 132 are the boot
+acceptance after the move to local Postgres (one wish grown, `9f33dbbb`). Its two
+cold backups: the local dump `AITown-backups/aitown-supabase-20261101.dump`
+(taken at Day 131 18:12, before that acceptance) plus a fresh local dump of the
+archived state, and the paused Supabase project (frozen at Day 131 18:12).

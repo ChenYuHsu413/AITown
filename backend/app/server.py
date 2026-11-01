@@ -1035,7 +1035,9 @@ async def control(body: dict) -> JSONResponse:
     assert sim is not None
     cmd = body.get("cmd")
     if cmd == "pause":
-        sim.paused = True
+        if not sim.paused:
+            sim.paused = True
+            sim.engine._event_snapshot("paused", force=True)   # a paused clock is always on disk
     elif cmd == "play":
         sim.paused = False
     elif cmd == "speed":

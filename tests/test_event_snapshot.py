@@ -258,5 +258,29 @@ class CadenceSanity(unittest.TestCase):
               f"  verbs={sorted(set(triggers))}")
 
 
+class PauseWritesTheFrozenWorld(unittest.TestCase):
+    """A pause is a stop-point: the snapshot must equal the frozen clock, so a
+    shutdown that follows never has to be judged against a stale write."""
+
+    def test_force_skips_the_same_minute_debounce(self):
+        world, engine, writes = make_engine()
+        engine._event_snapshot("wish_born")
+        engine._event_snapshot("paused", force=True)
+        self.assertEqual(len(writes), 2)
+        self.assertEqual(engine.snapshot_stats["debounced"], 0)
+
+    def test_the_pause_command_writes_once_at_the_current_minute(self):
+        from backend.app import server
+        sim = server.Sim()
+        writes = Writes(sim.engine, sim.world)
+        sim.engine.on_snapshot = writes
+        with mock.patch.object(server, "sim", sim):
+            asyncio.run(server.control({"cmd": "pause"}))
+            asyncio.run(server.control({"cmd": "pause"}))   # already paused: no second write
+        self.assertTrue(sim.paused)
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes.queue[0]["minute"], sim.engine.now)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -446,16 +446,19 @@ class SimulationEngine:
 
     # ---- snapshots ---------------------------------------------------
 
-    def _event_snapshot(self, verb: str) -> None:
+    def _event_snapshot(self, verb: str, force: bool = False) -> None:
         """A rare beat just landed -- persist it now instead of waiting for the next
         fixed-cadence point, so a restart cannot roll it back. Same hook, same payload:
         only the trigger is new. At most one write per sim minute, so a wish settling
         and its chapter turning on the same minute cost one snapshot, not two. Never
         raises and never retries: the beat itself is already fact, and a failed write
-        only means this one missed the free ride -- the next cadence point carries it."""
+        only means this one missed the free ride -- the next cadence point carries it.
+
+        ``force`` skips the debounce: a pause must leave the snapshot equal to the
+        frozen world, even if a beat already wrote one earlier in the same minute."""
         if self.on_snapshot is None:
             return
-        if self.now == self._event_snap_minute:
+        if self.now == self._event_snap_minute and not force:
             self.snapshot_stats["debounced"] += 1
             return
         self._event_snap_minute = self.now

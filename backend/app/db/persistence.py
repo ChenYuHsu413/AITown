@@ -110,11 +110,18 @@ class Persistence:
                 "ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_chapter_id VARCHAR(32) NOT NULL DEFAULT ''"))
             await conn.execute(sql_text(
                 "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS superseded BOOLEAN NOT NULL DEFAULT FALSE"))
+            await conn.execute(sql_text(
+                "ALTER TABLE simulation_runs ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE"))
             await self._migrate_wishes(conn)
 
         resumed = False
         if resume and restore_cb is not None:
             snap = await self.latest_snapshot()
+            if snap is not None and await self.is_archived(snap["run_id"]):
+                # A closed era is read-only: continuing it would write into the record.
+                print(f"[resume] latest snapshot belongs to archived run {snap['run_id']} -- "
+                      f"not continuing it; opening a new run")
+                snap = None
             if snap is not None:
                 try:
                     restore_cb(snap["minute"], snap["payload"])
@@ -333,6 +340,11 @@ class Persistence:
                 return None
             return {"run_id": row.run_id, "minute": row.minute, "payload": row.payload}
 
+    async def is_archived(self, run_id: str) -> bool:
+        async with self.session() as s:
+            return bool((await s.execute(
+                select(SimulationRun.archived).where(SimulationRun.id == run_id))).scalar_one_or_none())
+
     # ---- translation cache ----------------------------------------
 
     async def load_translation_cache(self, lang: str) -> list[dict]:
@@ -530,11 +542,12 @@ class Persistence:
         async with self.session() as s:
             rows = await s.execute(
                 select(
-                    SimulationRun.id, SimulationRun.started_at, SimulationRun.note,
+                    SimulationRun.id, SimulationRun.started_at, SimulationRun.note, SimulationRun.archived,
                     func.count(EventRow.id), func.min(EventRow.minute), func.max(EventRow.minute),
                 )
                 .outerjoin(EventRow, EventRow.run_id == SimulationRun.id)
-                .group_by(SimulationRun.id, SimulationRun.started_at, SimulationRun.note)
+                .group_by(SimulationRun.id, SimulationRun.started_at, SimulationRun.note,
+                          SimulationRun.archived)
                 .order_by(SimulationRun.started_at.desc())
             )
             return [
@@ -542,8 +555,9 @@ class Persistence:
                     "id": rid,
                     "started_at": started.isoformat() if started else None,
                     "note": note or "",
+                    "archived": bool(archived),
                     "events": count or 0,
                     "minute_min": mn, "minute_max": mx,
                 }
-                for rid, started, note, count, mn, mx in rows
+                for rid, started, note, archived, count, mn, mx in rows
             ]
