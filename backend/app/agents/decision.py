@@ -1410,6 +1410,11 @@ class DecisionEngine:
                     gate = "wish_deviation"
                     builders.note_gate_reject(gate)
                     rejection = why
+                elif not (struct := wishes_mod.structural_novelty_ok(
+                        agent, clean["requirements"], day))[0]:  # gate 3a: the same doings again?
+                    gate = "wish_novelty_struct"
+                    builders.note_gate_reject(gate)
+                    rejection = struct[1]
                 else:
                     vector = await self.embedder.embed(
                         wishes_mod.novelty_text(clean["statement"], clean["requirements"]))

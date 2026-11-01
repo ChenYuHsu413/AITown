@@ -170,7 +170,7 @@ def gender_of(name: str) -> str:
 GATE_REJECTS: dict[str, int] = {
     "translate_person": 0, "translate_gender": 0, "generation_gender": 0, "roster_missing": 0,
     # The three gates a grown wish must survive (phase 2b, see agents/wishes.py).
-    "wish_feasibility": 0, "wish_deviation": 0, "wish_novelty": 0,
+    "wish_feasibility": 0, "wish_deviation": 0, "wish_novelty": 0, "wish_novelty_struct": 0,
     # zh-native knowledge that came back in English / soup / empty (decision.reflection_zh_ok).
     "zh_quality": 0,
 }
@@ -636,6 +636,12 @@ def wish_generation_prompt(agent: "Agent", material: dict, rejection: str = "") 
     holding = lines(material["active_wishes"],
                     lambda w: f"  [{w.get('scale', '?')}] \"{w['title']}\": {w['statement']}",
                     "  (nothing)")
+    # A recently finished wish: a new one that carries it on is a sequel, and says so.
+    done = "".join(
+        (f"你最近完成了〈{w['title']}〉(Day {w['ended_on']})" if lang_is_zh()
+         else f"You recently completed \"{w['title']}\" (Day {w['ended_on']})")
+        + " -- a new wish may carry it on, but then as its next chapter, not a rerun.\n"
+        for w in material.get("recent_completed") or [])
     residue = (f"\nHow the last chapter left them feeling: {material['residue']}."
                if material.get("residue") else "")
     traits = ", ".join(f"{k} {v}" for k, v in sorted(material["personality"].items()))
@@ -708,6 +714,7 @@ def wish_generation_prompt(agent: "Agent", material: dict, rejection: str = "") 
         f"Places their routine never takes them: {unvisited}\n"
         f"People they never regularly cross paths with: {strangers}\n\n"
         f"Already holding (scale in brackets):\n{holding}\n"
+        f"{done}"
         f"They may propose a wish of scale: {', '.join(allowed_scales) or '(none -- decline)'}."
         f"{feedback}"
     )

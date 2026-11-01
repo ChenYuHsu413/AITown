@@ -992,6 +992,54 @@ def novelty_ok(vector: list, agent: "Agent", world: "World",
     return True, ""
 
 
+# ---- structural novelty (2026-11 developer rule) ------------------------------------
+# The embedding cannot tell "the same thing said differently" in Chinese, so a second
+# check looks at what a wish would actually DO: its requirement (kind, target) set,
+# against this resident's recent wishes. Stacked on top of novelty_ok, never instead.
+STRUCT_OVERLAP = 0.5           # share of the new proposal's (kind, target) pairs already held
+STRUCT_RECENT_DAYS = 14        # an ended wish counts as "recent" this long after it ended
+STRUCT_COOLDOWN_DAYS = 7       # after letting something go, how long before it may return
+
+
+def _req_keys(reqs) -> set:
+    return {(r.kind, r.target or "") for r in reqs}
+
+
+def struct_overlap(new_reqs, old_reqs) -> float:
+    """Share of the new proposal's (kind, target) pairs that the old wish already had."""
+    new = _req_keys(new_reqs)
+    return len(new & _req_keys(old_reqs)) / len(new) if new else 0.0
+
+
+def recent_wishes(agent: "Agent", day: int) -> list:
+    """Every active wish, plus those that ended within STRUCT_RECENT_DAYS."""
+    return [w for w in agent.wishes
+            if w.status == "active" or (w.ended_on and day - w.ended_on <= STRUCT_RECENT_DAYS)]
+
+
+def structural_novelty_ok(agent: "Agent", reqs, day: int) -> tuple:
+    """Same person, same doings. Returns (ok, reason):
+      - overlapping an ACTIVE wish -> refused: the same thing cannot be held twice;
+      - overlapping a recently ABANDONED / FAILED one inside the cooldown -> refused:
+        letting go needs time, or the abandonment friction means nothing;
+      - overlapping a recently COMPLETED one -> allowed: a sequel (the material already
+        told the model it finished it, see generation_material's recent_completed);
+        so is a failed / abandoned one past the cooldown -- trying again is human."""
+    for w in recent_wishes(agent, day):
+        share = struct_overlap(reqs, w.requirements)
+        if share < STRUCT_OVERLAP:
+            continue
+        if w.status == "active":
+            return False, (f"repeats a wish they are already pursuing (\"{w.title}\", "
+                           f"{share:.0%} the same requirements) -- the same thing cannot be "
+                           f"held twice; want something else")
+        if w.status in ("abandoned", "failed") and day - w.ended_on < STRUCT_COOLDOWN_DAYS:
+            return False, (f"repeats \"{w.title}\", which they let go only {day - w.ended_on} "
+                           f"day(s) ago ({share:.0%} the same requirements) -- something just "
+                           f"put down needs time; want something else")
+    return True, ""
+
+
 # ---- material -----------------------------------------------------------------
 
 
@@ -1035,6 +1083,9 @@ def generation_material(agent: "Agent", world: "World", day: int, residue: str =
         "no_regular_overlap_with": strangers,
         "active_wishes": [{"title": w.title, "statement": w.statement, "scale": w.scale}
                           for w in active_wishes(agent)],
+        # Wishes they saw through lately: a new one may be their sequel, and should know it.
+        "recent_completed": [{"title": w.title, "ended_on": w.ended_on}
+                             for w in recent_wishes(agent, day) if w.status == "completed"],
         "personality": dict(agent.profile.personality),
         "capacity": {s: capacity_left(agent, s) for s in SCALES},
         "in_pursuit": agent.chapter is not None and agent.chapter.chapter_type == "pursuit",
