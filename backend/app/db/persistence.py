@@ -130,6 +130,9 @@ class Persistence:
             # Narrative layer: nullable, so rows written before it stay untiered.
             await conn.execute(sql_text("ALTER TABLE events ADD COLUMN IF NOT EXISTS tier VARCHAR(8)"))
             await conn.execute(sql_text("ALTER TABLE events ADD COLUMN IF NOT EXISTS detail TEXT"))
+            # Public objects: a one-way delivery's addressee ("" for things left for anyone).
+            await conn.execute(sql_text(
+                "ALTER TABLE public_objects ADD COLUMN IF NOT EXISTS recipient VARCHAR(32) NOT NULL DEFAULT ''"))
             await self._migrate_wishes(conn)
 
         resumed = False
@@ -324,6 +327,7 @@ class Persistence:
                     s.add(PublicObject(
                         id=str(o["id"]), run_id=self.run_id, location=str(o.get("location", "")),
                         creator=str(o.get("creator", "")), description=str(o.get("description", "")),
+                        recipient=str(o.get("recipient", "")),
                         born_minute=int(o.get("born_minute", 0)),
                         born_day=int(o.get("born_minute", 0)) // (24 * 60) + 1))
                 elif isinstance(item, _AttemptWrite):

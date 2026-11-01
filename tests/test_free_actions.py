@@ -63,12 +63,56 @@ class PlanSide(unittest.TestCase):
         self.assertEqual(p["actions"][0]["location"], "park")
         self.assertIn({"from": 900, "to": 960, "location": "park", "action": "free", "act": 0}, p["slots"])
 
-    def test_the_contract_refuses_what_is_not_ones_own(self):
-        p = plan_for(self.kz, self.world,
-                     act(what="leave a note for Lengyue"),               # names someone
-                     act(hour=16, place="Rainlisten House"))             # someone else's home
+    def test_the_contract_refuses_another_persons_home(self):
+        p = plan_for(self.kz, self.world, act(hour=16, place="Rainlisten House"))    # someone else's home
         self.assertEqual(p["actions"], [])
-        self.assertTrue(p["dropped"][0].startswith("action: involves someone else"))
+        p = plan_for(self.kz, self.world, act(what="leave a note for Lengyue"))     # naming is fine
+        self.assertEqual(p["actions"][0]["recipient"], "lengyue")
+
+    def test_control_is_refused_but_mention_is_not(self):
+        """Day 43-44 regression: these were refused only for naming someone."""
+        with unittest.mock.patch.dict(os.environ, {"AI_TOWN_LANG": "zh-TW"}):
+            kz = self.kz
+            ok = [
+                act(place="Hearth Bakery", what="試做希希建議的新配方小樣,記下口感與火候", leaves=""),     # mention
+                act(place="Riverrun Office", what="在辦公室門口等蒯政,一起走進去", leaves=""),             # self-positioning
+                act(hour=16, place="Riverrun Office", what="寫下想跟冷月說的話,整理成一張小紙條", leaves=""),
+            ]
+            for a in ok:
+                p = plan_for(self.world.agents["azong"], self.world, a)
+                self.assertEqual(len(p["actions"]), 1, (a["what"], p["dropped"]))
+            blocked = [
+                "和冷月和好", "讓瓏答應一起去市集", "說服歐拉留下來", "冷月答應了我的邀約",
+                "抱一抱希希", "修好歐拉的腳踏車", "拿走安哥的麵包籃",
+            ]
+            for what in blocked:
+                p = plan_for(kz, self.world, act(what=what, leaves=""))
+                self.assertEqual(p["actions"], [], what)
+                self.assertTrue(p["dropped"][0].startswith("action: controls someone else"), what)
+
+    def test_a_thing_left_for_someone_is_a_delivery_they_find_on_their_own_turn(self):
+        with unittest.mock.patch.dict(os.environ, {"AI_TOWN_LANG": "zh-TW"}):
+            xixi = self.world.agents["xixi"]
+            p = plan_for(xixi, self.world, act(place="Tide Cafe", what="在角落的桌邊寫下一張小小的留言卡,祝ㄐㄐ的咖啡館生意興隆",
+                                               leaves="一張寫給ㄐㄐ的留言卡"))
+            a = p["actions"][0]
+            self.assertEqual((a["recipient"], a["leaves"]), ("jiji", "一張寫給ㄐㄐ的留言卡"))   # for the owner: may stay
+            xixi.state.day_plan = p
+            xixi.state.location, xixi.state.current_action = "cafe", "rest"
+            decide(self.engine, self.world, xixi, DAY0 + 15 * 60 + 2)
+            obj = self.world.objects[-1]
+            self.assertEqual(obj["recipient"], "jiji")
+            beat = [b for b in self.engine.decisions.outbox if b["verb"] == "made_object"][0]
+            self.assertEqual(beat["target"], "jiji")
+            jiji = self.world.agents["jiji"]
+            self.assertFalse(any("留言卡" in m.text for m in jiji.memory.items))          # not until he comes by
+            jiji.state.location = "cafe"
+            actions_mod.notice_objects(jiji, self.world, DAY0 + 16 * 60)
+            found = [m for m in jiji.memory.items if "留言卡" in m.text]
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0].importance, 5)
+            self.assertIn("delivery", found[0].tags)
+            self.assertEqual(jiji.rel("xixi").friendship, self.world.agents["jiji"].rel("xixi").friendship)  # no reaction applied
 
     def test_limits(self):
         p = plan_for(self.kz, self.world, act(cost=pacing.FREE_ACTION_MAX_COST + 1), act(hour=22),

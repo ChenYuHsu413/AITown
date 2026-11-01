@@ -142,6 +142,8 @@ _CATALOGUE: dict[str, tuple[str, str]] = {
     "action_failed": ("I wanted to {what} (at {{loc:{loc}}}), but couldn't: {reason}.",
                       "我本來想{what}(在{{loc:{loc}}}),但沒做成:{reason}。"),
     "object_noticed": ("At {{loc:{loc}}} there is {what}.", "在{{loc:{loc}}}看到了{what}。"),
+    "found_for_me": ("At {{loc:{loc}}} I found {what}, left for me by {{agent:{who}}} ({note}).",
+                     "在{{loc:{loc}}}發現{{agent:{who}}}留給我的{what}({note})。"),
     "fail_money": ("not enough money", "錢不夠"),
     "fail_closed": ("the place wasn't open", "那裡沒開"),
     "fail_rain": ("it was raining", "下雨了"),

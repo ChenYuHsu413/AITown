@@ -823,6 +823,8 @@ class SimulationEngine:
                 if self.on_public_object is not None:
                     self.on_public_object(dict(beat["object"]))
                 continue
+            if beat["verb"] == "made_object" and beat.get("target"):
+                self.action_stats["deliveries"] = self.action_stats.get("deliveries", 0) + 1
             if beat["verb"] in ("free_action", "made_object", "action_failed"):
                 self.action_stats[beat["verb"]] += 1
             self._publish("action", beat["verb"], actor=self.world.agents.get(beat["actor"]),

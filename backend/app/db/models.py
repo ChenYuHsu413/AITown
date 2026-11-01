@@ -275,6 +275,7 @@ class PublicObject(Base):
     location: Mapped[str] = mapped_column(String(32), default="")
     creator: Mapped[str] = mapped_column(String(32), default="")
     description: Mapped[str] = mapped_column(Text, default="")
+    recipient: Mapped[str] = mapped_column(String(32), default="")   # a one-way delivery's addressee
     born_minute: Mapped[int] = mapped_column(Integer, default=0)
     born_day: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

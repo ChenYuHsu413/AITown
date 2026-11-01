@@ -97,7 +97,8 @@ def land(agent: "Agent", world: "World", act: dict, now: int) -> tuple[dict, dic
     obj = None
     if act.get("leaves"):
         obj = {"id": uuid.uuid4().hex[:10], "location": loc, "creator": agent.id,
-               "description": act["leaves"], "born_minute": now}
+               "description": act["leaves"], "born_minute": now,
+               "recipient": act.get("recipient", ""), "note": act["what"] if act.get("recipient") else ""}
         world.objects.append(obj)
         agent.memory.add(MemoryItem(minute=now, importance=5, kind="reflection", tags=["action"],
                                     text=texts.T("action_left", loc=loc, what=act["leaves"])))
@@ -110,19 +111,27 @@ def land(agent: "Agent", world: "World", act: dict, now: int) -> tuple[dict, dic
                                         text=texts.T("action_seen", who=agent.id, loc=loc, what=act["what"])))
             if obj is not None:
                 other.state.seen_objects.append(obj["id"])
-    beat = {"verb": "made_object" if obj else "free_action", "actor": agent.id, "target": "",
+    beat = {"verb": "made_object" if obj else "free_action", "actor": agent.id,
+            "target": (obj or {}).get("recipient", ""),
             "location": loc, "text": act["leaves"] if obj else act["what"],
             "detail": act["what"]}
     return beat, obj
 
 
 def notice_objects(agent: "Agent", world: "World", now: int) -> None:
-    """A passer-by takes in what others left here -- one roll per object, ever."""
+    """A passer-by takes in what others left here -- one roll per object, ever. A thing
+    left FOR this resident is found for certain when they come by: what they make of
+    it is theirs (it is only material for their own next decisions and talks)."""
     seen = agent.state.seen_objects
     for o in objects_at(world, agent.state.location):
         if o["id"] in seen or o.get("creator") == agent.id:
             continue
         seen.append(o["id"])
+        if o.get("recipient") == agent.id:
+            agent.memory.add(MemoryItem(minute=now, importance=5, kind="observation", tags=["delivery"],
+                                        text=texts.T("found_for_me", who=o["creator"], loc=o["location"],
+                                                     what=o["description"], note=o.get("note") or o["description"])))
+            continue
         if _roll("notice", agent.id, o["id"]) < pacing.OBJECT_NOTICE_P:
             agent.memory.add(MemoryItem(minute=now, importance=3, kind="observation",
                                         text=texts.T("object_noticed", loc=o["location"], what=o["description"])))

@@ -155,10 +155,56 @@ def _names_someone(text: str, agent: "Agent", world: "World") -> bool:
     return any(texts_mod.mentions(text, o) for o in world.agents if o != agent.id)
 
 
+# Controlling another resident -- the one thing a free action may never do. Mentioning
+# someone is fine (waiting for them somewhere, a note or a gift left for them, an
+# invitation, even a provocation: all of those are the other person's INPUT, and what
+# they make of it is theirs to decide on their own turn). What is refused: an action
+# that states the other person's response or outcome, or that handles their
+# belongings or their body.
+_OUTCOME_BEFORE = r"(?:讓|叫|要|使|逼|逼著|說服|勸|求)"            # 讓X答應 / 說服X
+_OUTCOME_PAIR = r"(?:和好|復合|和解|在一起|交往|說開|講和|重修舊好)"   # 和X和好
+_OUTCOME_AFTER = r"(?:答應|同意|原諒|接受|喜歡上|愛上|收下|回覆|回應|點頭|笑了|哭了|感動|道歉)"  # X答應了
+_BODY = r"(?:抱|擁抱|牽|親|吻|摸|拍|扶|推|拉|揉|握住)"               # 抱X
+_PROPERTY = r"(?:修|拿|動|搬|借|用|換|丟|整理|打掃|收拾|翻|開|拆|改|佔)"  # 修好X的…
+
+
+def _forms(agent_id: str, world: "World") -> list[str]:
+    from . import texts as texts_mod
+    a = world.agents[agent_id]
+    return [f for f in {a.name, texts_mod.display_name(agent_id), agent_id.capitalize()} if f]
+
+
+def controls_someone(text: str, agent: "Agent", world: "World") -> str:
+    """The resident this action would control ("" = it controls nobody)."""
+    import re
+    for oid in world.agents:
+        if oid == agent.id:
+            continue
+        for n in _forms(oid, world):
+            e = re.escape(n)
+            if (re.search(rf"{_OUTCOME_BEFORE}{e}", text)
+                    or re.search(rf"(?:和|跟|與){e}[^,，。;；]{{0,3}}{_OUTCOME_PAIR}", text)
+                    or re.search(rf"{e}[^,，。;；]{{0,3}}{_OUTCOME_AFTER}", text)
+                    or re.search(rf"{_BODY}(?:了|著)?{e}", text)
+                    or re.search(rf"{_PROPERTY}[^,，。;；]{{0,4}}{e}的", text)):
+                return oid
+    return ""
+
+
+def addressee(text: str, agent: "Agent", world: "World") -> str:
+    """The resident a one-way delivery is for: the first one named ("" = nobody)."""
+    from . import texts as texts_mod
+    hits = [(text.find(n), oid) for oid in world.agents if oid != agent.id
+            for n in _forms(oid, world) if n and n in text]
+    return min(hits)[1] if hits else ""
+
+
 def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slots: list) -> tuple:
     """The free-action contract, plan side: a real, permitted place, waking hours, a
-    sane cost, Chinese text that names nobody else (an act is one's own: never
-    another person's reaction, belongings or body). Returns (actions, dropped)."""
+    sane cost, readable Chinese, and control of nobody else (never another person's
+    response, belongings or body -- see controls_someone). Naming someone is fine: a
+    thing left FOR them becomes a delivery with a recipient, which they find on their
+    own turn. Returns (actions, dropped)."""
     from .decision import _knowledge_lang_ok
     dow = (day - 1) % 7
     out: list[dict] = []
@@ -182,11 +228,15 @@ def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slot
             dropped.append("action: no such place"); continue
         if world.locations[loc].kind == "home" and loc != agent.home:
             dropped.append("action: someone else's home"); continue
-        if _names_someone(what + leaves, agent, world):
-            dropped.append(f"action: involves someone else ({what[:24]})"); continue
+        from .decision import gender_ok
+        if controls_someone(what + "," + leaves, agent, world):
+            dropped.append(f"action: controls someone else ({what[:24]})"); continue
+        if not gender_ok(what) or (leaves and not gender_ok(leaves)):
+            dropped.append(f"action: wrong pronoun ({what[:24]})"); continue
+        recipient = addressee(what + "," + leaves, agent, world) if leaves else ""
         owner = world.locations[loc].owner
-        if leaves and owner and owner != agent.id:
-            leaves = ""        # a customer may do things in a shop, but not leave things in it
+        if leaves and owner and owner != agent.id and owner != recipient:
+            leaves = ""        # a customer may not leave things in a shop -- unless it is for its owner
         if not 7 <= hour <= 21 or agent.routine.current(hour * 60, dow).action == "sleep":
             dropped.append("action: sleep time"); continue
         if cost > pacing.FREE_ACTION_MAX_COST:
@@ -200,7 +250,8 @@ def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slot
             dropped.append(f"action: overlaps ({what[:24]})"); continue
         idx = len(out)
         out.append({"what": what, "leaves": leaves, "cost": cost, "location": loc,
-                    "from": fr, "to": to, "state": "planned", "within": within})
+                    "from": fr, "to": to, "state": "planned", "within": within,
+                    "recipient": recipient if leaves else ""})
         if not within:
             slots.append({"from": fr, "to": to, "location": loc, "action": "free", "act": idx})
     return out, dropped
