@@ -618,6 +618,12 @@ class SimulationEngine:
         if self.now // DAY_MIN + 1 != plan["day"]:
             return                                   # it arrived after its day was over
         agent.state.day_plan = plan
+        # One audit line per morning (log only -- not an event, so the feed stays quiet).
+        print(f"[dayplan] {agent.id} day {plan['day']}: "
+              f"duty={agent.profile.personality.get('conscientiousness', 0.5)} "
+              f"skip_desire={plan.get('skip_desire', 0)} skip={plan.get('skip_work')} "
+              f"slots={len(plan.get('slots') or [])} actions={len(plan.get('actions') or [])} "
+              f"dropped={plan.get('dropped') or []}", flush=True)
         if plan.get("intent"):
             agent.memory.add(MemoryItem(minute=self.now, importance=3, kind="reflection",
                                         text=texts.T("day_intent", text=plan["intent"])))
