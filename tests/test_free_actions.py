@@ -232,6 +232,17 @@ class FrozenTime(unittest.TestCase):
         d = decide(engine, world, kz, DAY0 + 16 * 60 + 10)
         self.assertEqual((d.action, d.target_location), ("move", "office"))
 
+    def test_a_doing_inside_a_stretch_gets_a_decision_at_its_hour(self):
+        """Live Day 47: idle at the market 07:31 -> 09:00 slept through an 08:00 doing."""
+        world, engine = make_world()
+        kz = world.agents["kuaizheng"]
+        kz.state.day_plan = plan_for(kz, world, act(hour=8, place="Ferry Crossing Market", leaves=""),
+                                     slots=[{"from": 7, "to": 9, "place": "Ferry Crossing Market", "doing": "visit"}])
+        kz.state.location, kz.state.current_action = "market", "idle"
+        now = DAY0 + 7 * 60 + 31
+        d = decide(engine, world, kz, now)
+        self.assertLessEqual(now + d.duration, DAY0 + 8 * 60)
+
     def test_nothing_moves_when_the_hour_was_not_lost(self):
         world, engine = make_world()
         kz = world.agents["kuaizheng"]

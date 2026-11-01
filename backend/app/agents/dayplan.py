@@ -379,6 +379,9 @@ def next_start(agent: "Agent", now: int) -> int | None:
         return None
     mod = now % DAY
     starts = [s["from"] for s in plan.get("slots") or [] if s["from"] > mod]
+    # ...and a doing that rides inside a stretch: its hour must get a decision too
+    starts += [a["from"] for a in plan.get("actions") or []
+               if a.get("state") == "planned" and a["from"] > mod]
     return min(starts) if starts else None
 
 
