@@ -159,6 +159,11 @@ class MockProvider(LLMProvider):
             })[outcome]
             refs = re.findall(r"\[([0-9a-f]{8})\]", raw)[:2]
             parsed = {"biography_line": line, "emotional_residue": residue, "memory_refs": refs}
+        elif "task: day_plan" in prompt:
+            # The floor wakes up to an ordinary day: no changes, so a mock run's
+            # timetable is exactly the routine (tests drive real plans directly).
+            parsed = {"intent": "今天就照平常的步調過。" if zh else "Just an ordinary day, at my usual pace.",
+                      "nothing_special": True, "skip_work": 0.0, "slots": []}
         elif "task: dialogue_turn" in prompt:
             parsed = self._dialogue_turn(" ".join(m.get("content", "") for m in messages), rng, zh)
         elif "appraise" in prompt:

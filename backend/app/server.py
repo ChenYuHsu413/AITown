@@ -1412,6 +1412,11 @@ async def agent_detail(agent_id: str) -> JSONResponse:
             "occupation": a.profile.occupation,
             "traits": a.profile.traits,
             "goals": a.profile.goals,
+            # Light mood (agents/mood.py) and today's own plan (agents/dayplan.py) -- the
+            # operator's view; both are private to the resident in the simulation.
+            "mood_valence": round(float(a.state.mood_valence), 3),
+            "mood_note": a.state.mood_note,          # {agent:..}/{loc:..} placeholders; the UI resolves them
+            "today_plan": a.state.day_plan,
             # Life chapter (see agents/chapters.py); None = uninitialized (reads as ordinary).
             "chapter": ({
                 "id": ch.id, "type": ch.chapter_type, "title": ch.title, "narrative": ch.narrative,

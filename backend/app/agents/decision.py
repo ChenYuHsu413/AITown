@@ -35,6 +35,8 @@ from ..social.rumors import RumorRegistry
 from ..social.secrets import SecretRegistry
 from ..world.world import Observation, World
 from . import chapters as chapters_mod
+from . import dayplan as dayplan_mod
+from . import mood as mood_mod
 from . import romance as romance_mod
 from . import transitions as transitions_mod
 from . import texts
@@ -706,6 +708,13 @@ class DecisionEngine:
         minute_of_day = now % (24 * 60)
         dow = (now // (24 * 60)) % 7        # 0=Mon .. 6=Sun (Day 1 = Monday)
         entry = agent.routine.current(minute_of_day, dow)
+        # Today's own plan (the morning micro-decision) outranks the timetable and a
+        # wish's drive; sleep is never its to change (entry_for refuses it).
+        plan_hit = dayplan_mod.entry_for(agent, now, entry)
+        plan_until = None
+        if plan_hit is not None:
+            entry, plan_until = plan_hit
+        today = now // (24 * 60) + 1
         obs_text = obs.describe(world)
         self._record_observations(agent, world, now)
         memories: list[str] = []
@@ -764,7 +773,7 @@ class DecisionEngine:
         # rest/idle. What comes back is a *suggestion*: every precondition below
         # (talk cooldown, dialogue cap, the partner's refusal, closing days, rain)
         # still applies, and nothing here touches requirement progress.
-        if decision is None and not agent.state.pending_concern:
+        if decision is None and not agent.state.pending_concern and plan_hit is None:
             wish_drive = wishes_mod.next_directive(
                 agent, world, now, entry.action, run_seed=self.wish_run_seed)
 
@@ -926,7 +935,8 @@ class DecisionEngine:
             dest_loc = world.locations.get(dest)
             shunned = agent.state.avoid_location and dest == agent.state.avoid_location
             is_owned_shop = dest_loc is not None and dest_loc.owner and dest_loc.price > 0
-            closed = is_owned_shop and dow in dest_loc.closed_days and dest_loc.owner != agent.id
+            closed = (is_owned_shop and (dow in dest_loc.closed_days or dest_loc.closed_on == today)
+                      and dest_loc.owner != agent.id)
             if entry.action == "eat" and (shunned or closed):
                 # Take our custom to a rival shop that's open and affordable
                 # (bakery <-> cafe); if none, eat at home -- so a closing day feeds
@@ -934,7 +944,7 @@ class DecisionEngine:
                 rival = next(
                     (lid for lid, loc in world.locations.items()
                      if loc.price > 0 and loc.owner and lid != dest and dow not in loc.closed_days
-                     and agent.state.money >= loc.price),
+                     and loc.closed_on != today and agent.state.money >= loc.price),
                     None,
                 )
                 if closed:
@@ -986,6 +996,8 @@ class DecisionEngine:
                         self._note_wish_blocked(agent, wish_drive["wish_id"], now)
 
             until_next = agent.routine.next_boundary(minute_of_day, dow) - minute_of_day
+            if plan_until is not None:
+                until_next = min(until_next, plan_until - minute_of_day)
             if agent.state.location != dest:
                 decision = Decision(
                     "move", target_location=dest, duration=10,
@@ -1004,6 +1016,8 @@ class DecisionEngine:
                 decision = Decision(
                     act, duration=max(15, min(until_next, 120)), reason=reason,
                 )
+            if plan_hit is not None and decision.reason.startswith("routine"):
+                decision.reason = decision.reason.replace("routine", "today's own plan", 1)
             model_used = "rules" if decision.level == 0 else model_used
 
         trace = DecisionTrace(
@@ -1238,8 +1252,9 @@ class DecisionEngine:
         if not m.get("promised"):
             return
         agent.memory.add(MemoryItem(
-            minute=now, importance=4, kind="conversation",
+            minute=now, importance=4, kind="conversation", tags=["promise"],
             text=texts.T("promise_missed", other=m["partner"], loc=m["location"])))
+        mood_mod.nudge(agent, -pacing.MOOD_PROMISE_MISSED, texts.T("note_promise_missed", other=m["partner"]))
         if m.get("missed_reported"):
             return
         if partner_pm and partner_pm.get("partner") == agent.id and partner_pm.get("minute") == m.get("minute"):
@@ -1512,7 +1527,9 @@ class DecisionEngine:
                 messages=builders.chapter_closure_prompt(
                     agent, {**material, **{k: [{**m, "text": _resolve_placeholders(m["text"], world)}
                                                for m in material.get(k) or []]
-                                           for k in ("memories", "aftermath")}},
+                                           for k in ("memories", "aftermath")},
+                               "promises": [_resolve_placeholders(p, world)
+                                            for p in material.get("promises") or []]},
                     outcome, chapters_mod.relationship_summary_lines(material, world)),
                 agent_id=agent.id, sim_minute=material["window"]["end_minute"],
                 schema={"type": "object"}, max_tokens=300 if builders.lang_is_zh() else 200,
@@ -1827,6 +1844,22 @@ class DecisionEngine:
             shared_rumors=shared_rumors, confided=confided, confession=confession,
         )
 
+    async def plan_day(self, agent: Agent, world: World, day: int, now: int) -> dict:
+        """The morning micro-decision (agents/dayplan.py). One cheap call; a chain
+        failure raises ProvidersExhausted (no canned plan -- the usual day stands)."""
+        mat = dayplan_mod.material(agent, world, self, day)
+
+        def ok(r: object) -> bool:
+            p = getattr(r, "parsed", None)
+            return (isinstance(p, dict) and bool(str(p.get("intent") or "").strip())
+                    and _knowledge_lang_ok(str(p.get("intent"))))
+        res = await self.router.generate(
+            task="day_plan", messages=builders.day_plan_prompt(agent, mat), agent_id=agent.id,
+            sim_minute=now, schema={"type": "object"},
+            max_tokens=400 if builders.lang_is_zh() else 260, validate=ok,
+            per_call_timeout=DIALOGUE_PROVIDER_TIMEOUT_S, no_floor=True)
+        return dayplan_mod.validate(res.parsed, agent, world, day)
+
     _ROMANCE_PHRASE = {"crushing": "you have a crush on them", "dating": "you two are dating",
                        "partners": "you two are partners"}
 
@@ -1864,7 +1897,7 @@ class DecisionEngine:
         rel = me.rel(other.id)
         return {
             "name": me.name, "partner": other.name,
-            "card": builders.character_card(me, speech=True), "mood": me.state.mood,
+            "card": builders.character_card(me, speech=True), "mood": mood_mod.describe(me, world),
             "time": scene["time"], "place": scene["place"], "nearby": scene["nearby"],
             "bond": transitions_mod.rel_stage(rel.friendship),
             "romance": self._ROMANCE_PHRASE.get(getattr(rel, "romance_stage", "") or "", ""),
@@ -2043,6 +2076,13 @@ class DecisionEngine:
         per_side = parsed.get("per_side") or {}
         a.apply_conversation_signals(b.id, **(per_side.get(a.id) or signals))
         b.apply_conversation_signals(a.id, **(per_side.get(b.id) or signals))
+        for x, y in ((a, b), (b, a)):
+            sig = per_side.get(x.id) or signals
+            before = x.state.mood_valence
+            mood_mod.from_conversation(x, sig["sentiment"], sig["conflict_signal"])
+            moved = x.state.mood_valence - before
+            if abs(moved) >= mood_mod.NOTE_MIN:
+                x.state.mood_note = texts.T("note_talk_good" if moved > 0 else "note_talk_bad", other=y.id)
         a.state.last_talk_minute[b.id] = now
         b.state.last_talk_minute[a.id] = now
         milestone = self._detect_milestone(a, b, f_before, now)
@@ -2092,6 +2132,7 @@ class DecisionEngine:
             y.memory.add(MemoryItem(minute=now, importance=5, kind="conversation",
                                     text=texts.T("stormed_off_other", other=x.id, loc=plan.location)))
             for p_, q_ in ((x, y), (y, x)):
+                mood_mod.nudge(p_, -pacing.MOOD_STORM_OFF, texts.T("note_storm", other=q_.id))
                 r = p_.rel(q_.id)
                 r.friendship -= pacing.DIALOGUE_STORM_OFF_FRIENDSHIP
                 r.trust -= pacing.DIALOGUE_STORM_OFF_TRUST
@@ -2145,7 +2186,7 @@ class DecisionEngine:
         b.state.meetup_with_day[a.id] = day
         for x, y in ((a, b), (b, a)):
             x.memory.add(MemoryItem(
-                minute=now, importance=5, kind="conversation",
+                minute=now, importance=5, kind="conversation", tags=["promise"],
                 text=texts.T("promise_made", other=y.id, loc=loc, when=texts.T("when_" + when), hour=hour)))
         return {"verb": "promise_made", "actor": a.id, "target": b.id, "location": loc, "at": minute}
 

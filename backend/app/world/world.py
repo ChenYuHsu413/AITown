@@ -54,6 +54,7 @@ class Location:
     revenue_week: float = 0.0   # takings since the last Sunday (reset in the weekly settlement)
     closed_days: list[int] = field(default_factory=list)  # weekly days off (0=Mon..6=Sun); no takings then
     broken: bool = False     # equipment fault -> 0.6x takings until Long repairs it (see engine)
+    closed_on: int = 0       # sim day (1-based) the owner chose not to open (see agents/dayplan.py)
     # World objects that live here. Each: {"id", "name", "state": in_progress|completed,
     # "progress": 0.0-1.0, "created_by": agent_id}. Pure Level-0 state; the creator's
     # `work` here nudges progress (see advance_landmark).

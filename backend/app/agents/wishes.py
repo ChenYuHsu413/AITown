@@ -1056,6 +1056,11 @@ def structural_collision(agent: "Agent", reqs, day: int) -> tuple:
 # ---- material -----------------------------------------------------------------
 
 
+def _mood_line(agent: "Agent", world: "World") -> str:
+    from . import mood as mood_mod
+    return mood_mod.describe(agent, world)
+
+
 def generation_material(agent: "Agent", world: "World", day: int, residue: str = "") -> dict:
     """Everything the reflection is allowed to build a wish out of, assembled by
     rules. Biography first: those lines are the sediment of the life so far, and they
@@ -1100,6 +1105,7 @@ def generation_material(agent: "Agent", world: "World", day: int, residue: str =
         "recent_completed": [{"title": w.title, "ended_on": w.ended_on}
                              for w in recent_wishes(agent, day) if w.status == "completed"],
         "personality": dict(agent.profile.personality),
+        "mood": _mood_line(agent, world),
         "capacity": {s: capacity_left(agent, s) for s in SCALES},
         "in_pursuit": agent.chapter is not None and agent.chapter.chapter_type == "pursuit",
     }

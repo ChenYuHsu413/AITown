@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from ..agents import chapters as chapters_mod
+from .. import pacing
+from ..agents import mood as mood_mod
 from ..agents import texts
 from ..agents import wishes as wishes_mod
 from ..agents.agent import Agent
@@ -181,6 +183,7 @@ _EN_TEMPLATES = {
     "promise_made": "{actor} and {target} promised to meet at {loc}",
     "promise_missed": "{actor} and {target} had promised to meet at {loc}, but it never happened",
     "stormed_off": "{actor} walked away from {target} mid-conversation",
+    "skipped_work": "{actor} didn't go to work today",
     "chapter_closed": "{actor} closed a chapter of their life — {text}",
     "chapter_started": "{actor} began a new chapter: {text}",
     # Wish beats are deliberately content-free: the intention itself is private.
@@ -197,7 +200,7 @@ CHRONICLE_VERBS = {
     "rain_start", "rain_end", "festival_start", "festival_end",
     "leak", "secret_born", "week_close", "transition", "milestone",
     "romance_dating", "romance_rejected", "romance_partners", "breakdown", "repaired",
-    "met_up", "chapter_closed", "chapter_started", "stormed_off", "promise_missed",
+    "met_up", "chapter_closed", "chapter_started", "stormed_off", "promise_missed", "skipped_work",
 }
 CHRONICLE_ICONS = {
     "confide": "🤫", "confronted": "⚖️", "landmark_done": "🎨", "belief": "💭",
@@ -205,7 +208,7 @@ CHRONICLE_ICONS = {
     "festival_end": "🎏", "leak": "🕳️", "secret_born": "🔒", "week_close": "📅",
     "transition": "🔀", "milestone": "🤝",
     "romance_dating": "💕", "romance_rejected": "💔", "romance_partners": "💍",
-    "breakdown": "🛠️", "repaired": "🔧", "met_up": "🫂", "stormed_off": "💢", "promise_missed": "⌛",
+    "breakdown": "🛠️", "repaired": "🔧", "met_up": "🫂", "stormed_off": "💢", "promise_missed": "⌛", "skipped_work": "🛋️",
     "chapter_closed": "📖", "chapter_started": "📗",
 }
 
@@ -308,6 +311,9 @@ class SimulationEngine:
         self._reflecting: set[str] = set()          # agents with a reflection in flight
         self._tasks: set[asyncio.Task] = set()      # live background tasks (kept referenced)
         self._dialogue_sem = asyncio.Semaphore(DIALOGUE_MAX_CONCURRENT)
+        self._plan_sem = asyncio.Semaphore(4)       # morning plans: ten small calls at the turn of the day
+        self._planning: set[str] = set()
+        self.plan_stats = {"plans": 0, "changed": 0, "skipped_work": 0, "dropped_slots": 0}
         self._reflect_sem = asyncio.Semaphore(REFLECT_MAX_CONCURRENT)
         # Dialogue patient-retry observability (surfaced at /api/usage as proof the
         # retry is doing its job). ``retried`` = conversations that failed the first
@@ -525,6 +531,9 @@ class SimulationEngine:
                     importance=imp))
                 if mood:
                     owner.state.mood = mood
+                    mood_mod.nudge(owner, pacing.MOOD_REVENUE * (1 if mood == "happy" else -1),
+                                   texts.T("note_revenue_high" if mood == "happy" else "note_revenue_low",
+                                           loc=loc.id))
                 self._publish(
                     "action", "day_summary", actor=owner,
                     location_id=loc.id, text=f"cafe revenue ${x:.0f}",
@@ -555,6 +564,7 @@ class SimulationEngine:
                 if owner is not None:
                     owner.state.money -= ag.profile.daily_wage
             ag.semantic.decay()   # unreinforced impressions fade a little each day
+            mood_mod.decay(ag)    # feelings soften overnight
         if week_close:            # a chronicle beat: the week's books closed, with the shop-vs-shop takings
             detail = " vs ".join(f"{{loc:{lid}}} ${rev:.0f}" for lid, rev in week_rev.items())
             self._publish("system", "week_close", detail=detail)
@@ -572,6 +582,51 @@ class SimulationEngine:
             self.decisions._maybe_ignite(agent, self.world, self.now)
         self._maybe_break_equipment()   # a place or two may fault today -> work for Long
         self._roll_meetups()            # social initiative: friends arrange to meet today
+        self._roll_day_plans()          # everyone wakes up deciding how to spend today
+
+    def _roll_day_plans(self) -> None:
+        """The morning micro-decision, one background call per resident (agents/
+        dayplan.py). Residents are asleep at the turn of the day, so the plan is in
+        place before they wake; a resident whose call fails lives the usual day."""
+        day = self._last_day + 1
+        for agent in self.world.agents.values():
+            if agent.id in self._planning:
+                continue
+            self._planning.add(agent.id)
+            self._spawn(self._day_plan_task(agent, day))
+
+    async def _day_plan_task(self, agent: Agent, day: int) -> None:
+        plan = None
+        try:
+            async with self._plan_sem:
+                plan = await self.decisions.plan_day(agent, self.world, day, self.now)
+        except Exception as err:
+            print(f"[dayplan] {agent.id} day {day}: no plan ({err!r}) -- the usual day stands", flush=True)
+        finally:
+            self._planning.discard(agent.id)
+        if plan is not None:
+            self.apply_day_plan(agent, plan)
+
+    def apply_day_plan(self, agent: Agent, plan: dict) -> None:
+        """Install a validated plan: the intent becomes the resident's own memory; a
+        skipped work day is a beat, and an owner who skips shuts the shop today."""
+        if self.now // DAY_MIN + 1 != plan["day"]:
+            return                                   # it arrived after its day was over
+        agent.state.day_plan = plan
+        if plan.get("intent"):
+            agent.memory.add(MemoryItem(minute=self.now, importance=3, kind="reflection",
+                                        text=texts.T("day_intent", text=plan["intent"])))
+        self.plan_stats["plans"] += 1
+        self.plan_stats["changed"] += bool(plan["slots"] or plan["skip_work"])
+        self.plan_stats["dropped_slots"] += len(plan.get("dropped") or [])
+        if plan.get("skip_work"):
+            self.plan_stats["skipped_work"] += 1
+            agent.memory.add(MemoryItem(minute=self.now, importance=4, kind="reflection",
+                                        text=texts.T("skipped_work_self")))
+            for loc in self.world.locations.values():
+                if loc.owner == agent.id and loc.price > 0:
+                    loc.closed_on = plan["day"]
+            self._publish("action", "skipped_work", actor=agent, location_id=agent.state.location)
 
     def _roll_meetups(self) -> None:
         """Once a day, residents may arrange to meet a friend later today (live only; see
@@ -850,7 +905,9 @@ class SimulationEngine:
             if promised:    # a meeting they promised each other in conversation: kept
                 for x, y in ((a, b), (b, a)):
                     x.memory.add(MemoryItem(minute=self.now, importance=5, kind="conversation",
+                                            tags=["promise"],
                                             text=texts.T("promise_kept", other=y.id, loc=a.state.location)))
+                    mood_mod.nudge(x, pacing.MOOD_PROMISE_KEPT, texts.T("note_promise_kept", other=y.id))
             self._publish("action", "met_up", actor=a, target=b, location_id=a.state.location,
                           detail="promised" if promised else "")
         # Lock both. ``_in_dialogue`` is the authoritative lock + settlement token;
@@ -1168,6 +1225,7 @@ class SimulationEngine:
         if not wishes_mod.finish(wish, status, day, reason):
             return
         self.wish_stats[status] = self.wish_stats.get(status, 0) + 1
+        mood_mod.nudge(agent, pacing.MOOD_WISH.get(status, 0.0), texts.T(f"note_wish_{status}"))
         self._emit_wish_record(wish)
         # Content-free public beat: the outcome is visible, the intention is not.
         self._publish("system", "wish_closed", actor=agent,
@@ -1309,6 +1367,8 @@ class SimulationEngine:
             wishes_mod.finish(linked, record.outcome, record.ended_on,
                               reason or f"the linked chapter closed via {trigger}")
             self.wish_stats[record.outcome] = self.wish_stats.get(record.outcome, 0) + 1
+            mood_mod.nudge(agent, pacing.MOOD_WISH.get(record.outcome, 0.0),
+                           texts.T(f"note_wish_{record.outcome}"))
             self._emit_wish_record(linked)
             self._publish("system", "wish_closed", actor=agent,
                           location_id=agent.state.location, text=record.outcome, minute=at)

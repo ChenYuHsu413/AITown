@@ -81,6 +81,12 @@ class AgentState:
     pending_meetup: dict | None = None      # {"partner": id, "location": id, "minute": abs sim-min}
     last_meetup_day: int = -100             # sim-day this agent last INITIATED a meetup (per-person throttle)
     meetup_with_day: dict[str, int] = field(default_factory=dict)  # partner_id -> sim-day last met (per-pair throttle)
+    # Mood as a light continuous state under the label (see agents/mood.py): -1..1,
+    # plus the latest weighty cause as a template line.
+    mood_valence: float = 0.0
+    mood_note: str = ""
+    # Today's own plan from the morning micro-decision (see agents/dayplan.py).
+    day_plan: dict | None = None
 
 
 @dataclass

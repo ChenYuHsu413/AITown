@@ -68,6 +68,8 @@ def _baseline_reject(parsed: object, task: str) -> str | None:
     if task in ("translate", "distort", "leak", "summary"):
         if "text" in parsed and _is_garbage_text(parsed.get("text")):
             return "garbage text"
+    if task == "day_plan" and "intent" in parsed and _is_garbage_text(parsed.get("intent")):
+        return "garbage intent"
     if task in ("dialogue_turn", "dialogue_turn_tense"):
         if _is_garbage_text(parsed.get("text")):
             return "garbage dialogue turn"
@@ -105,6 +107,7 @@ TASK_TIERS: dict[str, str] = {
     "dialogue": "normal",
     "dialogue_turn": "normal",          # one line of a turn-by-turn conversation
     "dialogue_turn_tense": "smart",     # a line of a confide/confront/confession/wish-bearing talk
+    "day_plan": "normal",               # the morning micro-decision, once per resident per day
     "reflection": "smart",
     "life_goal_update": "smart",
     "chapter_closure": "smart",   # rare (once per closed chapter); see agents/chapters.py

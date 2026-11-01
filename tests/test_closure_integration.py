@@ -119,6 +119,9 @@ class ClosureFlow(unittest.TestCase):
 
         def rate(ps):
             return (sum(1 for _, _, txt in ps if "installation" in own_half(txt)) / len(ps)) if ps else 0.0
+        # "Before" = while the pursuit was actually live: the landmark can finish on its
+        # own inside days 1-3, and a prompt after that natural close is not "before".
+        before = [p for p in before if p[0] < closed[0][0]]
         r_before, r_after = rate(before), rate(after)
         # what surfaces after closure must be the biography (place/topic), not the old context
         after_at_park = [p for p in after if p[1] == "park"]

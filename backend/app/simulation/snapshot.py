@@ -61,7 +61,11 @@ if TYPE_CHECKING:
 #             talked, the relationship baseline deltas are measured from, and recent
 #             digests. Absent on a v13 snapshot: deltas measure from the restored
 #             relationships and every pair's next talk counts as its first.
-SCHEMA_VERSION = 14
+#   v14 -> v15: activation -- mood_valence / mood_note / day_plan ride the agent
+#             state dict, a promised meetup carries "promised", a location carries
+#             closed_on. Absent on a v14 snapshot: even mood, no plan (the usual
+#             day), no unplanned closure.
+SCHEMA_VERSION = 15
 
 
 # ---- capture -------------------------------------------------------------
@@ -82,6 +86,7 @@ def capture(engine: "SimulationEngine", world: "World", decisions: "DecisionEngi
                 "revenue_week": loc.revenue_week,
                 "landmarks": [dict(lm) for lm in loc.landmarks],
                 "broken": loc.broken,
+                "closed_on": loc.closed_on,
             }
             for lid, loc in world.locations.items()
         },
@@ -162,6 +167,8 @@ def restore(payload: dict, engine: "SimulationEngine", world: "World",
                 loc.landmarks = [dict(lm) for lm in (ldata.get("landmarks") or []) if isinstance(lm, dict)]
             if "broken" in ldata:        # v10+; older snapshots load un-broken
                 loc.broken = bool(ldata["broken"])
+            if "closed_on" in ldata:     # v15+; older snapshots: no unplanned closure
+                loc.closed_on = int(ldata["closed_on"] or 0)
 
     if "active_effects" in payload:
         world.active_effects = [dict(e) for e in (payload.get("active_effects") or [])]

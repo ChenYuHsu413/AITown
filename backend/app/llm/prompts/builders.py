@@ -302,7 +302,8 @@ def dialogue_turn_prompt(ctx: dict, history: list[dict], turn_no: int, max_turns
         f"{other} has said aloud. You cannot see into {other}'s head, and you never decide what "
         f"{other} feels, does or agrees to. Ground the line in the conversation so far and in "
         f"{me}'s own life; when something real is on {me}'s mind, don't fall back on generic "
-        f"small talk. Respond ONLY with JSON: {fields}\n"
+        f"small talk. Keep {me}'s way of speaking, but don't open every line the same way or "
+        f"repeat a catchphrase line after line. Respond ONLY with JSON: {fields}\n"
         f"- text: what {me} says now, aloud, 1-3 short sentences.\n"
         f"- end: true when this line closes the conversation (a goodbye, or nothing left to say).\n"
         f"- sentiment / trust_signal / conflict_signal: how the exchange feels to {me} right now "
@@ -355,6 +356,59 @@ def dialogue_turn_prompt(ctx: dict, history: list[dict], turn_no: int, max_turns
     elif turn_no >= max_turns:
         pace += " It is the last line: let it close the conversation."
     lines.append(pace)
+    return [{"role": "system", "content": system}, {"role": "user", "content": "\n".join(lines)}]
+
+
+def day_plan_prompt(agent: "Agent", mat: dict) -> list[dict]:
+    """The morning micro-decision (agents/dayplan.py): one resident, waking up,
+    deciding how they want to spend today. Everything in it is their own."""
+    me = agent.name
+    system = (
+        f"You decide how ONE resident of a small town, {me}, wants to spend today, as they "
+        f"wake up. Most days are ordinary and that is fine: if nothing pulls at {me}, say so "
+        f"(nothing_special: true) and keep the usual day. When something does -- yesterday, a "
+        f"mood, a wish, a promise, a chapter that has stalled -- let it shape today in a small, "
+        f"concrete way. You decide only {me}'s own day: never what anyone else does or feels, "
+        f"and sleep is not yours to change. Respond ONLY with JSON: "
+        '{"intent": "...", "nothing_special": true|false, "skip_work": 0..1, '
+        '"slots": [{"from": 14, "to": 16, "place": "<place name>", "doing": "visit|rest|idle|work|eat"}]}'
+        "\n- intent: one first-person sentence: how they mean to spend today, and why."
+        "\n- slots: at most 3 changes to the usual day, whole hours from 7 to 22, each at most "
+        "4 hours; [] when nothing changes. \"visit\" means spending time at a place."
+        "\n- skip_work: how much they want to skip work today, honestly (0 = not at all). "
+        "Only meaningful on a work day."
+        + roster_directive() + roster_gender_directive() + _lang_directive()
+        + dialogue_locale_directive() + " Task: day_plan."
+    )
+    head = f"Today is Day {mat['day']}, {mat['dow']}"
+    if mat.get("rain"):
+        head += ", and it is raining"
+    if mat.get("off"):
+        head += ". It is your day off"
+    lines = [head + ".",
+             f"You are {character_card(agent)} Your mood: {mat['mood']}. "
+             f"By nature you are {mat['duty']}. Money on hand: {mat['money']}.",
+             "Your usual day:\n" + "\n".join(f"- {u}" for u in mat["usual"])]
+    if mat.get("yesterday") or mat.get("talked"):
+        y = "Yesterday:"
+        if mat.get("yesterday"):
+            y += "\n" + "\n".join(f"- {m}" for m in mat["yesterday"])
+        if mat.get("talked"):
+            y += "\nYou talked with: " + ", ".join(mat["talked"]) + "."
+        lines.append(y)
+    if mat.get("wishes"):
+        lines.append("What you want right now:\n" + "\n".join(f"- {w}" for w in mat["wishes"]))
+    if mat.get("chapter"):
+        lines.append(mat["chapter"])
+    if mat.get("promise"):
+        lines.append(mat["promise"])
+    if mat.get("people"):
+        p = "People closest to you: " + ", ".join(mat["people"]) + "."
+        if mat.get("tense"):
+            p += " Things are tense with: " + ", ".join(mat["tense"]) + "."
+        lines.append(p)
+    lines.append("Places in town: " + ", ".join(mat["places"]) + ".")
+    lines.append(f"How does {me} want to spend today?")
     return [{"role": "system", "content": system}, {"role": "user", "content": "\n".join(lines)}]
 
 
@@ -565,6 +619,8 @@ def chapter_closure_prompt(agent: "Agent", material: dict, outcome: str,
                 f"Day {material['window']['end_day']} (about {material['window']['days']} days).\n"
                 f"Memories from this chapter:\n{mems}\n"
                 f"People during this chapter:\n{rels}"
+                + ("\nPromises during this chapter:\n" + "\n".join(f"  - {p}" for p in material["promises"])
+                   if material.get("promises") else "")
                 + aftermath
             ),
         },
@@ -611,6 +667,8 @@ def wish_generation_prompt(agent: "Agent", material: dict, rejection: str = "") 
         for w in material.get("recent_completed") or [])
     residue = (f"\nHow the last chapter left them feeling: {material['residue']}."
                if material.get("residue") else "")
+    if material.get("mood"):
+        residue += f"\nTheir mood these days: {material['mood']}."
     traits = ", ".join(f"{k} {v}" for k, v in sorted(material["personality"].items()))
     cap = material["capacity"]
     allowed_scales = [s for s in ("major", "minor") if cap.get(s, 0) > 0]

@@ -214,7 +214,7 @@ def build_router(live: bool | None = None) -> LLMRouter:
 
     # Turn-by-turn lines ride the dialogue fallback chain; the Claude head below then
     # picks Haiku or Sonnet by each task's tier.
-    for t in ("dialogue_turn", "dialogue_turn_tense"):
+    for t in ("dialogue_turn", "dialogue_turn_tense", "day_plan"):
         if "dialogue" in task_chains:
             task_chains[t] = list(task_chains["dialogue"])
 

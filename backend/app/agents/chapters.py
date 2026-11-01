@@ -351,8 +351,12 @@ def closure_material(agent: "Agent", world: "World", chapter: Chapter, now: int,
     most = sorted(talks.items(), key=lambda kv: -kv[1])[:3]
     helpers = [oid for oid, _ in most if agent.rel(oid).trust >= 60]
     friction = [oid for oid, r in agent.relationships.items() if r.conflict >= 20]
+    # Promises made, kept or missed while the chapter ran (tagged at the source).
+    promises = [m.text for m in agent.memory.items
+                if "promise" in (m.tags or []) and start_min <= m.minute < end_excl][-6:]
     return {
         "chapter": chapter.to_dict(),
+        "promises": promises,
         "window": {"start_minute": start_min, "end_minute": end_min,
                    "start_day": start_min // DAY_MIN + 1, "end_day": end_min // DAY_MIN + 1,
                    "days": max(1, (end_min - start_min) // DAY_MIN + 1)},
