@@ -62,6 +62,10 @@ to the repo.** With none set, the app runs on the mock provider with no DB.
 | `GEMINI_API_KEY` | Gemini models (used when `AI_TOWN_LIVE=1`) | leave unset |
 | `AI_TOWN_DB_URL` | PostgreSQL+pgvector persistence; unset = in-memory | leave unset |
 | `AI_TOWN_RESUME` | `0` = ignore the last snapshot and start fresh at Day 1 (only relevant with a DB; default resumes) | leave unset |
+| `ANTHROPIC_API_KEY` | Claude heads every chain when set: Haiku (`claude-haiku-5-5`) for cheap/normal tasks, Sonnet (`claude-sonnet-5-5`) for smart ones; every other provider stays behind it as fallback | leave unset |
+| `AI_TOWN_BUDGET_USD` | Hard spend cap; once reached every call falls to the free mock (default `10`; `<=0` = no cap) | leave unset |
+| `AI_TOWN_LANG` | `zh-TW` = the zh-native town: all knowledge and rule-layer text is written in Traditional Chinese at the source (no translation layer); default `en` | leave unset |
+| `AI_TOWN_PACE_*` | Tempo overrides, see `backend/app/pacing.py` (e.g. `AI_TOWN_PACE_ORDINARY_EVERY=3`, `AI_TOWN_PACE_DIALOGUE_CAP=20`) | leave unset |
 
 > Note: the live/mock split for the **server** is driven by `AI_TOWN_LIVE`; the
 > `run_day.py` script uses a `--live` flag instead. Either way, mock is the
@@ -334,6 +338,14 @@ python scripts/archive_run.py --run <run_id> --note "..." --execute  # stop the 
 |---|---|---|---|
 | `e6afdde6…` | Beta 紀元 | Day 1–106 | closed by note only (predates the flag) |
 | `f2024443…` | 正式紀元 (formal era) | Day 1 06:00 – Day 132 00:30 | **archived**, read-only |
+| (next boot) | 新紀元 (zh-native era) | from Day 1 | live: zh-native text, Claude-first chain, narrative layer, faster tempo |
+
+**Igniting a new era.** Archive the live run (above), then simply boot the server:
+the latest snapshot belongs to an archived run, so it opens a new run at Day 1
+and writes that run's first snapshot at once. From then on every restart resumes
+the new run. The formal era's English knowledge keeps its translations in
+`translation_cache`; the zh-native era writes Chinese at the source and never
+calls the translator.
 
 The formal era ran Day 1–131; the last 30 minutes of Day 132 are the boot
 acceptance after the move to local Postgres (one wish grown, `9f33dbbb`). Its two

@@ -26,9 +26,28 @@ during migration — switch to structured rendering, then ignore `text`.
   "location": "cafe",          // location id ("" if none)
   "location_name": "Moonlight Cafe",
   "speech": "",                // generated free text ONLY (dialogue line / insight)
-  "text": "Alice started talking with Bob at Moonlight Cafe"  // DEPRECATED
+  "text": "Alice started talking with Bob at Moonlight Cafe",  // DEPRECATED
+  "tier": "notable",           // major | notable | ambient (narrative layer, see below)
+  "detail": ""                 // optional richer context for the chronicle
 }
 ```
+
+### Tiers (narrative layer, `backend/app/simulation/narrative.py`)
+
+Every event is stamped by rule from its verb when it is published, and stored in
+`events.tier` (NULL on rows written before the layer existed — never backfilled):
+
+| tier | verbs |
+|---|---|
+| `major` | `wish_born`, `wish_seeded`, `wish_closed`, `chapter_closed`, `chapter_started`, `confronted`, `romance_dating`, `romance_rejected` |
+| `notable` | `wish_frustrated`, `milestone`, `romance_partners`, `confide`, `leak`, `transition`, `landmark_done`, and a pair's **first** `talk_start` of the run (seeded friends are not strangers) |
+| `ambient` | everything else |
+
+`wish_frustrated` is content-free (actor only): a wish's setback, surfaced at the
+daily settlement at the minute its private memory was written. The day's
+major/notable beats become one sentence in `daily_digests`
+(`/api/digests`, `/api/day/{day}`); relationship moves land in
+`relationship_deltas` (`/api/relationship_history`).
 
 Notes:
 
