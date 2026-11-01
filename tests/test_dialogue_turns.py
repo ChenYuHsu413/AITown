@@ -173,6 +173,14 @@ class Consequences(unittest.TestCase):
         self.assertFalse(any("closing early" in m.text for m in world.agents["jiji"].memory.items
                              if m.kind == "conversation" and "told me" in m.text))
 
+    def test_the_same_news_restated_lands_once_per_speaker(self):
+        world, *_ = self._talk([line("I've been thinking about the bakery.", tells="Jiji is worried about the bakery."),
+                                line("Oh?"),
+                                line("It may close early.", tells="Jiji says the bakery may close early this week."),
+                                line("I see.", end=True)])
+        told = [m.text for m in world.agents["lengyue"].memory.items if "told me" in m.text]
+        self.assertEqual(told, [texts.T("told_me", teller="jiji", text="Jiji says the bakery may close early this week.")])
+
     def test_a_promise_needs_both_voices_and_becomes_an_appointment(self):
         world, engine, plan, res, settled, _ = self._talk([
             line("Coffee tomorrow at the cafe?", plan={"place": "Tide Cafe", "day": "tomorrow", "hour": 15}),

@@ -1860,8 +1860,11 @@ class DecisionEngine:
             per_call_timeout=DIALOGUE_PROVIDER_TIMEOUT_S, no_floor=True)
         return dayplan_mod.validate(res.parsed, agent, world, day)
 
-    _ROMANCE_PHRASE = {"crushing": "you have a crush on them", "dating": "you two are dating",
-                       "partners": "you two are partners"}
+    # A crush is carried privately: saying it out loud is the romance track's call
+    # (a confession scene arrives as an explicit intent), never a line's whim.
+    _ROMANCE_PHRASE = {"crushing": "you have feelings for them that you have not told them, "
+                                   "and you are not ready to say them out loud",
+                       "dating": "you two are dating", "partners": "you two are partners"}
 
     def _speaker_ctx(self, me: Agent, other: Agent, world: World, now: int, mems: list,
                      impression: str | None, intents: list, role: str, scene: dict,
@@ -2108,18 +2111,18 @@ class DecisionEngine:
         pair and is a beat the town sees."""
         a, b = plan.a, plan.b
         beats: list[dict] = []
-        told = 0
+        # One piece of news per speaker per conversation: a speaker restates the same
+        # thing line after line, and the last version is usually the fullest.
+        last_tell: dict[str, str] = {}
         for t in turns:
-            if told >= pacing.DIALOGUE_TELLS_MAX:
-                break
             tell = t.get("tells") or ""
-            if not tell or len(tell) > 120 or not _knowledge_lang_ok(tell):
-                continue
-            listener = b if t.get("speaker_id") == a.id else a
+            if tell and len(tell) <= 120 and _knowledge_lang_ok(tell):
+                last_tell[t.get("speaker_id", "")] = tell
+        for speaker_id, tell in list(last_tell.items())[:pacing.DIALOGUE_TELLS_MAX]:
+            listener = b if speaker_id == a.id else a
             listener.memory.add(MemoryItem(
                 minute=now, importance=4, kind="conversation",
-                text=texts.T("told_me", teller=t.get("speaker_id", ""), text=tell)))
-            told += 1
+                text=texts.T("told_me", teller=speaker_id, text=tell)))
         promise = self._promise_from(plan, world, turns, now)
         if promise is not None:
             beats.append(promise)
