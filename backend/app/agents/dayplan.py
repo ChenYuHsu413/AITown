@@ -121,7 +121,10 @@ def material(agent: "Agent", world: "World", decisions, day: int) -> dict:
            if "action" in (m.tags or []) and m.minute >= day_start - 7 * DAY][-4:]
     return {
         "day": day, "dow": _DOW[(day - 1) % 7], "rain": bool(world.effect_active("rain")),
-        "off": off_today(agent, world, day), "mood": mood_mod.describe(agent, world),
+        # A day off is also any day the timetable simply has no work in it (a weekend).
+        "off": off_today(agent, world, day)
+               or not any(act == "work" for _, _, act, _ in routine_segments(agent, day)),
+        "mood": mood_mod.describe(agent, world),
         "duty": _duty(agent), "usual": usual, "yesterday": yesterday, "talked": talked,
         "wishes": wishes, "chapter": chapter, "people": people, "tense": tense,
         "promise": promise, "places": places, "money": int(agent.state.money),
@@ -225,6 +228,10 @@ def validate(raw: object, agent: "Agent", world: "World", day: int) -> dict:
             dropped.append("bad hours"); continue
         doing = str(s.get("doing") or "").strip().lower()
         loc = _place(world, agent, s.get("place"))
+        from .decision import DecisionEngine
+        named = world.locations.get(DecisionEngine._place_id(world, str(s.get("place") or "")))
+        if not loc and named is not None and named.kind == "home":
+            dropped.append("someone else's home"); continue
         if not (7 <= fr < to <= 22) or to - fr > pacing.DAYPLAN_MAX_SLOT_HOURS:
             dropped.append("hours out of range"); continue
         if doing not in DOING_ACTION:

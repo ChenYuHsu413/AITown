@@ -71,7 +71,7 @@ class Validate(unittest.TestCase):
 
     def test_someone_elses_home_is_refused_but_ones_own_is_fine(self):
         p = self.v("jiji", slots=[slot(14, 16, "Slopeview Flats"), slot(17, 18, "home")])
-        self.assertEqual(p["dropped"], ["no such place"])
+        self.assertEqual(p["dropped"], ["someone else's home"])
         self.assertEqual(p["slots"][0]["location"], "home_a")
 
     def test_a_meal_out_needs_the_money(self):
