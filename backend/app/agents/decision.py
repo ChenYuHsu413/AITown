@@ -2310,11 +2310,15 @@ class DecisionEngine:
         for i, t in enumerate(turns):
             tell = str(t.get("tells") or "").strip()
             sid = t.get("speaker_id", "")
-            if not tell or len(tell) > 120 or sid not in per or not _knowledge_lang_ok(tell):
-                continue
             prev = turns[i - 1] if i else None
             answer = bool(prev and prev.get("speaker_id") != sid
                           and self._QUESTION_RE.search(str(prev.get("text", "")).strip()))
+            if answer and not tell:
+                # An answer the model didn't mark as news ("I never handled it, I don't
+                # know") is still the answer the listener came for: keep the line itself.
+                tell = texts.T("answered", text=str(t.get("text", "")).strip()[:100])
+            if not tell or len(tell) > 120 or sid not in per or not _knowledge_lang_ok(tell):
+                continue
             items = per[sid]
             dup = next((k for k, (x, _a) in enumerate(items) if self._same_news(x, tell)), None)
             if dup is None:

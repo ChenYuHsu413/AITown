@@ -309,6 +309,14 @@ class AnswersLand(unittest.TestCase):
         self.assertEqual(ans.importance, 5)                               # bears on her active wish
         self.assertIn("answer", ans.tags)
 
+    def test_an_answer_not_marked_as_news_still_lands(self):
+        """Era 3, D7: Long asked who wrote the unsigned letter; Oula said he never
+        handled it -- no news marked, so nothing reached Long."""
+        lines = [line("早啊。"), line("那封沒署名的信,你知不知道是誰寫的?"),
+                 line("沒署名的信我這趟還真沒經手,誰寫的我哪知道。"), line("算了。", end=True)]
+        told = self.run_talk(lines, azong_wish=False)
+        self.assertTrue(any("沒經手" in m.text and "answer" in m.tags for m in told), [m.text for m in told])
+
     def test_an_answer_unrelated_to_her_aims_lands_at_the_usual_weight(self):
         told = self.run_talk(self.AZONG_CASE, azong_wish=False)
         ans = next(m for m in told if "掛號信已經送到" in m.text)

@@ -155,6 +155,7 @@ _CATALOGUE: dict[str, tuple[str, str]] = {
     "fail_tired": ("I was too tired", "太累了"),
     "fail_time": ("the hour slipped by", "時間錯過了"),
     # turn-by-turn dialogue consequences
+    "answered": ("when I asked, the answer was: \"{text}\"", "我問了之後,得到的回答是:「{text}」"),
     "told_me": ("{{agent:{teller}}} told me: {text}", "{{agent:{teller}}}跟我說:{text}"),
     "stormed_off_self": ("Things went sour with {{agent:{other}}} at {{loc:{loc}}} and I walked away.",
                          "在{{loc:{loc}}}和{{agent:{other}}}話不投機,我轉身走了。"),
