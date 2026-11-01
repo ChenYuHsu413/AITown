@@ -276,5 +276,5 @@
   },
 
   "residents": {"speed": 4.2, "maxTrip": 2.4, "talkGap": 1.15, "sleepLift": 0.41, "seatY": 0.46},
-  "camera": {"target": [4, 1, 2], "distance": 90, "azimuth": 32, "elevation": 22, "fov": 34, "shift": 0.22, "shiftX": 0.12, "min": 16, "max": 150, "focus": 30, "ease": 0.08, "pitchMin": 20, "pitchMax": 70, "damping": 0.86}
+  "camera": {"target": [4, 1, 2], "distance": 90, "azimuth": 32, "elevation": 22, "fov": 34, "shift": 0.22, "shiftX": 0.12, "min": 16, "max": 150, "focus": 30, "ease": 0.08, "pitchMin": 20, "pitchMax": 70, "damping": 0.86, "keySpeed": 0.9, "keyFast": 2.5}
 }

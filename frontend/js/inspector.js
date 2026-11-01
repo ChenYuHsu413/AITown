@@ -1,7 +1,7 @@
 // The resident inspector: the operator's god's-eye view (/api/agents/{id}). This is the
 // ONLY place a wish's private text (title / statement / requirements) is shown.
 import {store, nav, getJSON} from './store.js';
-import {agentName, locName, locByEn, occName, traitName, actName, moodZh, resolve, chapterTitle,
+import {agentName, locName, locByEn, hhmm, occName, traitName, actName, moodZh, resolve, chapterTitle,
   REQ_KIND_ZH, WISH_STATUS_ZH, SCALE_ZH, CHAPTER_TYPE_ZH, OUTCOME_ZH, CAST} from './names.js';
 import {Avatar, Icon, Num} from './ui.js';
 
@@ -27,7 +27,10 @@ export default {
   created() { this.timer = setInterval(() => { if (this.id && !this.loading) this.load(false); }, 5000); },
   beforeUnmount() { clearInterval(this.timer); },
   methods: {
-    agentName, occName, traitName, actName, moodZh, resolve, chapterTitle, locByEn,
+    agentName, occName, traitName, actName, moodZh, resolve, chapterTitle, locByEn, hhmm, locName,
+    // light mood: shown only when the backend has one (old snapshots: null / 0 and no note)
+    hasMood(a) { return typeof a.mood_valence === 'number' && (a.mood_valence !== 0 || !!a.mood_note); },
+    moodPos(v) { return (Math.max(-1, Math.min(1, v)) + 1) * 50 + '%'; },
     async load(fresh) {
       const id = this.id; this.loading = true;
       if (fresh) this.error = '';
@@ -110,7 +113,19 @@ export default {
           <div><dt>精力</dt><dd><span class="bar"><i :style="{width: a.state.energy + '%'}"></i></span><Num class="mono" :v="a.state.energy"/></dd></div>
           <div><dt>金錢</dt><dd class="mono">$<Num :v="a.state.money"/></dd></div>
           <div v-for="g in a.goals" :key="g.goal"><dt>目標</dt><dd>{{ resolve(g.goal) }}</dd></div>
+          <div v-if="hasMood(a)" class="mood-row"><dt>心緒</dt><dd>
+            <span class="mood-meter" :title="'低落 ← → 愉快'"><i class="mid"></i><b :style="{left: moodPos(a.mood_valence)}" :class="{neg: a.mood_valence < -0.15, pos: a.mood_valence > 0.15}"></b></span>
+          </dd></div>
+          <p v-if="hasMood(a) && a.mood_note" class="mood-note">{{ resolve(a.mood_note) }}</p>
         </dl>
+        <section v-if="a.today_plan" class="plan">
+          <h3>今日打算</h3>
+          <p v-if="a.today_plan.intent" class="plan-intent">{{ resolve(a.today_plan.intent) }}</p>
+          <p v-if="a.today_plan.skip_work" class="plan-skip">今天沒去上班</p>
+          <ul v-if="(a.today_plan.slots || []).length" class="plan-slots">
+            <li v-for="(s, i) in a.today_plan.slots" :key="i"><time>{{ hhmm(s.from) }}–{{ hhmm(s.to) }}</time><span>{{ locName(s.location) }}</span><span v-if="s.action" class="muted">{{ actName(s.action) }}</span></li>
+          </ul>
+        </section>
 
         <nav class="index-tabs" role="tablist">
           <button v-for="t in TABS" :key="t[0]" role="tab" :aria-selected="tab === t[0]" :class="{active: tab === t[0]}" @click="tab = t[0]">{{ t[1] }}</button>

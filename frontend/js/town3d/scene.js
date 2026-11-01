@@ -427,7 +427,7 @@ export class TownScene {
     const K = this.keys, f = (K.has('b') ? 1 : 0) - (K.has('f') ? 1 : 0), r = (K.has('r') ? 1 : 0) - (K.has('l') ? 1 : 0);
     if (!f && !r) return;
     this.stopFollow(); this.goal = null;
-    const az = this.cam.az, v = this.cam.dist * 0.35 * (this.keyFast ? 2.5 : 1) * dt, n = Math.hypot(f, r);
+    const C_ = this.S.camera, az = this.cam.az, v = this.cam.dist * C_.keySpeed * (this.keyFast ? C_.keyFast : 1) * dt, n = Math.hypot(f, r);   // scales with zoom: a constant share of the screen per second
     this.cam.target.x += (Math.cos(az) * r + Math.sin(az) * f) / n * v;
     this.cam.target.z += (-Math.sin(az) * r + Math.cos(az) * f) / n * v;
     this.clampTarget();
