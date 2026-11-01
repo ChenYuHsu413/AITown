@@ -178,7 +178,7 @@ and pgvector memory retrieval:
 4. Redeploy. On boot the server runs `CREATE EXTENSION IF NOT EXISTS vector`,
    creates every table in `backend/app/db/models.py` (`simulation_runs`, `events`,
    `memories`, `llm_calls`, `world_snapshots`, `snapshot_archive`, `chapters`,
-   `wishes`, `wish_attempts`, `daily_digests`, `relationship_deltas`, and the legacy
+   `wishes`, `wish_attempts`, `daily_digests`, `relationship_deltas`, `public_objects`, and the legacy
    `translation_cache`) and switches memory retrieval to pgvector cosine search.
    Without `AI_TOWN_DB_URL` it stays fully in-memory, exactly as before.
 

@@ -48,6 +48,17 @@
 - **約見**:居民會主動約人在某地見面,對方可以婉拒。
 - 關係(友誼 / 信任 / 衝突)、里程碑、人生轉變(辭職、到店裡上工、自由接案)、經濟(薪資、店家營收、週結算)、天氣、慶典、設備故障與維修。
 
+**活化:對話、自由意志、行動、心情**
+- **逐輪對話**(`agents/decision.py`):一句一次呼叫,每一句只用說話者自己的脈絡生成,包括對對方的記憶、最近掛心的事、自己的願望全文、私事、心情和對對方的看法,再加上目前為止的逐字稿。
+  雙方掌握的資訊不對等;模型可以自己結束對話,上限 8 句;傾訴、對質、告白至少 4 句。日常對話走 Haiku,傾訴、對質、告白、牽涉願望的對話走 Sonnet。
+  後果由規則從結構化欄位讀出:轉告的消息變成聽者的記憶;雙方都說出口的見面計畫變成真的約定(守約或落空都會被記住);一方轉身走人就是「不歡而散」,雙方關係下降。
+- **起床微決策**(`agents/dayplan.py`):每天換日時,每位居民用一次 Haiku 呼叫決定「今天想怎麼過」。「沒什麼特別」是合法而且常見的答案。
+  規則決定其餘的事:今天的打算優先於願望驅力,願望驅力優先於作息;睡眠永遠不動。去別人家不行,錢不夠不行。想翹班時,翹班意願要超過本人的盡責度才成立;店主翹班,店就關一天,沒有營收,上門的客人會記得。
+- **自由行動與公共物件**(`agents/actions.py`):晨間打算最多能附帶 2 件自己想做的小事。到了時間由規則判定成敗。
+  失敗(錢不夠、店沒開、下雨、太累、錯過時間)本身就是一個事件,也會留下「想做但沒做成」的記憶。成功時會真的扣錢、留下本人的記憶,在場的人有機會看見。
+  如果留下了東西,就成為那個地點的公共物件:寫進 `public_objects`,出現在之後那裡的每個場景(描述會隨時間淡化),經過的人有機會記住它。
+- **心情**(`agents/mood.py`):在原有心情標籤之下,另有一個 -1..1 的連續值,由對話感受、不歡而散、守約或落空、願望收束、當天營收推動,每晚減半,並記住最近一個原因。它會進入對話脈絡、起床決策和願望生成。
+
 **敘事層**(`simulation/narrative.py`,純規則、不呼叫模型)
 - 每個事件依動詞標成 `major` / `notable` / `ambient`(例如願望誕生、章節轉折、對質、告白屬 major)。
 - **每日摘要**:每天結算時,把當天的 major / notable 事件寫成一句話(`/api/digests`)。
@@ -60,7 +71,7 @@
 - **寧慢勿假**:對話與反思整條鏈失敗時不會端出罐頭句,而是稍等一下再把整條鏈重跑一次;輸出還要過品質關卡(空字串、敷衍的 "ok"、截斷的 JSON、中文亂碼、代名詞指涉錯誤)。
 
 **持久化**(選用,設定 `AI_TOWN_DB_URL`)
-- Postgres + pgvector:事件、記憶(向量檢索)、LLM 花費帳本、世界快照、章節 / 願望 / 生成嘗試帳本、每日摘要、關係變化、破壞性操作前的 `snapshot_archive` 備份。
+- Postgres + pgvector:事件、記憶(向量檢索)、LLM 花費帳本、世界快照、章節 / 願望 / 生成嘗試帳本、每日摘要、關係變化、公共物件、破壞性操作前的 `snapshot_archive` 備份。
 - 快照與續跑:重啟後從上次的快照接著跑;舊快照缺少新欄位時照樣載入。
 - 紀元封存:`simulation_runs.archived` 標記的 run 唯讀、不再續跑,但仍可回放。
 
@@ -141,7 +152,8 @@ docker run -d --name aitown-pg --restart unless-stopped \
 | `AI_TOWN_UNATTENDED_SPEED` | 無人觀看時的巡航速度 | `2` |
 | `AI_TOWN_SYNC_CALL_TIMEOUT` | tick 內 / 同步小呼叫的單一 provider 逾時(秒) | `10` |
 | `AI_TOWN_DIALOGUE_PROVIDER_TIMEOUT` | 對話的單一 provider 逾時(秒) | `60` |
-| `AI_TOWN_DIALOGUE_TIMEOUT` | 整段對話生成的外層保險逾時(秒) | `90` |
+| `AI_TOWN_DIALOGUE_TIMEOUT` | 對話外層保險逾時的基數(秒;逐輪對話乘上 句數上限 ÷ 2) | `90` |
+| `AI_TOWN_DIALOGUE_CONCURRENCY` | 同時生成中的對話數 | `6` |
 | `AI_TOWN_DIALOGUE_RETRY_ROUNDS` / `_WAIT` | 對話整條鏈失敗後的重跑輪數 / 等待秒數 | `2` / `30` |
 | `AI_TOWN_REFLECT_RETRY_ROUNDS` / `_WAIT` | 反思的重跑輪數 / 等待秒數(用盡則略過,不端罐頭) | `2` / `20` |
 | `AI_TOWN_GATE_DIAG` | `1` = 把品質關卡的拒絕原因寫進 log | 未設 |
@@ -156,6 +168,16 @@ docker run -d --name aitown-pg --restart unless-stopped \
 | `AI_TOWN_PACE_SPAN_MAJOR` / `_SPAN_MINOR` | 大 / 小願望的建議期限(模擬日) | `14` / `7` |
 | `AI_TOWN_PACE_INTERLUDE_MIN` / `_INTERLUDE_MAX` | 章節收束後空白期長度範圍(模擬日) | `2` / `4` |
 | `AI_TOWN_PACE_DIALOGUE_CAP` | 每日對話上限(live) | `20` |
+| `AI_TOWN_PACE_DIALOGUE_MAX_TURNS` / `_DIALOGUE_INTIMATE_MIN_TURNS` | 每場對話句數上限 / 傾訴、對質、告白的最少句數 | `8` / `4` |
+| `AI_TOWN_PACE_DIALOGUE_TELLS_MAX` | 一場對話最多留下幾筆「誰跟我說」記憶(每位說話者一筆) | `2` |
+| `AI_TOWN_PACE_DIALOGUE_TENSE_TRUST_MARGIN` | 信任度離傾訴門檻多近就改走 Sonnet | `5` |
+| `AI_TOWN_PACE_DIALOGUE_STORM_OFF_FRIENDSHIP` / `_TRUST` | 不歡而散時雙方的友誼 / 信任降幅 | `4` / `3` |
+| `AI_TOWN_PACE_MOOD_*` | 心情權重:`TALK_WEIGHT` 0.4、`CONFLICT_WEIGHT` 0.3、`DAILY_DECAY` 0.5、`STORM_OFF` 0.3、`PROMISE_KEPT` 0.2、`PROMISE_MISSED` 0.15、`WISH_COMPLETED` 0.4、`WISH_FAILED` 0.3、`WISH_ABANDONED` 0.05、`REVENUE` 0.15 | 見左 |
+| `AI_TOWN_PACE_DAYPLAN_MAX_SLOTS` / `_MAX_SLOT_HOURS` / `_STUCK_DAYS` | 晨間打算最多改幾段、每段最長幾小時、追求章節幾天沒進展算卡住 | `3` / `4` / `3` |
+| `AI_TOWN_PACE_FREE_ACTIONS_PER_DAY` / `_FREE_ACTION_MAX_COST` | 每天最多幾件自由行動 / 一件最多花多少錢 | `2` / `30` |
+| `AI_TOWN_PACE_ACTION_WITNESS_P` / `_OBJECT_NOTICE_P` | 在場者看見行動 / 路過者記住公共物件的機率 | `0.5` / `0.6` |
+| `AI_TOWN_PACE_OBJECTS_PER_PLACE` | 每個地點場景裡最多顯示幾件公共物件(更舊的仍留在資料庫) | `8` |
+| `AI_TOWN_PACE_FRESH_DAYS` | 完成的東西被描述成「新」的天數 | `7` |
 
 **遺留變數(目前不起作用)**:顯示層翻譯已退役(`server.py` 的 `TRANSLATION_RETIRED = True`,繁中原生時代直接寫中文),
 `AI_TOWN_TRANSLATE_MODEL`、`AI_TOWN_TRANSLATE_RETRY_MAX`、`AI_TOWN_TRANSLATE_RETRY_WAIT` 雖然還會被讀取,但翻譯流程已經不會執行到,只剩舊紀元的翻譯快取還在回應。
@@ -193,6 +215,7 @@ flowchart TB
     CH["chapters.py<br/>pursuit / interlude / ordinary · closure"]
     WI["wishes.py<br/>lifecycle · drive · novelty gates · abandonment"]
     TX["texts.py<br/>zh-TW / en rule-layer text"]
+    ACT["dayplan.py · actions.py · mood.py<br/>morning plan · free actions · public objects · mood"]
     OTH["core · agent · routine · romance · transitions"]
   end
 
@@ -207,7 +230,7 @@ flowchart TB
   end
 
   subgraph DB["db/ (optional, AI_TOWN_DB_URL)"]
-    PER["persistence.py · models.py<br/>Postgres + pgvector: events · memories · snapshots<br/>chapters · wishes · wish_attempts · digests · deltas · archive"]
+    PER["persistence.py · models.py<br/>Postgres + pgvector: events · memories · snapshots<br/>chapters · wishes · wish_attempts · digests · deltas · public_objects · archive"]
   end
 
   SEED["data/seed.py<br/>10 residents · 7 locations"]
@@ -220,6 +243,7 @@ flowchart TB
   DEC --> CH & WI & SOC
   CH & WI --> PACE
   DEC --> TX
+  DEC --> ACT
   DEC --> RT
   CH & WI --> RT
   FAC --> RT --> PR
@@ -243,11 +267,6 @@ flowchart TB
 
 ## 路線圖
 
-- **進行中(活化計畫)**,尚未落地:
-  - 逐輪對話,雙方掌握的資訊不對等
-  - 每日醒來時的「自由意志」小決定
-  - 自由行動與公共物件
-  - 心情狀態
 - **第三階段剩餘工作**:結構化猜測、謠言 × 願望的交互。
 - **小鎮報紙**。
 
