@@ -145,7 +145,9 @@ class Sim:
         self.engine = SimulationEngine(self.world, DecisionEngine(self.router))
         seed_secrets(self.engine.decisions.secrets)   # fresh start; a resume overwrites from the snapshot
         self.speed: float = DAY_SPEED    # sim minutes per real second (fixed daytime pace)
-        self.paused: bool = False
+        # AI_TOWN_START_PAUSED=1: boot frozen (a fix deployed while the developer holds
+        # the clock must not set it running); "play" from the UI or /api/control resumes.
+        self.paused: bool = os.environ.get("AI_TOWN_START_PAUSED") == "1"
         self._frac: float = 0.0
         self._new_events: list[Event] = []
         self.engine.bus.subscribers.append(self._new_events.append)

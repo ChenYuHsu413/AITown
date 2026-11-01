@@ -157,6 +157,7 @@ docker run -d --name aitown-pg --restart unless-stopped \
 | `AI_TOWN_DIALOGUE_RETRY_ROUNDS` / `_WAIT` | 對話整條鏈失敗後的重跑輪數 / 等待秒數 | `2` / `30` |
 | `AI_TOWN_REFLECT_RETRY_ROUNDS` / `_WAIT` | 反思的重跑輪數 / 等待秒數(用盡則略過,不端罐頭) | `2` / `20` |
 | `AI_TOWN_GATE_DIAG` | `1` = 把品質關卡的拒絕原因寫進 log | 未設 |
+| `AI_TOWN_START_PAUSED` | `1` = 開機後保持暫停,直到有人按繼續(在時鐘凍結期間部署修正時使用) | 未設 |
 
 **節奏(`AI_TOWN_PACE_<NAME>`,見 `backend/app/pacing.py`)**
 
