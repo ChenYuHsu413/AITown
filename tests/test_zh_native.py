@@ -250,7 +250,15 @@ class MockFloorSpeaksChinese(unittest.TestCase):
 
 class ClaudeFirst(unittest.TestCase):
     def test_claude_heads_every_chain_when_a_key_is_set(self):
-        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "AI_TOWN_LANG": "zh-TW"}):
+        # Self-contained: fake keys for every provider, and the repo .env is never read
+        # (env._loaded), so this runs the same on any machine, with or without a .env.
+        env = {k: v for k, v in os.environ.items()
+               if not k.endswith("_API_KEY") and not k.startswith("AI_TOWN_")}
+        env.update({k: "test-key" for k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
+                                            "OPENROUTER_API_KEY")})
+        env["AI_TOWN_LANG"] = "zh-TW"
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("backend.app.llm.env._loaded", True):
             router = build_router(live=True)
         heads = {t: f"{c[0].name}/{c[0].model}" for t, c in router.tiers.items()}
         self.assertEqual(heads["cheap"], "anthropic/claude-haiku-5-5")
