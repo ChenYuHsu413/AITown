@@ -39,6 +39,8 @@ everything else under `frontend/` is served at `/static/` (for example `frontend
 | `js/pixmap.js` | The village map on PixiJS: camera, residents, lights, weather, bubbles. |
 | `js/pixelart.js` | Programmatic pixel art: residents, buildings, props, critters, ground. No third-party assets. |
 | `js/threads.js` | Conversation threads (one conversation = one card) for the live column and the chronicle. |
+| `js/ui.js`, `js/icons.js` | Small shared components (avatars, ...) and the inline line-icon set (no icon dependency). |
+| `town3d.html`, `css/glass.css`, `js/town3d/` | The 3-D validation slice at `/town3d-preview` (see below). |
 | `map/town.json` | The tile world: the fountain plaza, building doors, curved paths (also the walking routes), anchors, aprons, ground patches, props, lamps. |
 
 ## One event source
@@ -147,3 +149,21 @@ in low quality. The current tier is shown on the canvas as `data-quality`.
 
 The map's ticker stops while the village view is hidden. Users who set "reduce motion" in their
 system keep the walking, but lose the decorative motion.
+
+## The 3-D validation slice (`/town3d-preview`)
+
+A standalone page, separate from the live UI at `/`, that tests a Townscaper-style 3-D
+direction. It is a validation slice, not the full town: one island with one café and a
+corner of the plaza on moving water, plus two residents.
+
+- **Files.** `town3d.html` (its own import map: Vue `3.5.13` and three.js `0.186.1` from
+  jsdelivr), `css/glass.css` (the dark "glass observatory" panels, this page only),
+  `js/town3d/main.js` (the Vue shell), `js/town3d/world.js` (the scene) and
+  `js/town3d/slice.json` (the scene description).
+- **Generated, not modelled.** Every mesh is built from `slice.json` (rounded boxes,
+  slab roofs, windows, doors, awnings) with vertex colours only: no model files and no
+  textures.
+- **Clock-driven light.** The sun's angle and colour follow the sim clock; the renderer
+  uses ACES tone mapping, soft shadows and GTAO ambient occlusion.
+- **Read-only reuse.** It reuses the store (WebSocket, paced dialogue), the zh display
+  layer and the live column component without changing the main page.

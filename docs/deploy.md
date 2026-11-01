@@ -52,7 +52,9 @@ docker compose up --build
 ## Environment variables
 
 All optional. **Set them only in the platform's env settings — never commit them
-to the repo.** With none set, the app runs on the mock provider with no DB.
+to the repo.** With none set, the app runs on the mock provider with no DB. This
+table covers a first deploy; the full list (pacing, retry and timeout knobs) is in
+the README's environment-variable table.
 
 | Variable | Purpose | First deploy |
 |---|---|---|
@@ -173,10 +175,12 @@ and pgvector memory retrieval:
 
 3. Install the persistence deps if you slim them out later — they're already in
    `requirements.txt` (`sqlalchemy`, `asyncpg`, `pgvector`).
-4. Redeploy. On boot the server creates the `events`, `memories`, `llm_calls`,
-   `simulation_runs`, `world_snapshots` tables and switches memory retrieval to
-   pgvector cosine search. Without `AI_TOWN_DB_URL` it stays fully in-memory,
-   exactly as before.
+4. Redeploy. On boot the server runs `CREATE EXTENSION IF NOT EXISTS vector`,
+   creates every table in `backend/app/db/models.py` (`simulation_runs`, `events`,
+   `memories`, `llm_calls`, `world_snapshots`, `snapshot_archive`, `chapters`,
+   `wishes`, `wish_attempts`, `daily_digests`, `relationship_deltas`, and the legacy
+   `translation_cache`) and switches memory retrieval to pgvector cosine search.
+   Without `AI_TOWN_DB_URL` it stays fully in-memory, exactly as before.
 
 ---
 
@@ -213,7 +217,7 @@ zero-ops alternative to running your own database. It works with the same
 
 pgvector needs no manual setup — the app runs `CREATE EXTENSION IF NOT EXISTS
 vector` on boot, and Supabase ships the extension. On first boot it creates all
-five tables and (if a prior snapshot exists) resumes the town from it.
+the app's tables and (if a prior snapshot exists) resumes the town from it.
 
 > **Free-tier caveats.** Supabase's free project **pauses after 7 days of
 > inactivity** (any query resets the clock; a paused project must be restored
@@ -338,7 +342,7 @@ python scripts/archive_run.py --run <run_id> --note "..." --execute  # stop the 
 |---|---|---|---|
 | `e6afdde6…` | Beta 紀元 | Day 1–106 | closed by note only (predates the flag) |
 | `f2024443…` | 正式紀元 (formal era) | Day 1 06:00 – Day 132 00:30 | **archived**, read-only |
-| (next boot) | 新紀元 (zh-native era) | from Day 1 | live: zh-native text, Claude-first chain, narrative layer, faster tempo |
+| `7b977300…` | 新紀元 (zh-native era) | from Day 1 (started from the seed) | live: zh-native text, Claude-first chain, narrative layer, faster tempo |
 
 **Igniting a new era.** Archive the live run (above), then simply boot the server:
 the latest snapshot belongs to an archived run, so it opens a new run at Day 1

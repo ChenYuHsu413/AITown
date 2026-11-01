@@ -45,6 +45,9 @@ curl "$B/api/secrets"; curl "$B/api/rumors"; curl "$B/api/usage"; curl "$B/api/r
 
 Scripts (stop the server first, dry run by default): `scripts/archive_run.py`,
 `scripts/fix_wish_born.py`, `scripts/backfill_chapters.py`, `scripts/reclose_chapter.py`.
+`scripts/backfill_chapter_ledger.py` (also dry run by default) is the one exception
+that is safe while the server runs: it only inserts chapter-ledger rows the server
+has not written.
 
 ## Endpoints
 
@@ -112,9 +115,11 @@ curl -X POST localhost:8000/god/close_chapter -H 'Content-Type: application/json
 
 ### `POST /god/seed_wish`
 
-Hands a resident a structured private intention (see
-`backend/app/agents/wishes.py`). Phase 2a seeds wishes by hand; generating one
-from a resident's own history is 2b.
+Hands a resident a structured private intention by hand (see
+`backend/app/agents/wishes.py`). Residents also grow wishes from their own history
+on their own (phase 2b, the `wish_generation` task); this endpoint is for testing
+and for deliberate operator seeding, and its wishes are recorded as `seeded`
+rather than grown.
 
 **SAFE BY DEFAULT:** `validate_only` defaults to `true` and only returns the
 feasibility report. Send `{"validate_only": false}` to actually seed (that path
@@ -144,19 +149,18 @@ still accrues progress from real events; the drive simply never chases it, so it
 never records a blocked day, never breeds frustration, and cannot be the
 requirement that justifies a major.
 
-**Privacy, and one accepted exception.** `title` / `statement` / `motivation` are
-private: they never enter another resident's prompt, another resident's memory, a
-public event, or the chronicle. Public beats are content-free (`wish_seeded`
-carries only the scale; a wish-linked chapter's beats say "a private chapter").
+**Privacy.** `title` / `statement` / `motivation` are private: they never enter
+another resident's prompt, another resident's memory, a public event, or the
+chronicle. Public beats are content-free (`wish_seeded` carries only the scale; a
+wish-linked chapter's beats say "a private chapter").
 
-The one place the private wording does leave the process is the **display-layer
-translation cache**: a major wish's chapter title and narrative are English
-knowledge text, so a zh run sends them to the translation provider like any
-biography line or belief. This has been reviewed and accepted — it is the same
-path phase 1 already uses for chapter and biography text, the operator's own
-inspector is the only reader, and no other resident's context is involved. If a
-future deployment needs the wording to stay in-process, seed the chapter
-narrative in the display language and skip the translate round-trip.
+In the formal era (English knowledge text) a major wish's chapter title and
+narrative were sent to the display-layer translation provider, an exception that
+was reviewed and accepted. That path is now retired (`TRANSLATION_RETIRED` in
+`backend/app/server.py`): the zh-native era writes Chinese at the source, so no
+wish wording is sent to a translator any more. Only the formal era's existing
+`translation_cache` rows still answer lookups (and `/api/admin/translations*`
+only manage that legacy cache).
 
 ### The `wish_attempts` table (generation ledger, read-only)
 

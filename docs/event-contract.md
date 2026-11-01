@@ -1,6 +1,7 @@
 # Event Contract v1 — Structured Simulation Events
 
-Audience: the frontend (and, in phase 2, the `events` DB table).
+Audience: the frontend and the `events` DB table (with `AI_TOWN_DB_URL` set,
+every event is also persisted there).
 Backend guarantees this shape for every event delivered over WebSocket
 (`type: "snapshot"` → `events[]`, and `type: "tick"` → `events[]`).
 
@@ -19,14 +20,14 @@ during migration — switch to structured rendering, then ignore `text`.
   "clock": "Day 1 12:32",
   "kind": "action",            // action | dialogue | reflection | system
   "verb": "talk_start",        // see verb table below
-  "actor": "alice",            // agent id ("" if none)
-  "actor_name": "Alice",       // denormalized display name (English)
-  "target": "bob",             // agent id, only for talk_start / say
-  "target_name": "Bob",
+  "actor": "jiji",             // agent id ("" if none)
+  "actor_name": "ㄐㄐ",         // denormalized: the resident's name from data/seed.py
+  "target": "ange",            // agent id (talk partner, confidant, ...; "" if none)
+  "target_name": "安哥",
   "location": "cafe",          // location id ("" if none)
-  "location_name": "Moonlight Cafe",
+  "location_name": "Tide Cafe",  // the location's English name (zh: name_zh in the snapshot)
   "speech": "",                // generated free text ONLY (dialogue line / insight)
-  "text": "Alice started talking with Bob at Moonlight Cafe",  // DEPRECATED
+  "text": "ㄐㄐ started talking with 安哥 at Tide Cafe",  // DEPRECATED
   "tier": "notable",           // major | notable | ambient (narrative layer, see below)
   "detail": ""                 // optional richer context for the chronicle
 }
@@ -53,12 +54,12 @@ Notes:
 
 - `actor` / `target` / `location` are stable IDs — join against the
   `locations` and `agents` arrays from the snapshot for localized names.
-  (`*_name` fields are English conveniences; for zh display, map IDs to
-  your own zh name table exactly as you already do for the map.)
-- `speech` is model-generated content and stays in whatever language the
-  model produced (English under mock). Never template-translate it.
+  (`*_name` fields are conveniences; the zh display layer maps IDs through
+  its own table in `frontend/js/names.js`.)
+- `speech` is generated content in the run's language (`AI_TOWN_LANG`; the
+  mock provider writes Chinese too in a zh run). Never template-translate it.
 
-## Verb table (complete for v1)
+## Verb table (core verbs)
 
 | kind       | verb        | fields used                    | EN template                                  | zh-TW template（建議）              |
 |------------|-------------|--------------------------------|----------------------------------------------|-------------------------------------|
@@ -76,29 +77,44 @@ Notes:
 | system     | (reserved)  | —                              | —                                            | —                                   |
 
 Life-chapter events (see `backend/app/agents/chapters.py`): `chapter_closed` fires
-once per closed *pursuit* chapter with the first-person English biography line in
-`speech` (translate for zh display, like `insight`) and `outcome ∈ completed | failed |
-abandoned` at the head of `detail`. `chapter_started` fires when a new non-interlude
-chapter opens (today: the interlude lapsing into ordinary days; phase 2: a generated
-wish). Both are chronicle beats and land in the `events` table; the queryable ledger
-is the `chapters` table.
+once per closed *pursuit* chapter with the first-person biography line in `speech`
+(written in the run's language) and `outcome ∈ completed | failed | abandoned` at the
+head of `detail`. `chapter_started` fires when a new non-interlude chapter opens:
+the interlude lapsing into ordinary days, or a grown / seeded major wish opening a
+pursuit (then `speech` is the neutral "a private chapter", never the wish's wording).
+Both are chronicle beats and land in the `events` table; the queryable ledger is the
+`chapters` table.
 
-Unknown verbs may appear in future versions (rumors, conflicts, world
-events). **Frontend must fall back gracefully**: if a verb has no
-template, render the deprecated `text` field as-is.
+### Other verbs
 
-## Migration checklist for the frontend
+The engine emits more verbs than the core table above; most of their English fallback
+templates live in `_EN_TEMPLATES` in `backend/app/simulation/engine.py` and their zh
+phrasing in `frontend/js/names.js`:
 
-1. Replace regex parsing of `ev.text` with template rendering keyed on
-   `ev.verb`, using the tables above (keep your existing zh location/name
-   maps; key them by `ev.location` / `ev.actor` IDs).
+- movement and world: `move`, `seek_out`, `broke`, `rain_start`, `rain_end`,
+  `festival_start`, `festival_end`, `breakdown`, `repaired`, `landmark_done`,
+  `week_close`, `day_summary`
+- social: `share_rumor`, `confide`, `leak`, `secret_born`, `confronted`, `belief`,
+  `milestone`, `transition`
+- meetups: `meetup_arranged`, `meetup_declined`, `met_up`
+- romance: `romance_dating`, `romance_rejected`, `romance_partners`
+- wishes (content-free; the intention itself is private): `wish_seeded`,
+  `wish_born`, `wish_frustrated`, `wish_closed`
+
+New verbs may still be added. **Frontend must fall back gracefully**: if a
+verb has no template, render the deprecated `text` field as-is.
+
+## Rendering rules for a frontend
+
+The current UI (`frontend/js/names.js`) already follows these:
+
+1. Render from `ev.verb` with per-language templates keyed by the
+   `ev.location` / `ev.actor` IDs; never regex-parse `ev.text`.
 2. Speech bubbles: trigger on `kind === "dialogue"`, position by
-   `ev.actor` (an agent ID — no more name-string matching), content from
-   `ev.speech`.
-3. Reflection feed styling: trigger on `kind === "reflection"`.
-4. Keep the unknown-verb fallback to `ev.text`.
-5. After switching, `ev.text` is unused by your code (it will be removed
-   in Event Contract v2, when events move into PostgreSQL).
+   `ev.actor` (an agent ID), content from `ev.speech`.
+3. Reflection styling: trigger on `kind === "reflection"`.
+4. Keep the unknown-verb fallback to `ev.text` (the only remaining use of
+   `text`; it is still delivered for that reason).
 
 ## Stability promise
 
