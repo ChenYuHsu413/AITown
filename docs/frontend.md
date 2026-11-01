@@ -57,6 +57,24 @@ the minute the conversation began. It stamps each `say` line at that minute plus
 index. A thread's key is therefore (unordered pair, `talk_start` minute), and a `say` belongs to
 the latest thread of its pair that started at or before the line's minute.
 
+## Map depth and density
+
+- **Shadows.** Everything that stands on the ground has two shadows: a soft contact shadow at
+  its feet, and a cast silhouette whose length and direction follow the sun. The cast shadow
+  points west in the morning, is short at noon, falls long to the east in the late afternoon,
+  and disappears at night.
+- **Elevation.** The plaza is a raised platform: a lit rim, a shaded stone face on its visible
+  side, and steps wherever a path meets it. Door aprons have a two-step front edge. Retaining
+  ledges (`ledges` in `map/town.json`) have a lit grass lip, a stone face, and steps where a
+  path crosses them. The riverbank sits below the grass, with an earth face.
+- **Density.** The open ground has grass-colour variation, tufts, pebbles, clover, flowers and
+  footpaths (`trails`). Bushes, tall grass, flower clumps, rocks, stumps and logs are scattered
+  through it (`scatter`), and woodland frames the town along the north, east and south edges
+  (`forest`).
+- **Placement rules.** Scattered items and the woodland are placed procedurally but
+  deterministically, so the town looks the same on every load. They stay clear of buildings,
+  paths, plazas, props and the spots where residents stand.
+
 ## Map performance
 
 The static ground is baked once into a single texture. Each building and prop is one sprite.

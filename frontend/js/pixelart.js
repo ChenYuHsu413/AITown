@@ -128,7 +128,8 @@ export function decorCanvas(type) {
   const T = {tree:[32, 42], pine:[24, 44], blossom:[32, 40], shrub:[18, 12], flowers:[30, 12], lamp:[8, 30], bench:[24, 14],
     board:[22, 26], crate:[12, 10], barrel:[10, 12], basket:[12, 8], fountain:[40, 30], sign:[16, 16],
     washline:[40, 20], woodpile:[22, 12], mailbox:[8, 16], pot:[8, 10], well:[24, 26], bike:[20, 13], terrace:[28, 29],
-    sandwich:[12, 16], sacks:[18, 12], postbox:[10, 18], stall:[28, 28]}[type] || [8, 8];
+    sandwich:[12, 16], sacks:[18, 12], postbox:[10, 18], stall:[28, 28],
+    bush:[22, 15], rock:[12, 8], grass:[12, 9], bloom:[10, 8], stump:[12, 9], log:[22, 9]}[type] || [8, 8];
   const c = canvas(T[0], T[1]), x = c.getContext('2d'), P = (a, b, w, h, col) => { x.fillStyle = col; x.fillRect(a, b, w, h); };
   const blob = (cx, cy, r, col) => { for (let j = -r; j <= r; j++) { const w = Math.round(Math.sqrt(r * r - j * j)); P(cx - w, cy + j, 2 * w + 1, 1, col); } };
   if (type === 'tree') {
@@ -191,6 +192,13 @@ export function decorCanvas(type) {
     P(2, 8, 2, 20, '#6a4a2e'); P(24, 8, 2, 20, '#6a4a2e'); for (let i = 0; i < 28; i += 4) P(i, 2, 4, 7, (i / 4) % 2 ? '#f4efe6' : '#7a9a3a');
     P(2, 18, 24, 9, '#a57a48'); P(2, 18, 24, 2, '#c49558'); for (let i = 0; i < 7; i++) P(4 + i * 3, 15, 3, 3, ['#e04848', '#f2a83a', '#6aa848', '#8e6fb3'][i % 4]);
   }
+  if (type === 'bush') { blob(11, 9, 6, '#3f6e3a'); blob(7, 8, 4, '#4f8746'); blob(15, 7, 5, '#4a7d40'); blob(9, 6, 3, '#67a057'); P(13, 4, 2, 1, '#7fb76b'); P(5, 7, 1, 1, '#7fb76b');
+    P(6, 9, 1, 1, '#c8402e'); P(14, 10, 1, 1, '#c8402e'); P(10, 5, 1, 1, '#c8402e'); }
+  if (type === 'rock') { P(2, 2, 8, 5, '#9d9686'); P(1, 4, 10, 3, '#8a8374'); P(3, 1, 5, 2, '#c9c2b2'); P(4, 2, 2, 1, '#e0dacd'); P(2, 7, 9, 1, '#6f6a5e'); }
+  if (type === 'grass') { for (let i = 0; i < 6; i++) { const x0 = 1 + i * 2; P(x0, 3 + (i % 3), 1, 6 - (i % 3), i % 2 ? '#5f8f52' : '#6f9a4e'); P(x0, 2 + (i % 3), 1, 1, '#8fbe62'); } }
+  if (type === 'bloom') { P(1, 4, 8, 4, '#5f8f52'); P(2, 2, 2, 2, '#f2d45c'); P(5, 1, 2, 2, '#f4efe6'); P(7, 3, 2, 2, '#e8708a'); P(3, 3, 1, 1, '#c8873c'); }
+  if (type === 'stump') { P(1, 3, 10, 6, '#7a5432'); P(1, 2, 10, 2, '#c8a070'); P(3, 2, 6, 1, '#a8804e'); P(5, 3, 2, 1, '#8a6238'); P(0, 8, 12, 1, '#5e3f24'); }
+  if (type === 'log') { P(1, 2, 18, 6, '#7a5432'); P(1, 2, 18, 2, '#9a6a3e'); P(18, 2, 4, 6, '#c8a070'); P(19, 3, 2, 3, '#a8804e'); P(6, 4, 1, 3, '#5e3f24'); P(12, 5, 1, 2, '#5e3f24'); P(3, 0, 2, 2, '#5f8f52'); }
   if (type === 'fountain') {
     blob(20, 20, 16, '#9d9484'); blob(20, 20, 14, '#b9b09e'); blob(20, 20, 11, '#5b93b8'); blob(18, 18, 4, '#8fc0dc');
     P(18, 6, 4, 14, '#a99f8c'); P(17, 4, 6, 3, '#c9c0ae'); P(19, 1, 2, 4, '#bfe0f0');
@@ -343,7 +351,19 @@ export function groundCanvas(M) {
   const FL = [C('#f4efe6'), C('#f2d45c'), C('#e89ab0'), C('#b9a4e0')], LEAF = [C('#c9843a'), C('#a8642e'), C('#d9a548'), C('#8a6a3a')];
   for (let ty = 0; ty < M.rows; ty++) for (let tx = 0; tx < M.cols; tx++) {
     const cx = tx * T + 8, cy = ty * T + 8;
-    if (hash(tx, ty, 5) < .3) { const px = tx * T + 3 + (hash(tx, ty, 6) * 9 | 0), py = ty * T + 4 + (hash(tx, ty, 7) * 8 | 0); set(px, py, TUFT); set(px + 1, py - 1, TUFT); set(px + 2, py, TUFT); set(px + 1, py, TUFT); }
+    for (let k = 0; k < 2; k++) if (hash(tx, ty, 5 + k * 50) < .45) {   // grass tufts, two sizes
+      const px = tx * T + 2 + (hash(tx, ty, 6 + k * 50) * 11 | 0), py = ty * T + 4 + (hash(tx, ty, 7 + k * 50) * 9 | 0), big = hash(tx, ty, 9 + k * 50) < .4;
+      set(px, py, TUFT); set(px + 1, py - 1, TUFT); set(px + 2, py, TUFT); set(px + 1, py, TUFT);
+      if (big) { set(px - 1, py - 1, TUFT); set(px + 3, py - 1, TUFT); set(px + 1, py - 2, C('#86a862')); set(px, py + 1, DARK); set(px + 2, py + 1, DARK); }
+    }
+    if (hash(tx, ty, 60) < .14) {   // a pebble with a lit top and a shadow
+      const px = tx * T + 2 + (hash(tx, ty, 61) * 12 | 0), py = ty * T + 2 + (hash(tx, ty, 62) * 12 | 0), w = 2 + (hash(tx, ty, 63) * 2 | 0);
+      for (let i = 0; i < w; i++) { set(px + i, py, C('#c9c2b2')); set(px + i, py + 1, C('#9d9686')); set(px + i + 1, py + 2, DARK); }
+    }
+    if (hash(tx, ty, 64) < .1) { const px = tx * T + 3 + (hash(tx, ty, 65) * 10 | 0), py = ty * T + 3 + (hash(tx, ty, 66) * 10 | 0);   // clover
+      set(px, py, C('#6f9a4e')); set(px + 1, py + 1, C('#6f9a4e')); set(px - 1, py + 1, C('#6f9a4e')); set(px, py + 1, C('#8fbe62')); }
+    if (hash(tx, ty, 67) < .015) { const px = tx * T + 6, py = ty * T + 8;   // a mushroom
+      set(px, py, C('#c8402e')); set(px + 1, py, C('#c8402e')); set(px - 1, py + 1, C('#c8402e')); set(px + 2, py + 1, C('#c8402e')); set(px, py + 1, C('#f4efe6')); set(px, py + 2, C('#efe4d0')); set(px + 1, py + 2, C('#efe4d0')); }
     const fr = 0.04 + near(cx, cy, 'flowers') * 0.6;
     for (let k = 0; k < 3; k++) if (hash(tx, ty, 8 + k) < fr) {
       const px = tx * T + 2 + (hash(tx, ty, 11 + k) * 12 | 0), py = ty * T + 2 + (hash(tx, ty, 14 + k) * 12 | 0), f = FL[hash(tx, ty, 17 + k) * 4 | 0];
@@ -359,7 +379,7 @@ export function groundCanvas(M) {
   const mask = new Uint8Array(W * H);
   const disc = (cx, cy, r) => { for (let y = Math.floor(cy - r); y <= cy + r; y++) for (let x = Math.floor(cx - r); x <= cx + r; x++)
     if (x >= 0 && y >= 0 && x < W && y < H && (x - cx) ** 2 + (y - cy) ** 2 <= r * r) mask[y * W + x] = 1; };
-  for (const p of M.paths) {
+  for (const p of [...M.paths, ...(M.trails || [])]) {
     const pts = splinePts(p.pts, 16).map(([x, y]) => [x * T + T / 2, y * T + T / 2]);
     let along = 0;
     for (let i = 0; i < pts.length - 1; i++) {
@@ -382,10 +402,24 @@ export function groundCanvas(M) {
     for (let y = Math.floor(pcy - R - 3); y <= pcy + R + 3; y++) for (let x = Math.floor(pcx - R - 3); x <= pcx + R + 3; x++) {
       const dist = Math.hypot(x - pcx, y - pcy); if (dist > R + 2) continue;
       if (dist > R) { set(x, y, C('#8f8676')); continue; }
+      if (dist > R - 2) { set(x, y, C('#e4dccb')); continue; }   // lit rim
       const ring = Math.floor(dist / 7), ang = Math.atan2(y - pcy, x - pcx) + ring * 0.37, circ = Math.max(1, Math.round(2 * Math.PI * (ring * 7 + 3.5) / 9));
       const seg = Math.floor((ang + Math.PI) / (2 * Math.PI) * circ), fr = ((ang + Math.PI) / (2 * Math.PI) * circ) % 1;
       const mortar = dist % 7 < 1 || fr < 0.09;
       set(x, y, mortar ? MOR : ST[hash(ring, seg, 21) * 4 | 0]);
+    }
+  }
+  if (M.plaza) {   // the platform's face (visible on the south half), steps at the paths
+    const pcx = M.plaza.c[0] * T + T / 2, pcy = M.plaza.c[1] * T, R = M.plaza.r * T + 2, FH = 7;
+    for (let x = Math.floor(pcx - R); x <= pcx + R; x++) {
+      const rimY = Math.round(pcy + Math.sqrt(Math.max(0, R * R - (x - pcx) ** 2)));
+      const stairs = mask[(rimY + 4) * W + x] || mask[(rimY + 1) * W + x];
+      for (let k = 0; k < FH; k++) {
+        const y = rimY + k;
+        if (stairs) set(x, y, k % 3 === 0 ? C('#e0d8c6') : k % 3 === 1 ? C('#bdb4a1') : C('#9e9584'));
+        else set(x, y, k === 0 ? C('#8f8676') : ((x + (k > 3 ? 4 : 0)) % 8 === 0 || k === 3) ? C('#7d7466') : C('#a39a88'));
+      }
+      for (let k = 0; k < 3; k++) { const y = rimY + FH + k; if (!mask[y * W + x]) { const i = (y * W + x) * 4; d[i] *= 0.82 + k * 0.05; d[i + 1] *= 0.82 + k * 0.05; d[i + 2] *= 0.85 + k * 0.05; } }
     }
   }
   // stone aprons in front of doors
@@ -395,7 +429,18 @@ export function groundCanvas(M) {
       const row = ((y - Y0) / 8) | 0, off = row % 2 ? 4 : 0, bx = ((x - X0 + off) / 8) | 0;
       set(x, y, (y - Y0) % 8 === 0 || (x - X0 + off) % 8 === 0 ? MOR : ST[hash(bx, row, 13 + X0) * 3 | 0]);
     }
-    for (let x = X0; x < X1; x++) { set(x, Y1, MOR); set(x, Y1 + 1, C('#8f8676')); }
+    for (let x = X0; x < X1; x++) { set(x, Y1, C('#e0d8c6')); set(x, Y1 + 1, C('#a39a88')); set(x, Y1 + 2, C('#d4ccba')); set(x, Y1 + 3, C('#8f8676')); set(x, Y1 + 4, DARK); }
+  }
+  // retaining ledges: grass above is higher -- lit lip, a stone face, steps where a path crosses
+  for (const [lx0, ly, lx1] of M.ledges || []) {
+    const X0 = Math.round(lx0 * T), X1 = Math.round(lx1 * T), Y = Math.round(ly * T);
+    for (let x = X0; x < X1; x++) {
+      const wob = Math.round(1.5 * Math.sin(x / 13)), y0 = Y + wob, onPath = mask[(y0 + 3) * W + x];
+      if (onPath) { for (let k = 0; k < 7; k++) set(x, y0 + k, k % 3 === 0 ? C('#d9c9a0') : k % 3 === 1 ? C('#bba57a') : C('#9d8a62')); continue; }
+      set(x, y0 - 1, C('#b9d08a'));
+      for (let k = 0; k < 7; k++) set(x, y0 + k, k === 0 ? C('#c9c2b2') : ((x + (k > 3 ? 5 : 0)) % 10 === 0 || k === 3) ? C('#6f6a5e') : (k < 3 ? C('#a39c8c') : C('#8d8677')));
+      for (let k = 0; k < 3; k++) { const y = y0 + 7 + k, i = (y * W + x) * 4; if (y < H) { d[i] *= 0.8 + k * 0.06; d[i + 1] *= 0.8 + k * 0.06; d[i + 2] *= 0.84 + k * 0.05; } }
+    }
   }
   // river along the west edge: wavy bank, sand, foam, deep channel
   const WA = C('#5a8fb4'), WD = C('#477aa1'), WL = C('#78a8c8'), SAND = C('#d9c79a'), SAND2 = C('#c9b585'), FOAM = C('#e2eef2');
@@ -406,6 +451,7 @@ export function groundCanvas(M) {
       else if (x < bank) set(x, y, FOAM);
       else set(x, y, hash(x, y, 15) < .25 ? SAND2 : SAND);
     }
+    for (let k = 0; k < 5; k++) set(bank + 6 + k, y, k === 4 ? C('#b9d08a') : (hash(bank + k, y >> 1, 16) < .3 ? C('#8a6a44') : C('#a07c50')));
   }
   if (M.pond) {
     const [cx, cy, rx, ry] = M.pond.map(v => v * T);

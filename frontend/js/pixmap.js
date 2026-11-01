@@ -8,7 +8,7 @@
 // Camera: drag to pan, wheel / pinch to zoom; clicking a resident calls onAgentClick.
 import {Application, Container, Sprite, Texture, Graphics, Text, TextureSource} from 'pixi.js';
 import {agentName, locName, KINDS, phaseOf} from './names.js';
-import {charCanvas, lookOf, buildingCanvas, decorCanvas, installationCanvas, groundCanvas, glowCanvas, iconCanvas, critterCanvas, splinePts} from './pixelart.js';
+import {charCanvas, lookOf, buildingCanvas, decorCanvas, installationCanvas, groundCanvas, glowCanvas, iconCanvas, critterCanvas, splinePts, hash} from './pixelart.js';
 
 TextureSource.defaultOptions.scaleMode = 'nearest';   // crisp pixel art
 const tok = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -19,6 +19,9 @@ let MAP = null;
 const loadMap = () => MAP || (MAP = fetch('/static/map/town.json').then(r => r.json()));
 const FONT = "'Huninn','Noto Sans TC',sans-serif";
 const DIRS = ['down', 'up', 'left', 'right'];
+const CAST_K = {tree: 1, pine: 1, blossom: 1, bush: 0.7, shrub: 0.6, lamp: 0.55, washline: 0.6, well: 0.8, terrace: 0.8, board: 0.7, stall: 0.8,
+  fountain: 0.5, bench: 0.4, crate: 0.5, barrel: 0.5, sacks: 0.5, postbox: 0.6, mailbox: 0.6, bike: 0.5, sandwich: 0.5, woodpile: 0.4,
+  stump: 0.4, log: 0.3, rock: 0.3, grass: 0, bloom: 0, flowers: 0.2, pot: 0.4, basket: 0.3};
 
 export class VillageMap {
   constructor(el, {onAgentClick, showRevenue = true} = {}) {
@@ -43,10 +46,11 @@ export class VillageMap {
     this.el.appendChild(app.canvas);
     const L = n => { const c = new Container(); c.label = n; return c; };
     this.world = L('world'); app.stage.addChild(this.world);
-    this.ground = L('ground'); this.objects = L('objects'); this.objects.sortableChildren = true;
+    this.ground = L('ground'); this.shade = L('shadows'); this.objects = L('objects'); this.objects.sortableChildren = true;
     this.fx = L('fx'); this.lights = L('lights'); this.labels = L('labels'); this.overlay = L('overlay');
     this.night = new Graphics().rect(0, 0, this.W, this.H).fill(0xffffff); this.night.blendMode = 'multiply';
-    this.world.addChild(this.ground, this.objects, this.fx, this.night, this.lights, this.labels, this.overlay);
+    this.world.addChild(this.ground, this.shade, this.objects, this.fx, this.night, this.lights, this.labels, this.overlay);
+    this.casters = [];
 
     this.ground.addChild(new Sprite(Texture.from(groundCanvas(M))));
     this.tex = {
@@ -54,6 +58,7 @@ export class VillageMap {
       glowPink: Texture.from(glowCanvas(32, '255,150,200')),
       eat: Texture.from(iconCanvas('eat')), work: Texture.from(iconCanvas('work')), zzz: Texture.from(iconCanvas('zzz')), wrench: Texture.from(iconCanvas('wrench')),
     };
+    this.tex.ao = app.renderer.generateTexture(new Graphics().ellipse(0, 0, 16, 5).fill(0x1a1420));
     this.tex.bird = [0, 1].map(f => Texture.from(critterCanvas('bird', f)));
     this.tex.fly = [0, 1].map(f => Texture.from(critterCanvas('butterfly', f)));
     this.tex.puff = Texture.from(critterCanvas('puff')); this.tex.petal = Texture.from(critterCanvas('petal'));
@@ -88,6 +93,7 @@ export class VillageMap {
       const tex = cache[type] || (cache[type] = Texture.from(decorCanvas(type)));
       const s = new Sprite(tex); s.anchor.set(0.5, 1); s.x = Math.round(tx * T + T / 2); s.y = Math.round(ty * T + T); s.zIndex = s.y;
       this.objects.addChild(s);
+      this.cast(s, CAST_K[type] ?? 0.6);
       if (type === 'tree' || type === 'pine' || type === 'blossom') (this.trees = this.trees || []).push(s);
       if (type === 'blossom') (this.blossoms = this.blossoms || []).push(s);
       if (type === 'flowers') (this.flowerBeds = this.flowerBeds || []).push(s);
@@ -96,7 +102,7 @@ export class VillageMap {
     this.lampGlows = [];
     for (const [tx, ty] of this.M.lamps) {
       const x = Math.round(tx * T + T / 2), y = Math.round(ty * T + T);
-      const s = new Sprite(lampTex); s.anchor.set(0.5, 1); s.x = x; s.y = y; s.zIndex = y; this.objects.addChild(s);
+      const s = new Sprite(lampTex); s.anchor.set(0.5, 1); s.x = x; s.y = y; s.zIndex = y; this.objects.addChild(s); this.cast(s, 0.5);
       const g = new Sprite(this.tex.glowWarm); g.anchor.set(0.5); g.x = x; g.y = y - 27; g.scale.set(1.5); g.blendMode = 'add'; g.alpha = 0;
       this.lights.addChild(g); this.lampGlows.push(g);
     }
@@ -135,6 +141,7 @@ export class VillageMap {
         if (art.chimney) b.chimney = {x: d.x - art.w / 2 + art.chimney.x, y: d.y - art.h + art.chimney.y};
       }
       b.spr.x = d.x; b.spr.y = d.y; b.spr.zIndex = d.y - 1; this.objects.addChild(b.spr);
+      if (!meta.landmark) { this.cast(b.spr, 1, b.spr.width * 0.95); b.w = b.spr.width; }
       b.label = new Text({text: locName(l.id) + '\n' + (KINDS[l.kind] || l.kind), resolution: 3,
         style: {fontFamily: FONT, fontSize: 11, fill: 0x2b2520, align: 'center', lineHeight: 12, stroke: {color: 0xfbf7ee, width: 3}}});
       b.label.anchor.set(0.5, 0); b.label.x = d.x; b.label.y = d.y + (meta.landmark ? 6 : 36); b.label.scale.set(1);
@@ -156,7 +163,96 @@ export class VillageMap {
       this.buildings.push(b);
     }
     if (this.state.landmarks) this.updateLandmarks(this.state.landmarks);
+    if (!this.populated) { this.populated = true; this.populate(); }
+    if (this.phase) this.updateShadows();
     if (!this.camSet) this.fit();
+  }
+
+  /* ---------------------------------------------------------------- shadows */
+  // Every building, tree, prop and resident: a soft contact shadow at its feet, plus a
+  // cast silhouette whose length and direction follow the sun (short at noon, long and
+  // to the east late in the day; gone at night).
+  cast(src, k, w) {
+    const ao = new Sprite(this.tex.ao); ao.anchor.set(0.5); ao.x = src.x; ao.y = src.y - 1;
+    ao.scale.set((w || src.width) / 32 * 1.1, Math.max(0.6, (w || src.width) / 60)); ao.alpha = 0.22; this.shade.addChild(ao);
+    let sh = null;
+    if (k > 0) { sh = new Sprite(src.texture); sh.anchor.copyFrom(src.anchor); sh.x = src.x; sh.y = src.y; sh.tint = 0x1a1420; sh.alpha = 0; this.shade.addChild(sh); }
+    const c = {src, ao, sh, k, sx: src.scale.x, sy: src.scale.y}; this.casters.push(c); return c;
+  }
+  updateShadows() {
+    const {n, h} = this.phase, day = 1 - n;
+    const t = Math.max(0, Math.min(1, (h - 6) / 12.5)), dir = (t - 0.5) * 2, L = 0.25 + 0.85 * Math.abs(dir) ** 1.3;
+    const alpha = h < 5.5 || h > 19.5 ? 0 : 0.3 * day;
+    this.sun = {dir, L, alpha};
+    for (const c of this.casters) this.shapeShadow(c);
+  }
+  shapeShadow(c) {
+    const {dir, L, alpha} = this.sun || {dir: 0, L: 0.3, alpha: 0.2};
+    c.ao.alpha = 0.16 + 0.14 * (1 - (this.phase ? this.phase.n : 0));
+    if (!c.sh) return;
+    c.sh.alpha = alpha; c.sh.visible = alpha > 0.01;
+    c.sh.scale.set(c.src.scale.x, c.src.scale.y * (0.35 + 0.6 * L) * c.k);
+    c.sh.skew.x = -dir * (0.25 + 0.95 * L);
+    c.sh.x = c.src.x + dir * 2; c.sh.y = c.src.y;
+  }
+
+  /* ---------------------------------------------------------------- ground cover + woodland */
+  // Fill the open grass so the town never reads as empty: bushes, tall grass, flower
+  // clumps, rocks, stumps, logs -- and frame the town with woodland at the map edges.
+  // Everything is placed deterministically (same town every load) and keeps clear of
+  // buildings, paths, plazas, props and the space where residents stand.
+  populate() {
+    const M = this.M, T = this.T, C = 8, gw = Math.ceil(this.W / C), gh = Math.ceil(this.H / C), occ = new Uint8Array(gw * gh);
+    const mark = (x, y, r) => { for (let gy = Math.floor((y - r) / C); gy <= (y + r) / C; gy++) for (let gx = Math.floor((x - r) / C); gx <= (x + r) / C; gx++)
+      if (gx >= 0 && gy >= 0 && gx < gw && gy < gh) occ[gy * gw + gx] = 1; };
+    const rect = (x0, y0, x1, y1) => { for (let y = y0; y <= y1; y += C / 2) for (let x = x0; x <= x1; x += C / 2) mark(x, y, 1); };
+    const free = (x, y, r) => { for (let gy = Math.floor((y - r) / C); gy <= (y + r) / C; gy++) for (let gx = Math.floor((x - r) / C); gx <= (x + r) / C; gx++)
+      if (gx < 0 || gy < 0 || gx >= gw || gy >= gh || occ[gy * gw + gx]) return false; return true; };
+    for (const b of this.buildings) {
+      const d = b.d;
+      if (b.w) rect(d.x - b.w / 2 - 8, b.top - 6, d.x + b.w / 2 + 8, d.y + 8); else rect(d.x - 40, d.y - 90, d.x + 40, d.y + 8);
+      rect(d.x - 66, d.y, d.x + 66, d.y + 72);   // where residents stand
+    }
+    for (const [ax, ay, aw, ah] of M.aprons) rect(ax * T - 6, ay * T - 6, (ax + aw) * T + 6, (ay + ah) * T + 10);
+    const pc = this.plazaC; mark(pc.x, pc.y, M.plaza.r * T + 26);
+    for (const p of [...M.paths, ...(M.trails || [])]) for (const [x, y] of splinePts(p.pts, 12)) mark(x * T + T / 2, y * T + T / 2, p.w / 2 + (M.trails.includes(p) ? 4 : 9));
+    for (const [, tx, ty] of M.decor) mark(tx * T + T / 2, ty * T + T - 6, 14);
+    for (const [tx, ty] of M.lamps) mark(tx * T + T / 2, ty * T + T - 4, 10);
+    for (const [lx0, ly, lx1] of M.ledges || []) rect(lx0 * T, ly * T - 6, lx1 * T, ly * T + 14);
+    rect(0, 0, M.river.x + 22, this.H);
+    if (M.pond) { const [cx, cy, rx, ry] = M.pond.map(v => v * T); rect(cx - rx - 10, cy - ry - 10, cx + rx + 10, cy + ry + 10); }
+    const tex = {}, place = (type, x, y, opts = {}) => {
+      const t = tex[type] || (tex[type] = Texture.from(decorCanvas(type)));
+      const s = new Sprite(t); s.anchor.set(0.5, 1); s.x = Math.round(x); s.y = Math.round(y); s.zIndex = s.y;
+      if (opts.scale) s.scale.set(opts.scale); if (opts.tint) s.tint = opts.tint;
+      this.objects.addChild(s); this.cast(s, CAST_K[type] ?? 0.4);
+      if (type === 'tree' || type === 'pine') this.trees.push(s);
+      return s;
+    };
+    // woodland along the chosen edges, two to three trees deep, varied in size and shade
+    const F = M.forest || {edges: []}, sp = F.spacing || 22, TINTS = [0xffffff, 0xe8f0e0, 0xd8e6cc, 0xf0f4e8];
+    let i = 0;
+    const tryTree = (x, y) => { i++;
+      if (!free(x, y - 6, 9)) return;
+      place(hash(i, 3) < .55 ? 'pine' : 'tree', x, y, {scale: 0.9 + hash(i, 4) * 0.35, tint: TINTS[hash(i, 5) * 4 | 0]}); mark(x, y - 6, 12); };
+    for (const e of F.edges) {
+      if (e === 'n') for (let y = 14; y <= F.depth; y += sp * 0.7) for (let x = M.river.x + 30; x < this.W; x += sp) tryTree(x + (hash(x, y, 1) - .5) * 12, y + (hash(x, y, 2) - .5) * 8);
+      if (e === 's') for (let y = this.H - F.depth + 18; y <= this.H + 14; y += sp * 0.7) for (let x = M.river.x + 30; x < this.W; x += sp) tryTree(x + (hash(x, y, 1) - .5) * 12, y + (hash(x, y, 2) - .5) * 8);
+      if (e === 'e') for (let x = this.W - F.depth + 10; x <= this.W + 8; x += sp * 0.75) for (let y = 30; y < this.H; y += sp * 0.8) tryTree(x + (hash(x, y, 1) - .5) * 10, y + (hash(x, y, 2) - .5) * 10);
+    }
+    // ground cover in whatever open grass is left
+    const S = M.scatter || {cell: 28, fill: 0.8, kinds: [['grass', 1]]}, total = S.kinds.reduce((a, k) => a + k[1], 0);
+    const R = {bush: 12, shrub: 10, log: 12, stump: 8, rock: 7, grass: 6, bloom: 6};
+    for (let y = 8; y < this.H; y += S.cell) for (let x = 8; x < this.W; x += S.cell) {
+      const px = x + hash(x, y, 7) * (S.cell - 6), py = y + hash(x, y, 8) * (S.cell - 6);
+      if (hash(x, y, 9) > S.fill) continue;
+      let r = hash(x, y, 10) * total, kind = S.kinds[0][0];
+      for (const [k, wgt] of S.kinds) { if ((r -= wgt) < 0) { kind = k; break; } }
+      const rad = R[kind] || 8;
+      if (!free(px, py - 4, rad)) continue;
+      place(kind, px, py, {tint: kind === 'bush' || kind === 'shrub' ? TINTS[hash(x, y, 11) * 4 | 0] : 0});
+      mark(px, py - 4, rad + 2);
+    }
   }
 
   setShopRev(econ) {
@@ -174,6 +270,8 @@ export class VillageMap {
       const key = lit + (done ? 'd' : '');
       if (b.lmKey !== key) {
         b.lmKey = key; b.spr.texture = Texture.from(installationCanvas(lit, done)); b.spr.anchor.set(0.5, 1); b.spr.scale.set(1.5);
+        if (!b.lmCast) b.lmCast = this.cast(b.spr, 1, 60); else b.lmCast.sh.texture = b.spr.texture;
+        if (this.sun) this.shapeShadow(b.lmCast);
         if (!b.lmGlow) {
           b.lmGlow = new Container(); this.lights.addChild(b.lmGlow);
           [this.tex.glowWarm, this.tex.glowCool, this.tex.glowPink].forEach((t, i) => { const s = new Sprite(t); s.anchor.set(0.5); s.blendMode = 'add';
@@ -201,9 +299,10 @@ export class VillageMap {
     const tb = new Graphics().roundRect(-tt.width / 2 - 3, -tt.height - 1, tt.width + 6, tt.height + 2, 3).fill({color: 0xfffdf7, alpha: 0.92}).stroke({color: hexNum(cloth), width: 1.2});
     tag.addChild(tb, tt);
     c.addChild(shadow, ring, spr, icon, tag);
+    const cst = this.cast(spr, 0.9, 16); cst.ao.visible = false;   // the figure keeps its own contact shadow
     c.hitArea = {contains: (x, y) => x > -9 && x < 9 && y > -24 && y < 2};
     this.objects.addChild(c);
-    r = this.res[id] = {id, c, spr, icon, tag, tb, tt, ring, frames, x: 0, y: 0, path: [], dir: 'down', frame: 0, ft: 0, phase: Math.random() * 1000, placed: false, loc: null, slot: -1};
+    r = this.res[id] = {id, c, spr, icon, tag, tb, tt, ring, frames, cst, x: 0, y: 0, path: [], dir: 'down', frame: 0, ft: 0, phase: Math.random() * 1000, placed: false, loc: null, slot: -1};
     return r;
   }
 
@@ -335,6 +434,7 @@ export class VillageMap {
     for (const b of this.buildings || []) b.closed = !!(b.l.owner && (b.l.closed_days || []).includes(dow));
     for (const b of this.buildings || []) b.sign.visible = b.closed;
     this.updateWindows();
+    if (!this.lastSunH || Math.abs(h - this.lastSunH) > 0.08) { this.lastSunH = h; this.updateShadows(); }
   }
   updateWindows() {
     if (!this.phase || !this.buildings) return;
@@ -385,6 +485,7 @@ export class VillageMap {
       r.spr.texture = r.frames[r.dir][r.frame];
       r.spr.y = moving || this.lowFx || this.reduce ? 0 : ((now + r.phase) % 1400 < 700 ? 0 : -1);   // idle breathing
       r.c.x = Math.round(r.x); r.c.y = Math.round(r.y); r.c.zIndex = r.c.y;
+      if (r.cst.sh) { r.cst.sh.texture = r.spr.texture; r.cst.sh.x = r.c.x + (this.sun ? this.sun.dir * 2 : 0); r.cst.sh.y = r.c.y; r.cst.sh.visible = r.c.visible && this.sun && this.sun.alpha > 0.01; }
       r.tag.visible = this.zoom >= 0.75 || r.ring.visible;
     }
     for (const b of this.bubbles.slice()) {

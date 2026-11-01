@@ -1,5 +1,5 @@
 {
-  "_doc": "Gaobo town. Coordinates in tiles (tile = 16 px; fractions allowed). The fountain plaza is the town's heart (plaza.c, radius plaza.r). locations.*.door = bottom-centre of the building; locations.*.path = the curved path (paths[].id) a resident walks from that door to the plaza. paths[].pts are spline control points from the door front to the plaza edge, w = width in px. anchors = px offsets from the door where residents stand, in fill order. aprons = stone in front of doors [x, y, w, h]. patches = ground variation {kind, x, y, r}. decor = [kind, x, y] bottom-centre; lamps glow at night.",
+  "_doc": "Gaobo town. trails = narrow footpaths (drawn, not walked). ledges = [x0, y, x1] retaining edges (higher ground above). scatter = procedural ground cover in open grass, forest = woodland framing along the map edges (both avoid buildings, paths, plazas and the space where residents stand). Coordinates in tiles (tile = 16 px; fractions allowed). The fountain plaza is the town's heart (plaza.c, radius plaza.r). locations.*.door = bottom-centre of the building; locations.*.path = the curved path (paths[].id) a resident walks from that door to the plaza. paths[].pts are spline control points from the door front to the plaza edge, w = width in px. anchors = px offsets from the door where residents stand, in fill order. aprons = stone in front of doors [x, y, w, h]. patches = ground variation {kind, x, y, r}. decor = [kind, x, y] bottom-centre; lamps glow at night.",
   "tile": 16,
   "cols": 60,
   "rows": 40,
@@ -25,6 +25,16 @@
     {"id": "park", "w": 14, "pts": [[13.2, 26.1], [17, 24.6], [21.2, 22.9], [25.6, 21.4]]},
     {"id": "riverwalk", "w": 9, "pts": [[5.2, 1], [5.6, 10], [5, 20], [5.8, 30], [5.2, 40]]}
   ],
+  "trails": [
+    {"id": "pond", "w": 6, "pts": [[25.2, 23], [19, 28.6], [12, 31.6]]},
+    {"id": "well", "w": 5, "pts": [[8, 9.6], [6.4, 12.4], [5.6, 15]]},
+    {"id": "southwood", "w": 6, "pts": [[33.6, 33.6], [36, 36.4], [39.5, 38.8]]},
+    {"id": "eastwood", "w": 5, "pts": [[50, 23.6], [53.6, 25.4], [57.6, 24.6]]},
+    {"id": "northeast", "w": 5, "pts": [[53.4, 9], [56, 11.6], [58.8, 12.2]]}
+  ],
+  "ledges": [[40, 26.6, 52], [14, 33.8, 26], [23.5, 6.7, 34], [52.6, 18.3, 59.5], [6.5, 23.8, 10]],
+  "scatter": {"cell": 26, "fill": 0.85, "kinds": [["grass", 30], ["bush", 20], ["bloom", 18], ["rock", 14], ["stump", 6], ["log", 5], ["shrub", 7]]},
+  "forest": {"edges": ["n", "e", "s"], "depth": 52, "spacing": 21},
   "aprons": [[7.4, 8, 3.2, 1.5], [50.4, 7.5, 3.2, 1.5], [19.2, 13, 5.6, 1.6], [35.9, 13, 5.2, 1.6], [45.6, 22, 4.8, 1.6], [27.2, 31, 7.6, 1.5], [9.7, 27.4, 4.6, 1.6]],
   "patches": [
     {"kind": "gravel", "x": 36.5, "y": 26.5, "r": 1.6}, {"kind": "gravel", "x": 13, "y": 17, "r": 1.3}, {"kind": "gravel", "x": 47, "y": 27, "r": 1.5},
