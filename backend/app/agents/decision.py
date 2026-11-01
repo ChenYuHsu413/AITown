@@ -1389,8 +1389,11 @@ class DecisionEngine:
                 per_call_timeout=SYNC_CALL_TIMEOUT_S,   # in-tick (start_conversation): don't park the loop
             )
             new = str(res.parsed.get("text") or "") if isinstance(res.parsed, dict) else ""
-            if new and _knowledge_lang_ok(new):   # wrong language -> keep the prior version
+            # wrong language or a wrong pronoun -> keep the prior version (free-text checklist)
+            if new and _knowledge_lang_ok(new) and _note_gender_gate(gender_ok(new)):
                 text = new
+            elif new and _GATE_DIAG:
+                print(f"[gate-reject] distort kept prior version: {new[:140]!r}", flush=True)
 
         if rumor.subject and rumor.subject == b.id:
             # The rumor made it back to the person it is about -- no relationship
@@ -1764,7 +1767,10 @@ class DecisionEngine:
         )
         parsed = res.parsed if isinstance(res.parsed, dict) else {}
         text = str(parsed.get("text") or "").strip()
-        if not text or not _knowledge_lang_ok(text):   # wrong language -> a plain fallback
+        # wrong language or a wrong pronoun -> a plain fallback (free-text checklist)
+        if not text or not _knowledge_lang_ok(text) or not _note_gender_gate(gender_ok(text)):
+            if text and _GATE_DIAG:
+                print(f"[gate-reject] leak fell back: {text[:140]!r}", flush=True)
             text = texts.T("leak_fallback", owner=owner_name)
         try:
             sentiment = max(-1.0, min(1.0, float(parsed.get("sentiment", -0.3))))
@@ -1911,10 +1917,17 @@ class DecisionEngine:
         failure raises ProvidersExhausted (no canned plan -- the usual day stands)."""
         mat = dayplan_mod.material(agent, world, self, day)
 
-        def ok(r: object) -> bool:
+        def ok(r: object) -> bool:      # the free-text checklist: zh quality + pronoun gate
             p = getattr(r, "parsed", None)
-            return (isinstance(p, dict) and bool(str(p.get("intent") or "").strip())
-                    and _knowledge_lang_ok(str(p.get("intent"))))
+            if not (isinstance(p, dict) and str(p.get("intent") or "").strip()
+                    and _knowledge_lang_ok(str(p.get("intent")))):
+                return False
+            if not _note_gender_gate(gender_ok(str(p["intent"]))):
+                if _GATE_DIAG:
+                    print(f"[gender-reject] {getattr(r, 'provider', '?')} {agent.id} intent="
+                          f"{str(p['intent'])[:140]!r}", flush=True)
+                return False
+            return True
         messages = builders.day_plan_prompt(agent, mat)
         plan: dict = {}
         for attempt in range(2):        # one retry, with the reason, for an action told as a shared outcome
@@ -2052,8 +2065,10 @@ class DecisionEngine:
 
     @staticmethod
     def _turn_ok(r: object, sp: Agent, plan: ConvPlan) -> bool:
-        """Per-line quality gate: the same structural/zh gate and referential anchor
-        the one-shot dialogue had, applied to this single line."""
+        """Per-line quality gate -- the free-text checklist (docs/free-text-checklist.md):
+        structure + zh quality (``_dialogue_ok``), the pronoun gate (``gender_ok``, which
+        also fails loud without a roster) on the line AND on the news it hands over, and
+        the referential anchor."""
         p = getattr(r, "parsed", None)
         if not isinstance(p, dict) or not str(p.get("text") or "").strip():
             return False
@@ -2061,6 +2076,12 @@ class DecisionEngine:
                                 provider=getattr(r, "provider", "?"), model=getattr(r, "model", "?"))
         if not _dialogue_ok(shaped):
             return False
+        for label, part in (("text", str(p["text"]).strip()), ("tells", str(p.get("tells") or "").strip())):
+            if part and not _note_gender_gate(gender_ok(part)):
+                if _GATE_DIAG:
+                    print(f"[gender-reject] {shaped.provider}/{shaped.model} {sp.id} {label}={part[:140]!r}",
+                          flush=True)
+                return False
         if not _referential_ok(shaped.parsed, plan.a, plan.b):
             if _GATE_DIAG:
                 print(f"[ref-reject] {shaped.provider}/{shaped.model} {plan.a.id}<->{plan.b.id}", flush=True)

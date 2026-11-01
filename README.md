@@ -278,6 +278,7 @@ flowchart TB
 - [`docs/deploy.md`](docs/deploy.md):容器部署、本機 Postgres(pgvector:pg17)、快照續跑與紀元封存。
 - [`docs/admin.md`](docs/admin.md):營運 / 上帝模式端點、預設 dry-run 的維護操作,以及從 `snapshot_archive` 復原。
 - [`docs/event-contract.md`](docs/event-contract.md):前端與資料庫共用的結構化事件格式、動詞表與敘事分級。
+- [`docs/free-text-checklist.md`](docs/free-text-checklist.md):任何新的自由文本路徑上線前必須逐項打勾的防線清單(roster、三道閘門、診斷 log),附現有路徑的盤點。
 - [`docs/frontend.md`](docs/frontend.md):前端為什麼不用 build、檔案配置、地圖、對話串與 3D 驗證切片。
 - [`docs/formal-server-checklist.md`](docs/formal-server-checklist.md):開正式服前定案的人設與地名決策紀錄(2026-08)。
 

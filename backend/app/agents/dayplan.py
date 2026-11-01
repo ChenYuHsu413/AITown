@@ -268,13 +268,13 @@ def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slot
             dropped.append("action: no such place"); continue
         if world.locations[loc].kind == "home" and loc != agent.home:
             dropped.append("action: someone else's home"); continue
-        from .decision import gender_ok
+        from .decision import _note_gender_gate, gender_ok
         if controls_someone(what + "," + leaves, agent, world):
             dropped.append(f"action: controls someone else ({what[:24]})"); continue
         if joint_outcome(what, agent, world):
             dropped.append(f"action: states a shared outcome ({what[:24]})"); continue
         mode, seek = social_intent(what, agent, world)
-        if not gender_ok(what) or (leaves and not gender_ok(leaves)):
+        if not _note_gender_gate(gender_ok(what) and (not leaves or gender_ok(leaves))):
             dropped.append(f"action: wrong pronoun ({what[:24]})"); continue
         recipient = addressee(what + "," + leaves, agent, world) if leaves else ""
         owner = world.locations[loc].owner
