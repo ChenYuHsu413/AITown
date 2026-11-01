@@ -264,6 +264,24 @@ class RelationshipDelta(Base):
                       Index("ix_reldelta_run_pair", "run_id", "a", "b"))
 
 
+class PublicObject(Base):
+    """A thing a resident left in a public place (agents/actions.py). Rows are
+    append-only: an object never changes once made."""
+
+    __tablename__ = "public_objects"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(32), default="")
+    location: Mapped[str] = mapped_column(String(32), default="")
+    creator: Mapped[str] = mapped_column(String(32), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    born_minute: Mapped[int] = mapped_column(Integer, default=0)
+    born_day: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (Index("ix_pubobj_run_loc", "run_id", "location"),)
+
+
 class SnapshotArchive(Base):
     """Append-only safety net: a full world payload saved *before* any destructive
     admin operation (unlike world_snapshots, which is upsert/single-row). Every row

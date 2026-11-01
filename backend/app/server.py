@@ -466,6 +466,7 @@ class Sim:
         self.engine.on_chapter_record = p.on_chapter    # chapter ledger (started / closed rows)
         self.engine.on_wish_record = p.on_wish          # wish ledger (seeded / ended rows)
         self.engine.on_wish_attempt = p.on_wish_attempt  # generation ledger (every attempt)
+        self.engine.on_public_object = p.on_public_object  # things residents left in public places
         self.engine.narrative.on_digest = p.on_digest      # one sentence per closed day
         self.engine.narrative.on_rel_deltas = p.on_rel_deltas   # the day's relationship moves
         self.engine.set_run_seed(p.run_id)              # stable wish-drive dice for this run

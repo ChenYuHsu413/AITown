@@ -69,3 +69,10 @@ DAYPLAN_STUCK_DAYS = _num("DAYPLAN_STUCK_DAYS", 3, int)      # a pursuit this ol
 
 # ---- the world's things ------------------------------------------------------------
 FRESH_DAYS = _num("FRESH_DAYS", 7, int)                      # a finished thing reads as "new" this long
+
+# ---- free actions and public objects (agents/dayplan.py, agents/actions.py) ---------------
+FREE_ACTIONS_PER_DAY = _num("FREE_ACTIONS_PER_DAY", 2, int)  # small doings a morning may plan
+FREE_ACTION_MAX_COST = _num("FREE_ACTION_MAX_COST", 30, int) # money one doing may spend
+ACTION_WITNESS_P = _num("ACTION_WITNESS_P", 0.5)             # someone present notices the doing
+OBJECT_NOTICE_P = _num("OBJECT_NOTICE_P", 0.6)               # a passer-by takes in a public object
+OBJECTS_PER_PLACE = _num("OBJECTS_PER_PLACE", 8, int)        # older objects beyond this fade from the scene

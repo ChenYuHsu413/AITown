@@ -29,7 +29,7 @@ from ..llm.embeddings import EmbeddingProvider, MockEmbedding
 from ..llm.usage import LLMCall
 from ..simulation.engine import Event
 from .models import (
-    Base, ChapterRow, DailyDigest, EventRow, LLMCallRow, MemoryRow, RelationshipDelta, SimulationRun,
+    Base, ChapterRow, DailyDigest, EventRow, LLMCallRow, MemoryRow, PublicObject, RelationshipDelta, SimulationRun,
     SnapshotArchive, TranslationCacheRow, WishAttemptRow, WishRow, WorldSnapshot,
 )
 
@@ -73,6 +73,11 @@ class _AttemptWrite:
 @dataclass
 class _DigestWrite:
     row: dict          # DailyDigest columns -- upserted on (run_id, day)
+
+
+@dataclass
+class _ObjectWrite:
+    row: dict          # PublicObject columns -- append-only
 
 
 @dataclass
@@ -245,6 +250,10 @@ class Persistence:
         if rows:
             self._queue.put_nowait(_DeltaWrite([dict(r) for r in rows]))
 
+    def on_public_object(self, obj: dict) -> None:
+        """Queue one public object (append-only). Non-blocking."""
+        self._queue.put_nowait(_ObjectWrite(dict(obj)))
+
     def on_wish_attempt(self, row: dict) -> None:
         """Queue one generation-attempt row. Append-only: a declined or gate-rejected
         attempt is exactly the row worth keeping. Non-blocking."""
@@ -310,6 +319,13 @@ class Persistence:
                         set_={k: v for k, v in row.items() if k != "wish_id"},
                     )
                     await s.execute(stmt)
+                elif isinstance(item, _ObjectWrite):
+                    o = item.row
+                    s.add(PublicObject(
+                        id=str(o["id"]), run_id=self.run_id, location=str(o.get("location", "")),
+                        creator=str(o.get("creator", "")), description=str(o.get("description", "")),
+                        born_minute=int(o.get("born_minute", 0)),
+                        born_day=int(o.get("born_minute", 0)) // (24 * 60) + 1))
                 elif isinstance(item, _AttemptWrite):
                     row = {k: v for k, v in item.row.items()
                            if k in WishAttemptRow.__table__.columns and k != "id"}

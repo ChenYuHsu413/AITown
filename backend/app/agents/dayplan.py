@@ -112,12 +112,20 @@ def material(agent: "Agent", world: "World", decisions, day: int) -> dict:
                    f" at {res('{loc:' + m['location'] + '}')} around {_hhmm(m['minute'] - day_start)} today.")
     places = [res("{loc:" + lid + "}") for lid, loc in world.locations.items()
               if loc.kind != "home" or lid == agent.home]
+    from . import actions as actions_mod
+    objects = []
+    for lid in world.locations:
+        for line in actions_mod.scene_lines(world, lid, day_start):
+            objects.append(f"{line} ({res('{loc:' + lid + '}')})")
+    did = [res(m.text) for m in agent.memory.items
+           if "action" in (m.tags or []) and m.minute >= day_start - 7 * DAY][-4:]
     return {
         "day": day, "dow": _DOW[(day - 1) % 7], "rain": bool(world.effect_active("rain")),
         "off": off_today(agent, world, day), "mood": mood_mod.describe(agent, world),
         "duty": _duty(agent), "usual": usual, "yesterday": yesterday, "talked": talked,
         "wishes": wishes, "chapter": chapter, "people": people, "tense": tense,
         "promise": promise, "places": places, "money": int(agent.state.money),
+        "objects": objects[-6:], "did": did,
     }
 
 
@@ -131,6 +139,63 @@ def _place(world: "World", agent: "Agent", raw: object) -> str:
     if loc is not None and loc.kind == "home" and lid != agent.home:
         return ""                                   # never someone else's home uninvited
     return lid
+
+
+def _action_place(world: "World", agent: "Agent", raw: object) -> str:
+    """Where a free action may happen: anywhere open to them -- a public place, a
+    shop as a customer, their own home (``_place`` already refuses others' homes)."""
+    return _place(world, agent, raw)
+
+
+def _names_someone(text: str, agent: "Agent", world: "World") -> bool:
+    from . import texts as texts_mod
+    return any(texts_mod.mentions(text, o) for o in world.agents if o != agent.id)
+
+
+def validate_actions(raw: object, agent: "Agent", world: "World", day: int, slots: list) -> tuple:
+    """The free-action contract, plan side: a real, permitted place, waking hours, a
+    sane cost, Chinese text that names nobody else (an act is one's own: never
+    another person's reaction, belongings or body). Returns (actions, dropped)."""
+    from .decision import _knowledge_lang_ok
+    dow = (day - 1) % 7
+    out: list[dict] = []
+    dropped: list[str] = []
+    for a in (raw if isinstance(raw, list) else [])[:pacing.FREE_ACTIONS_PER_DAY]:
+        if not isinstance(a, dict):
+            continue
+        what = str(a.get("what") or "").strip().rstrip("。")
+        leaves = str(a.get("leaves") or "").strip().rstrip("。")
+        try:
+            hour = int(a.get("hour"))
+            cost = max(0, int(a.get("cost") or 0))
+        except (TypeError, ValueError):
+            dropped.append("action: bad hour/cost"); continue
+        loc = _action_place(world, agent, a.get("place"))
+        if not what or len(what) > 60 or not _knowledge_lang_ok(what):
+            dropped.append("action: unreadable"); continue
+        if leaves and (len(leaves) > 40 or not _knowledge_lang_ok(leaves)):
+            leaves = ""
+        if not loc:
+            dropped.append("action: no such place"); continue
+        if world.locations[loc].kind == "home" and loc != agent.home:
+            dropped.append("action: someone else's home"); continue
+        if _names_someone(what + leaves, agent, world):
+            dropped.append("action: involves someone else"); continue
+        owner = world.locations[loc].owner
+        if leaves and owner and owner != agent.id:
+            leaves = ""        # a customer may do things in a shop, but not leave things in it
+        if not 7 <= hour <= 21 or agent.routine.current(hour * 60, dow).action == "sleep":
+            dropped.append("action: sleep time"); continue
+        if cost > pacing.FREE_ACTION_MAX_COST:
+            dropped.append("action: too costly"); continue
+        fr, to = hour * 60, hour * 60 + 60
+        if any(fr < x["to"] and x["from"] < to for x in slots):
+            dropped.append("action: overlaps"); continue
+        idx = len(out)
+        out.append({"what": what, "leaves": leaves, "cost": cost, "location": loc,
+                    "from": fr, "to": to, "state": "planned"})
+        slots.append({"from": fr, "to": to, "location": loc, "action": "free", "act": idx})
+    return out, dropped
 
 
 def validate(raw: object, agent: "Agent", world: "World", day: int) -> dict:
@@ -176,12 +241,35 @@ def validate(raw: object, agent: "Agent", world: "World", day: int) -> dict:
         if doing == "eat" and place.price > 0 and agent.state.money < place.price:
             dropped.append("can't afford it"); continue
         slots.append({"from": fr * 60, "to": to * 60, "location": loc, "action": DOING_ACTION[doing]})
+    actions, a_dropped = validate_actions([] if nothing else p.get("actions"), agent, world, day, slots)
+    dropped += a_dropped
     work_day = (not off_today(agent, world, day)
                 and any(act == "work" for _, _, act, _ in routine_segments(agent, day)))
     duty = float(agent.profile.personality.get("conscientiousness", 0.5))
     skip = (not nothing) and work_day and desire > duty
     return {"day": day, "intent": intent, "slots": slots, "skip_work": skip,
-            "skip_desire": round(desire, 2), "dropped": dropped}
+            "skip_desire": round(desire, 2), "dropped": dropped, "actions": actions}
+
+
+def action_at(agent: "Agent", start: int) -> dict | None:
+    """The planned free action whose hour starts at ``start`` (minute of day)."""
+    for a in (agent.state.day_plan or {}).get("actions") or []:
+        if a["from"] == start:
+            return a
+    return None
+
+
+def lapsed_actions(agent: "Agent", now: int) -> list[dict]:
+    """Free actions whose hour has passed undone -- each is marked failed once."""
+    plan = agent.state.day_plan
+    if not plan or plan.get("day") != now // DAY + 1:
+        return []
+    out = []
+    for a in plan.get("actions") or []:
+        if a.get("state") == "planned" and now % DAY >= a["to"]:
+            a["state"] = "failed"
+            out.append(a)
+    return out
 
 
 def entry_for(agent: "Agent", now: int, routine_entry: RoutineEntry) -> tuple | None:

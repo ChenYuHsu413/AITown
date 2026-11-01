@@ -328,6 +328,8 @@ def dialogue_turn_prompt(ctx: dict, history: list[dict], turn_no: int, max_turns
     lines = [f"Scene: {ctx['time'] + ' ' if ctx.get('time') else ''}at {ctx['place']}."]
     if ctx.get("nearby"):
         lines.append(f"Nearby: {ctx['nearby']}.")
+    if ctx.get("objects"):
+        lines.append("Also here: " + "; ".join(ctx["objects"]) + ".")
     lines.append(f"You are {ctx['card']} Your mood: {ctx['mood']}.")
     bond = f"To you, {other} is {_BOND_PHRASE.get(ctx.get('bond', ''), 'someone you know')}"
     if ctx.get("romance"):
@@ -372,12 +374,19 @@ def day_plan_prompt(agent: "Agent", mat: dict) -> list[dict]:
         f"concrete way. You decide only {me}'s own day: never what anyone else does or feels, "
         f"and sleep is not yours to change. Respond ONLY with JSON: "
         '{"intent": "...", "nothing_special": true|false, "skip_work": 0..1, '
-        '"slots": [{"from": 14, "to": 16, "place": "<place name>", "doing": "visit|rest|idle|work|eat"}]}'
+        '"slots": [{"from": 14, "to": 16, "place": "<place name>", "doing": "visit|rest|idle|work|eat"}], '
+        '"actions": [{"hour": 15, "place": "<place name>", "what": "...", "leaves": "", "cost": 0}]}'
         "\n- intent: one first-person sentence: how they mean to spend today, and why."
         "\n- slots: at most 3 changes to the usual day, whole hours from 7 to 22, each at most "
         "4 hours; [] when nothing changes. \"visit\" means spending time at a place."
         "\n- skip_work: how much they want to skip work today, honestly (0 = not at all). "
         "Only meaningful on a work day."
+        "\n- actions: at most 2 small things they want to DO today, by themselves, beyond where "
+        "they spend time -- sketch something, tidy or plant something, put up a notice, try "
+        "something new. \"what\" is a short phrase of what they do, without the subject; "
+        "\"leaves\" is something it leaves behind in that place for others to see, short, or "
+        "\"\"; \"cost\" is the money it takes (0 if none). Only their own doing: never another "
+        "person's reaction, belongings or body, and nobody else's home. [] when nothing."
         + roster_directive() + roster_gender_directive() + _lang_directive()
         + dialogue_locale_directive() + " Task: day_plan."
     )
@@ -409,6 +418,10 @@ def day_plan_prompt(agent: "Agent", mat: dict) -> list[dict]:
             p += " Things are tense with: " + ", ".join(mat["tense"]) + "."
         lines.append(p)
     lines.append("Places in town: " + ", ".join(mat["places"]) + ".")
+    if mat.get("objects"):
+        lines.append("Things people have left around town:\n" + "\n".join(f"- {o}" for o in mat["objects"]))
+    if mat.get("did"):
+        lines.append("Things you did lately:\n" + "\n".join(f"- {d}" for d in mat["did"]))
     lines.append(f"How does {me} want to spend today?")
     return [{"role": "system", "content": system}, {"role": "user", "content": "\n".join(lines)}]
 
@@ -622,6 +635,9 @@ def chapter_closure_prompt(agent: "Agent", material: dict, outcome: str,
                 f"People during this chapter:\n{rels}"
                 + ("\nPromises during this chapter:\n" + "\n".join(f"  - {p}" for p in material["promises"])
                    if material.get("promises") else "")
+                + ("\nThings they set out to do during this chapter:\n"
+                   + "\n".join(f"  - {p}" for p in material["actions"])
+                   if material.get("actions") else "")
                 + aftermath
             ),
         },
@@ -741,7 +757,11 @@ def wish_generation_prompt(agent: "Agent", material: dict, rejection: str = "") 
         f"People they never regularly cross paths with: {strangers}\n\n"
         f"Already holding (scale in brackets):\n{holding}\n"
         f"{done}"
-        f"They may propose a wish of scale: {', '.join(allowed_scales) or '(none -- decline)'}."
+        + ("Things they did lately, of their own accord:\n"
+           + "".join(f"  - {t}\n" for t in material["my_actions"]) if material.get("my_actions") else "")
+        + ("Things people have left around town:\n"
+           + "".join(f"  - {t}\n" for t in material["town_objects"]) if material.get("town_objects") else "")
+        + f"They may propose a wish of scale: {', '.join(allowed_scales) or '(none -- decline)'}."
         f"{feedback}"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

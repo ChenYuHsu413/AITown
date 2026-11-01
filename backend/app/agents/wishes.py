@@ -1106,6 +1106,12 @@ def generation_material(agent: "Agent", world: "World", day: int, residue: str =
                              for w in recent_wishes(agent, day) if w.status == "completed"],
         "personality": dict(agent.profile.personality),
         "mood": _mood_line(agent, world),
+        # What residents have left around town, and what this one did lately (their
+        # own free actions, kept or failed) -- raw text; the caller resolves names.
+        "town_objects": [f"{o['description']} ({{loc:{o['location']}}})"
+                         for o in world.objects[-6:]],
+        "my_actions": [m.text for m in agent.memory.items
+                       if "action" in (m.tags or []) and m.minute >= (day - 14) * 24 * 60][-5:],
         "capacity": {s: capacity_left(agent, s) for s in SCALES},
         "in_pursuit": agent.chapter is not None and agent.chapter.chapter_type == "pursuit",
     }

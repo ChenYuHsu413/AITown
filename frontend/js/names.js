@@ -131,6 +131,9 @@ export function evText(ev) {
     case 'promise_missed': return `${a} 和 ${tg} 說好在 ${l} 見面,結果沒見成`;
     case 'stormed_off': return `${a} 和 ${tg} 不歡而散`;
     case 'skipped_work': return `${a} 今天沒去上班`;
+    case 'free_action': return `${a} 在 ${l}${ev.text ? ':' + resolve(ev.text) : ''}`;
+    case 'made_object': return `${a} 在 ${l} 留下了${resolve(ev.text || '一樣東西')}`;
+    case 'action_failed': return `${a} 本來想${resolve(ev.text || '做點什麼')},但沒做成`;
     case 'chapter_closed': return sp ? `${a} 翻過了人生的一頁——${resolve(sp)}` : `${a} 的人生翻過了一頁`;
     case 'chapter_started': return (!sp || sp === PRIVATE_CHAPTER) ? `${a} 開始了新的篇章` : `${a} 展開了新章節:${resolve(chapterTitle(sp))}`;
     case 'wish_born': case 'wish_seeded': return `${a} 心裡悄悄有了一個新的願望`;

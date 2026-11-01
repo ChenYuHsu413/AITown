@@ -354,9 +354,13 @@ def closure_material(agent: "Agent", world: "World", chapter: Chapter, now: int,
     # Promises made, kept or missed while the chapter ran (tagged at the source).
     promises = [m.text for m in agent.memory.items
                 if "promise" in (m.tags or []) and start_min <= m.minute < end_excl][-6:]
+    # ...and the things they set out to do of their own accord (done or not).
+    actions = [m.text for m in agent.memory.items
+               if "action" in (m.tags or []) and start_min <= m.minute < end_excl][-6:]
     return {
         "chapter": chapter.to_dict(),
         "promises": promises,
+        "actions": actions,
         "window": {"start_minute": start_min, "end_minute": end_min,
                    "start_day": start_min // DAY_MIN + 1, "end_day": end_min // DAY_MIN + 1,
                    "days": max(1, (end_min - start_min) // DAY_MIN + 1)},

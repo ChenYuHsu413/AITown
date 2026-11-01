@@ -56,6 +56,7 @@ class AgentState:
     meals_bought: int = 0                   # lifetime paid meals (throttles the "had a meal" memory)
     last_meal_slot: int = -1                # (day, eat-slot) already paid for -- stops double-charging
     seen_landmark_progress: dict[str, float] = field(default_factory=dict)  # landmark_id -> progress last noticed
+    seen_objects: list[str] = field(default_factory=list)   # public object ids already taken in (one roll each)
     closed_reroute_notes: dict[str, int] = field(default_factory=dict)  # shop_id -> sim-day already noted "found it closed"
     # Life transitions (see agents/transitions.py). A decided change is staged here
     # and applied at the next daily settlement (clean day boundary); a 7-day cooldown

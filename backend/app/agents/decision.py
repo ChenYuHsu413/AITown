@@ -34,6 +34,7 @@ from ..llm.usage import LLMCall
 from ..social.rumors import RumorRegistry
 from ..social.secrets import SecretRegistry
 from ..world.world import Observation, World
+from . import actions as actions_mod
 from . import chapters as chapters_mod
 from . import dayplan as dayplan_mod
 from . import mood as mood_mod
@@ -43,6 +44,7 @@ from . import texts
 from . import wishes as wishes_mod
 from .agent import Agent
 from .core import Belief, MemoryItem
+from .routine import RoutineEntry
 
 BELIEF_CONTEXT_MIN = 0.3      # a belief this confident (or more) colours dialogue + trust math
 
@@ -715,6 +717,28 @@ class DecisionEngine:
         if plan_hit is not None:
             entry, plan_until = plan_hit
         today = now // (24 * 60) + 1
+        # Free actions (agents/actions.py): an hour that slipped by is a failure; at
+        # the planned hour the rules decide whether the doing happens, and it lands
+        # once the resident is actually there. The slot itself is then plain time
+        # spent at the place.
+        for act in dayplan_mod.lapsed_actions(agent, now):
+            self.outbox.append(actions_mod.fail(agent, act, texts.T("fail_time"), now))
+        if plan_hit is not None and entry.action == "free":
+            act = dayplan_mod.action_at(agent, entry.start)
+            why = actions_mod.failure_reason(agent, world, act, now) \
+                if act is not None and act["state"] == "planned" else ""
+            if act is None or act["state"] != "planned" or why:
+                if why:
+                    self.outbox.append(actions_mod.fail(agent, act, why, now))
+                plan_hit, plan_until = None, None       # back to the usual day
+                entry = agent.routine.current(minute_of_day, dow)
+            else:
+                if agent.state.location == act["location"] and agent.state.current_action != "sleep":
+                    beat, obj = actions_mod.land(agent, world, act, now)
+                    self.outbox.append(beat)
+                    if obj is not None:
+                        self.outbox.append({"verb": "__object__", "object": obj})
+                entry = RoutineEntry(entry.start, "idle", entry.location)
         obs_text = obs.describe(world)
         self._record_observations(agent, world, now)
         memories: list[str] = []
@@ -1079,6 +1103,11 @@ class DecisionEngine:
         return random.Random(seed).random() < p
 
     def _record_observations(self, agent: Agent, world: World, now: int) -> None:
+        if agent.state.current_action != "sleep":
+            actions_mod.notice_objects(agent, world, now)    # what others left here
+        self._record_landmark_observations(agent, world, now)
+
+    def _record_landmark_observations(self, agent: Agent, world: World, now: int) -> None:
         """Pure-rules observable-activity memory. Noticing a neighbour at work on a
         landmark, or a landmark that has visibly advanced since you last looked
         (>= 0.25), leaves a light (importance 2) memory; ordinary rest/eat around
@@ -1430,6 +1459,8 @@ class DecisionEngine:
         # model reads "{landmark:installation}" and may well write it back out.
         for item in material["biography"] + material["memories"]:
             item["text"] = _resolve_placeholders(item["text"], world)
+        for key in ("town_objects", "my_actions"):
+            material[key] = [_resolve_placeholders(t, world) for t in material.get(key) or []]
         rejection = ""
         log = attempts if attempts is not None else []
         last_hit = ""                    # the old wish the previous attempt ran into, if any
@@ -1529,7 +1560,9 @@ class DecisionEngine:
                                                for m in material.get(k) or []]
                                            for k in ("memories", "aftermath")},
                                "promises": [_resolve_placeholders(p, world)
-                                            for p in material.get("promises") or []]},
+                                            for p in material.get("promises") or []],
+                               "actions": [_resolve_placeholders(p, world)
+                                           for p in material.get("actions") or []]},
                     outcome, chapters_mod.relationship_summary_lines(material, world)),
                 agent_id=agent.id, sim_minute=material["window"]["end_minute"],
                 schema={"type": "object"}, max_tokens=300 if builders.lang_is_zh() else 200,
@@ -1783,7 +1816,9 @@ class DecisionEngine:
         place_name = (((place.name_zh or place.name) if texts.zh_native() else place.name)
                       if place else a.state.location)
         scene = {"time": builders.time_of_day(now), "place": place_name,
-                 "nearby": self._nearby_landmark(world, a.state.location, now)}
+                 "nearby": self._nearby_landmark(world, a.state.location, now),
+                 "objects": [_resolve_placeholders(x, world)
+                             for x in actions_mod.scene_lines(world, a.state.location, now)]}
         a_intents: list[str] = []
         b_intents: list[str] = []
         a_role = b_role = ""
@@ -1902,6 +1937,7 @@ class DecisionEngine:
             "name": me.name, "partner": other.name,
             "card": builders.character_card(me, speech=True), "mood": mood_mod.describe(me, world),
             "time": scene["time"], "place": scene["place"], "nearby": scene["nearby"],
+            "objects": list(scene.get("objects") or []),
             "bond": transitions_mod.rel_stage(rel.friendship),
             "romance": self._ROMANCE_PHRASE.get(getattr(rel, "romance_stage", "") or "", ""),
             "impression": impression, "memories": list(mems), "recent": recent,

@@ -65,7 +65,10 @@ if TYPE_CHECKING:
 #             state dict, a promised meetup carries "promised", a location carries
 #             closed_on. Absent on a v14 snapshot: even mood, no plan (the usual
 #             day), no unplanned closure.
-SCHEMA_VERSION = 15
+#   v15 -> v16: free actions -- the world's public objects, and seen_objects /
+#             the plan's actions in the agent state. Absent on a v15 snapshot: no
+#             objects yet, nothing seen.
+SCHEMA_VERSION = 16
 
 
 # ---- capture -------------------------------------------------------------
@@ -91,6 +94,7 @@ def capture(engine: "SimulationEngine", world: "World", decisions: "DecisionEngi
             for lid, loc in world.locations.items()
         },
         "active_effects": [dict(e) for e in world.active_effects],
+        "objects": [dict(o) for o in world.objects],
         "dialogue": {"day": decisions._dialogue_day, "count": decisions._dialogues_today},
         "chronicle": [dict(c) for c in engine.chronicle[-200:]],
         "narrative": engine.narrative.capture(),
@@ -172,6 +176,8 @@ def restore(payload: dict, engine: "SimulationEngine", world: "World",
 
     if "active_effects" in payload:
         world.active_effects = [dict(e) for e in (payload.get("active_effects") or [])]
+    if "objects" in payload:     # v16+; older snapshots: no public objects yet
+        world.objects = [dict(o) for o in (payload.get("objects") or []) if isinstance(o, dict)]
 
     dialogue = payload.get("dialogue") or {}
     if "day" in dialogue:

@@ -184,6 +184,9 @@ _EN_TEMPLATES = {
     "promise_missed": "{actor} and {target} had promised to meet at {loc}, but it never happened",
     "stormed_off": "{actor} walked away from {target} mid-conversation",
     "skipped_work": "{actor} didn't go to work today",
+    "free_action": "{actor} at {loc}: {text}",
+    "made_object": "{actor} left {text} at {loc}",
+    "action_failed": "{actor} meant to {text}, but couldn't",
     "chapter_closed": "{actor} closed a chapter of their life — {text}",
     "chapter_started": "{actor} began a new chapter: {text}",
     # Wish beats are deliberately content-free: the intention itself is private.
@@ -200,7 +203,7 @@ CHRONICLE_VERBS = {
     "rain_start", "rain_end", "festival_start", "festival_end",
     "leak", "secret_born", "week_close", "transition", "milestone",
     "romance_dating", "romance_rejected", "romance_partners", "breakdown", "repaired",
-    "met_up", "chapter_closed", "chapter_started", "stormed_off", "promise_missed", "skipped_work",
+    "met_up", "chapter_closed", "chapter_started", "stormed_off", "promise_missed", "skipped_work", "made_object",
 }
 CHRONICLE_ICONS = {
     "confide": "🤫", "confronted": "⚖️", "landmark_done": "🎨", "belief": "💭",
@@ -208,7 +211,7 @@ CHRONICLE_ICONS = {
     "festival_end": "🎏", "leak": "🕳️", "secret_born": "🔒", "week_close": "📅",
     "transition": "🔀", "milestone": "🤝",
     "romance_dating": "💕", "romance_rejected": "💔", "romance_partners": "💍",
-    "breakdown": "🛠️", "repaired": "🔧", "met_up": "🫂", "stormed_off": "💢", "promise_missed": "⌛", "skipped_work": "🛋️",
+    "breakdown": "🛠️", "repaired": "🔧", "met_up": "🫂", "stormed_off": "💢", "promise_missed": "⌛", "skipped_work": "🛋️", "made_object": "🪧",
     "chapter_closed": "📖", "chapter_started": "📗",
 }
 
@@ -314,6 +317,8 @@ class SimulationEngine:
         self._plan_sem = asyncio.Semaphore(4)       # morning plans: ten small calls at the turn of the day
         self._planning: set[str] = set()
         self.plan_stats = {"plans": 0, "changed": 0, "skipped_work": 0, "dropped_slots": 0}
+        self.action_stats = {"free_action": 0, "made_object": 0, "action_failed": 0, "objects": 0}
+        self.on_public_object: Callable[[dict], None] | None = None   # public_objects ledger
         self._reflect_sem = asyncio.Semaphore(REFLECT_MAX_CONCURRENT)
         # Dialogue patient-retry observability (surfaced at /api/usage as proof the
         # retry is doing its job). ``retried`` = conversations that failed the first
@@ -806,9 +811,17 @@ class SimulationEngine:
         self._accrue_copresence(agent, self.now - since)   # romance-spark fuel
 
         decision = await self.decisions.decide(agent, self.world, obs, self.now)
-        for beat in self.decisions.drain_outbox():     # e.g. a promise that came to nothing
+        for beat in self.decisions.drain_outbox():     # a promise that came to nothing, a free action
+            if beat["verb"] == "__object__":            # a public object came into the world
+                self.action_stats["objects"] += 1
+                if self.on_public_object is not None:
+                    self.on_public_object(dict(beat["object"]))
+                continue
+            if beat["verb"] in ("free_action", "made_object", "action_failed"):
+                self.action_stats[beat["verb"]] += 1
             self._publish("action", beat["verb"], actor=self.world.agents.get(beat["actor"]),
-                          target=self.world.agents.get(beat["target"]), location_id=beat.get("location", ""))
+                          target=self.world.agents.get(beat["target"]), location_id=beat.get("location", ""),
+                          text=beat.get("text", ""), detail=beat.get("detail", ""))
 
         if decision.action == "talk" and decision.talk_partner:
             await self._initiate_conversation(

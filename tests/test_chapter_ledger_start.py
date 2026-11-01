@@ -38,6 +38,7 @@ class FakePersistence:
     def on_chapter(self, row): self.chapters.append(row)
     def on_wish(self, row): pass
     def on_wish_attempt(self, row): pass
+    def on_public_object(self, obj): pass
     def on_digest(self, row): pass
     def on_rel_deltas(self, rows): pass
 

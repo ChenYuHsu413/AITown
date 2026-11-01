@@ -135,6 +135,18 @@ _CATALOGUE: dict[str, tuple[str, str]] = {
     "day_intent": ("This morning I decided: {text}", "今天早上我打定主意:{text}"),
     "skipped_work_self": ("I didn't go to work today.", "我今天沒去上班。"),
     "shop_shut_today": ("{{loc:{loc}}} was unexpectedly shut today.", "{{loc:{loc}}}今天臨時沒開。"),
+    # free actions and public objects (agents/actions.py)
+    "action_self": ("At {{loc:{loc}}}, I {what}.", "在{{loc:{loc}}},我{what}。"),
+    "action_left": ("I left {what} at {{loc:{loc}}}.", "我在{{loc:{loc}}}留下了{what}。"),
+    "action_seen": ("Saw {{agent:{who}}} at {{loc:{loc}}}: {what}.", "在{{loc:{loc}}}看到{{agent:{who}}}{what}。"),
+    "action_failed": ("I wanted to {what} (at {{loc:{loc}}}), but couldn't: {reason}.",
+                      "我本來想{what}(在{{loc:{loc}}}),但沒做成:{reason}。"),
+    "object_noticed": ("At {{loc:{loc}}} there is {what}.", "在{{loc:{loc}}}看到了{what}。"),
+    "fail_money": ("not enough money", "錢不夠"),
+    "fail_closed": ("the place wasn't open", "那裡沒開"),
+    "fail_rain": ("it was raining", "下雨了"),
+    "fail_tired": ("I was too tired", "太累了"),
+    "fail_time": ("the hour slipped by", "時間錯過了"),
     # turn-by-turn dialogue consequences
     "told_me": ("{{agent:{teller}}} told me: {text}", "{{agent:{teller}}}跟我說:{text}"),
     "stormed_off_self": ("Things went sour with {{agent:{other}}} at {{loc:{loc}}} and I walked away.",

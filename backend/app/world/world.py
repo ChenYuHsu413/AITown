@@ -85,6 +85,10 @@ class World:
         # World effects (weather / festivals). Pure Level-0 state; no LLM.
         # Each: {"type": "rain"|"festival", "location": str, "until_minute": int}.
         self.active_effects: list[dict] = []
+        # Public objects residents left behind (see agents/actions.py). Each:
+        # {"id", "location", "creator", "description", "born_minute"}; the newest
+        # OBJECTS_PER_PLACE per place are in the scene, older ones live on in the DB.
+        self.objects: list[dict] = []
 
     # ---- world effects (rain / festival) ----------------------------
 
