@@ -197,6 +197,9 @@ class WishRow(Base):
     frustration_count: Mapped[int] = mapped_column(Integer, default=0)
     requirements: Mapped[list] = mapped_column(JSONB, default=list)
     provenance: Mapped[list] = mapped_column(JSONB, default=list)
+    # Operator's annotation (an incident and how it was handled). Written by repair
+    # scripts only; the engine's upserts never carry it, so it survives them.
+    ledger_note: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
